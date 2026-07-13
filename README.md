@@ -1,120 +1,121 @@
-# A股形态预警系统
+# A股形态预警系统 - Web版
 
-基于"心姐知识整理"交易规则的 A 股 K 线形态识别与预警系统。
+基于Android股票监控应用开发的Web版本，专为苹果用户设计，支持17条专业形态预警规则。
+
+## 功能特性
+
+### 🎯 预警规则（17条）
+- **成交量类**: 巨量预警、巨量见顶、第二波见顶
+- **形态类**: 长上影线、连阳预警、对子顶、横盘滞涨、止跌企稳
+- **趋势类**: 破五日线、破趋势线、超大阳线、急跌预警
+- **机会类**: 反包入场、箱体吸筹、黄金位反弹
+- **情绪类**: 妇联定律（工业富联大跌预警）、缩量破位
+
+### 📊 主要功能
+- **实时行情**: 支持新浪、腾讯双数据源
+- **预警检测**: 一键检测所有自选股的17条规则
+- **自选管理**: 添加/删除自选股，实时刷新行情
+- **股票筛选**: 快速扫描热门股或自定义股票
+- **K线图表**: SVG原生渲染，支持点击查看详情
 
 ## 技术栈
 
-- **前端**: React 18 + Vite + TypeScript + Tailwind CSS + lightweight-charts
-- **后端 API**: Cloudflare Pages Functions（全球 CDN 边缘节点运行）
-- **数据源**: 新浪财经 + 东方财富 + 腾讯财经（免费公开 API）
-- **部署**: Cloudflare Pages（免费无限流量）
+- **框架**: Next.js 16 (App Router)
+- **语言**: TypeScript
+- **样式**: Tailwind CSS
+- **状态管理**: Zustand
+- **图标**: Lucide React
+- **图表**: 自研SVG K线组件
+- **部署**: Vercel (免费版)
 
-## 部署到 Cloudflare（推荐 — 免费、全球加速、无需服务器）
-
-### 1. 推送代码到 GitHub
-
-```bash
-cd stock-analysis
-git init
-git add .
-git commit -m "init: A股形态预警系统"
-git branch -M main
-git remote add origin https://github.com/你的用户名/stock-analysis.git
-git push -u origin main
-```
-
-### 2. 在 Cloudflare Pages 部署
-
-1. 打开 [dash.cloudflare.com](https://dash.cloudflare.com/) 注册/登录
-2. 左侧菜单 → **Workers 和 Pages** → **创建** → **Pages**
-3. **连接到 Git** → 授权 GitHub → 选择 `stock-analysis` 仓库
-4. 构建设置：
-   - **构建命令**: `cd frontend && npm install && npm run build`
-   - **输出目录**: `frontend/dist`
-   - **根目录**: `/`
-5. 点击 **保存并部署**
-
-3 分钟后部署完成，得到一个 `https://xxx.pages.dev` 域名，任何人打开就能用。
-
-### 后续更新
+## 开发
 
 ```bash
-git add .
-git commit -m "更新内容"
-git push
-# Cloudflare 自动重新部署，无需手动操作
-```
-
----
-
-## 本地开发
-
-### 1. 安装依赖
-```bash
-cd stock-analysis
+# 安装依赖
 npm install
-cd frontend && npm install
+
+# 启动开发服务器
+npm run dev
+
+# 构建生产版本
+npm run build
+
+# 启动生产服务器
+npm start
 ```
 
-### 2. 启动本地开发服务器
+## 部署到Vercel
 
-**方式 A：用本地 Express 后端**
+### 方式一: 通过Vercel CLI
 
 ```bash
-# 终端 1 - 启动后端
-cd backend && npm run dev    # 端口 3001
+# 安装Vercel CLI
+npm install -g vercel
 
-# 终端 2 - 启动前端（会自动代理 /api 到后端）
-cd frontend && npm run dev   # 端口 5173
+# 登录
+vercel login
+
+# 部署
+vercel
 ```
 
-**方式 B：用 Cloudflare Pages Functions（模拟生产环境）**
+### 方式二: 通过GitHub
+
+1. 将代码推送到GitHub仓库
+2. 访问 [vercel.com](https://vercel.com)
+3. 点击 "New Project"
+4. 选择GitHub仓库并导入
+5. 配置项目设置（默认即可）
+6. 点击 "Deploy"
+
+### 方式三: 手动部署
 
 ```bash
-cd frontend
-npx wrangler pages dev -- npm run dev
+vercel --prod
 ```
-
-然后访问 http://localhost:5173
-
----
-
-## 预警规则体系
-
-系统根据文档中的交易规则自动检测：
-
-| 级别 | 含义 | 触发条件示例 |
-|-----|------|------------|
-| 🔴 红色 | 清仓离场 | 放量跌破5日线、对子顶三合一、突发暴跌 |
-| 🟠 橙色 | 减仓信号 | 放巨量、长上影线出货、横盘滞涨 |
-| 🟢 绿色 | 买入关注 | 第二波反包阳线、底背离、箱体突破 |
-| 🔵 蓝色 | 观察提示 | 十字星企稳、长下影线、回调黄金分割 |
 
 ## 项目结构
 
 ```
 stock-analysis/
-├── backend/          # Express 后端（本地开发用）
-│   └── src/
-│       ├── routes/       # search, quote, kline, index
-│       ├── services/     # sina, eastmoney, tencent
-│       └── middleware/   # cache, rateLimiter
-├── frontend/         # React 前端 + Cloudflare Functions
-│   ├── functions/       # Cloudflare Pages Functions（生产环境 API）
-│   │   ├── api/            # search, quote, kline, index
-│   │   └── lib/            # sina, eastmoney, tencent, utils
-│   └── src/
-│       ├── components/   # chart, stock, alert, layout
-│       ├── engine/       # 分析引擎（规则检测）
-│       │   ├── indicators/  # MA, MACD, RSI
-│       │   ├── patterns/    # 形态识别
-│       │   └── rules/       # 买卖预警规则
-│       ├── pages/        # HomePage, StockPage, WatchlistPage
-│       ├── hooks/        # useKlineData, useQuote, useAlerts
-│       └── store/        # Zustand 状态管理
+├── app/
+│   ├── components/     # UI组件
+│   │   └── KLineChart.tsx
+│   ├── lib/           # 工具函数
+│   │   └── utils.ts
+│   ├── services/      # 业务逻辑
+│   │   ├── alertRules.ts   # 预警规则引擎
+│   │   └── stockApi.ts     # 股票API
+│   ├── store/         # 状态管理
+│   │   └── index.ts
+│   ├── types/         # 类型定义
+│   │   └── index.ts
+│   ├── page.tsx       # 预警页（首页）
+│   ├── watchlist/     # 自选页
+│   ├── scanner/       # 筛选页
+│   └── layout.tsx     # 根布局
+├── public/            # 静态资源
+├── vercel.json        # Vercel配置
 └── package.json
 ```
 
-## 免责声明
+## 注意事项
 
-本系统通过算法自动计算 K 线数据生成的信号，仅供学习参考，不构成任何投资建议。股市有风险，投资需谨慎。
+### CORS问题
+- 股票数据API来自新浪财经、腾讯财经
+- 直接从浏览器访问可能遇到CORS限制
+- 解决方案：部署后使用Vercel代理或添加CORS头
+
+### 数据源限制
+- 数据来源于公开API，可能不稳定
+- 建议添加备用数据源或错误处理
+
+### Vercel免费版限制
+- 构建时间: 60秒
+- 函数执行: 10秒（本应用主要为客户端执行，不受限制）
+- 带宽: 100GB/月
+- 部署次数: 无限
+
+## License
+
+MIT
