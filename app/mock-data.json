@@ -1,0 +1,16 @@
+[
+  {
+    "code": "sh600519",
+    "name": "贵州茅台",
+    "price": 1765.00,
+    "changePercent": 2.5,
+    "volume": 1000000
+  },
+  {
+    "code": "sh601138",
+    "name": "工业富联",
+    "price": 45.20,
+    "changePercent": -1.2,
+    "volume": 2000000
+  }
+]

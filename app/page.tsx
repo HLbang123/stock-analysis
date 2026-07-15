@@ -1,6 +1,7 @@
 'use client';
 
 import React, { useEffect, useMemo, useState } from 'react';
+import { useRouter } from 'next/navigation';
 import { useStockStore } from '@/store';
 import { getRealtimeQuote, getKLineSina } from '@/services/stockApi';
 import { ALERT_RULES, checkAllRules } from '@/services/alertRules';
@@ -9,6 +10,7 @@ import { formatTime, cn, getAlertLevelColor } from '@/lib/utils';
 import { AlertTriangle, RefreshCw, Trash2, Plus } from 'lucide-react';
 
 export default function HomePage() {
+  const router = useRouter();
   const { watchlist, alerts, isCheckingAlerts, addAlerts, markAsRead, clearAlerts, clearAllAlerts, setIsCheckingAlerts, rules } = useStockStore();
 
   const [resultMessage, setResultMessage] = useState<string | null>(null);
@@ -33,9 +35,11 @@ export default function HomePage() {
     });
 
     return Array.from(groups.entries()).map(([stockCode, stockAlerts]) => {
-      const worstLevel = stockAlerts.some(a => a.alertLevel === 'CRITICAL')
+      const activeAlerts = stockAlerts.filter(a => !a.isExpired);
+      const effectiveAlerts = activeAlerts.length > 0 ? activeAlerts : stockAlerts;
+      const worstLevel = effectiveAlerts.some(a => a.alertLevel === 'CRITICAL')
         ? 'CRITICAL'
-        : stockAlerts.some(a => a.alertLevel === 'WARNING')
+        : effectiveAlerts.some(a => a.alertLevel === 'WARNING')
           ? 'WARNING'
           : 'INFO';
       return {
@@ -63,6 +67,12 @@ export default function HomePage() {
     setResultMessage(null);
 
     try {
+      // 先将所有现有预警标记为"可能已过期"
+      const currentAlerts = useStockStore.getState().alerts;
+      const revivedIds = new Set<string>();
+      const updatedAlerts = currentAlerts.map(a => ({ ...a, isExpired: true }));
+      useStockStore.setState({ alerts: updatedAlerts });
+
       const allNewAlerts: AlertRecord[] = [];
 
       for (const stock of watchlist) {
@@ -76,47 +86,68 @@ export default function HomePage() {
         if (kLines.length < 10) continue;
 
         // 获取最新一天的实时数据
-        const latestQuote = quote;
+        const todayStr = new Date().toISOString().split('T')[0];
         const todayKLine = {
-          date: new Date().toISOString().split('T')[0],
-          open: latestQuote.open,
-          high: latestQuote.high,
-          low: latestQuote.low,
-          close: latestQuote.price,
-          volume: latestQuote.volume
+          date: todayStr,
+          open: quote.open,
+          high: quote.high,
+          low: quote.low,
+          close: quote.price,
+          volume: quote.volume
         };
 
-        const updatedKLines = [...kLines, todayKLine];
+        // 移除K线中已有的今天数据，用实时数据替换
+        const historicalKLines = kLines.filter(k => k.date !== todayStr);
+        const updatedKLines = [...historicalKLines, todayKLine];
 
         // 检查规则
         const enabledRules = rules.filter(r => r.isEnabled);
-        const results = checkAllRules(updatedKLines, latestQuote, enabledRules);
+        const results = checkAllRules(updatedKLines, quote, enabledRules);
 
         for (const result of results) {
           const rule = enabledRules.find(r => r.id === result.ruleId);
           if (rule) {
-            allNewAlerts.push({
-              id: `${Date.now()}-${stock.code}-${result.ruleId}`,
-              stockCode: stock.code,
-              stockName: stock.name || quote.name,
-              ruleId: result.ruleId!,
-              ruleName: rule.name,
-              alertLevel: rule.level,
-              alertMessage: result.message!,
-              suggestion: rule.suggestion,
-              triggeredAt: Date.now(),
-              isRead: false,
-              extraData: result.extraData
-            });
+            // 检查是否已有相同预警（同一股票+同一规则）
+            const existingKey = `${stock.code}-${result.ruleId}`;
+            const existing = currentAlerts.find(a => `${a.stockCode}-${a.ruleId}` === existingKey);
+            if (existing) {
+              // 复活：这个预警仍然触发
+              revivedIds.add(existing.id);
+            } else {
+              allNewAlerts.push({
+                id: `${Date.now()}-${stock.code}-${result.ruleId}`,
+                stockCode: stock.code,
+                stockName: stock.name || quote.name,
+                ruleId: result.ruleId!,
+                ruleName: rule.name,
+                alertLevel: rule.level,
+                alertMessage: result.message!,
+                suggestion: rule.suggestion,
+                triggeredAt: Date.now(),
+                isRead: false,
+                extraData: result.extraData,
+              });
+            }
           }
         }
       }
 
+      // 更新现有预警：复活仍在触发的，保持已过期的
+      const finalAlerts = useStockStore.getState().alerts.map(a => {
+        if (revivedIds.has(a.id)) return { ...a, isExpired: false };
+        return a; // 保持 isExpired: true
+      });
+
       if (allNewAlerts.length > 0) {
-        addAlerts(allNewAlerts);
-        setResultMessage(`检测完成，发现 ${allNewAlerts.length} 条新预警`);
+        // 新预警插入前面
+        useStockStore.setState({ alerts: [...allNewAlerts, ...finalAlerts] });
+        const expiredCount = finalAlerts.filter(a => a.isExpired).length;
+        const msg = `发现 ${allNewAlerts.length} 条新预警`;
+        setResultMessage(expiredCount > 0 ? `${msg}，${expiredCount} 条已消失` : msg);
       } else {
-        setResultMessage('检测完成，暂无新预警');
+        const expiredCount = finalAlerts.filter(a => a.isExpired).length;
+        useStockStore.setState({ alerts: finalAlerts });
+        setResultMessage(expiredCount > 0 ? `无新预警，${expiredCount} 条信号已消失` : '暂无新预警');
       }
     } catch (error) {
       console.error('检查预警失败:', error);
@@ -128,12 +159,11 @@ export default function HomePage() {
   };
 
   return (
-    <div className="min-h-screen bg-gray-50">
+    <div>
       {/* Header */}
-      <header className="bg-white border-b border-gray-200 sticky top-0 z-10">
-        <div className="max-w-4xl mx-auto px-4 py-4 flex items-center justify-between">
-          <h1 className="text-xl font-bold text-gray-900">股票预警</h1>
-          <div className="flex items-center gap-2">
+      <div className="flex items-center justify-between mb-4">
+        <h1 className="text-xl font-bold text-gray-900 dark:text-white">股票预警</h1>
+        <div className="flex items-center gap-2">
             {alerts.length > 0 && (
               <button
                 onClick={() => clearAllAlerts()}
@@ -149,10 +179,8 @@ export default function HomePage() {
             )}
           </div>
         </div>
-      </header>
 
-      <main className="max-w-4xl mx-auto px-4 py-6">
-        {/* 检查按钮 */}
+      {/* 检查按钮 */}
         <button
           onClick={checkAlerts}
           disabled={isCheckingAlerts || watchlist.length === 0}
@@ -200,16 +228,25 @@ export default function HomePage() {
             {groupedAlerts.map((group) => (
               <div
                 key={group.stockCode}
+                onClick={() => router.push(`/stock/${group.stockCode}`)}
                 className={cn(
-                  "border-2 rounded-xl overflow-hidden transition-all hover:shadow-md",
-                  getAlertLevelColor(group.worstLevel)
+                  "border-2 rounded-xl overflow-hidden transition-all hover:shadow-md cursor-pointer",
+                  group.alerts.every(a => a.isExpired) ? "opacity-50 border-gray-300" : getAlertLevelColor(group.worstLevel)
                 )}
               >
                 <div className="p-4">
                   {/* 股票头部 */}
                   <div className="flex items-center justify-between mb-3">
                     <div>
-                      <h3 className="font-semibold">{group.stockName}</h3>
+                      <div className="flex items-center gap-2">
+                        <h3 className="font-semibold">{group.stockName}</h3>
+                        {group.alerts.some(a => !a.isExpired && a.triggeredAt > Date.now() - 5000) && (
+                          <span className="text-xs bg-green-500 text-white px-1.5 py-0.5 rounded font-bold">NEW</span>
+                        )}
+                        {group.alerts.every(a => a.isExpired) && (
+                          <span className="text-xs bg-gray-300 text-gray-600 px-1.5 py-0.5 rounded">已消失</span>
+                        )}
+                      </div>
                       <p className="text-sm opacity-75">{group.stockCode}</p>
                     </div>
                     <div className="flex items-center gap-2">
@@ -229,13 +266,17 @@ export default function HomePage() {
                     {group.alerts.map((alert) => (
                       <div
                         key={alert.id}
-                        className="flex items-start gap-2 text-sm p-2 bg-black/5 rounded-lg"
+                        className={cn(
+                          "flex items-start gap-2 text-sm p-2 rounded-lg",
+                          alert.isExpired ? "bg-gray-100 opacity-60" : "bg-black/5"
+                        )}
                       >
                         <span>
-                          {alert.alertLevel === 'CRITICAL' ? '🔴' :
+                          {alert.isExpired ? '⚪' :
+                            alert.alertLevel === 'CRITICAL' ? '🔴' :
                             alert.alertLevel === 'WARNING' ? '🟡' : '🟢'}
                         </span>
-                        <div className="flex-1">
+                        <div className={cn("flex-1", alert.isExpired && "line-through")}>
                           <p>{alert.alertMessage}</p>
                           <p className="text-xs opacity-75 mt-0.5">建议: {alert.suggestion}</p>
                         </div>
@@ -252,34 +293,6 @@ export default function HomePage() {
             ))}
           </div>
         )}
-      </main>
-
-      {/* 底部导航 */}
-      <nav className="fixed bottom-0 left-0 right-0 bg-white border-t border-gray-200">
-        <div className="max-w-4xl mx-auto flex">
-          <a
-            href="/"
-            className="flex-1 py-3 flex flex-col items-center gap-1 text-blue-600"
-          >
-            <AlertTriangle className="w-6 h-6" />
-            <span className="text-xs">预警</span>
-          </a>
-          <a
-            href="/watchlist"
-            className="flex-1 py-3 flex flex-col items-center gap-1 text-gray-400 hover:text-gray-600 transition"
-          >
-            <Plus className="w-6 h-6" />
-            <span className="text-xs">自选</span>
-          </a>
-          <a
-            href="/scanner"
-            className="flex-1 py-3 flex flex-col items-center gap-1 text-gray-400 hover:text-gray-600 transition"
-          >
-            <RefreshCw className="w-6 h-6" />
-            <span className="text-xs">筛选</span>
-          </a>
-        </div>
-      </nav>
     </div>
   );
 }

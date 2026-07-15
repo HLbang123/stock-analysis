@@ -43,25 +43,21 @@ function calculateChangePercent(current: number, prev: number): number {
 }
 
 /**
- * 辅助函数：计算上影线百分比
+ * 计算上影线百分比（相对于收盘价，与Android一致）
  */
 function calculateUpperShadowPercent(k: KLineData): number {
   const bodyTop = Math.max(k.open, k.close);
-  const bodyBottom = Math.min(k.open, k.close);
-  const range = k.high - k.low;
-  if (range === 0) return 0;
-  return ((k.high - bodyTop) / range) * 100;
+  if (k.close === 0) return 0;
+  return ((k.high - bodyTop) / k.close) * 100;
 }
 
 /**
- * 辅助函数：计算下影线百分比
+ * 计算下影线百分比（相对于收盘价，与Android一致）
  */
 function calculateLowerShadowPercent(k: KLineData): number {
-  const bodyTop = Math.max(k.open, k.close);
   const bodyBottom = Math.min(k.open, k.close);
-  const range = k.high - k.low;
-  if (range === 0) return 0;
-  return ((bodyBottom - k.low) / range) * 100;
+  if (k.close === 0) return 0;
+  return ((bodyBottom - k.low) / k.close) * 100;
 }
 
 // ==================== 规则检查器 ====================

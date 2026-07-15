@@ -75,6 +75,7 @@ export interface AlertRecord {
   triggeredAt: number;
   isRead: boolean;
   extraData?: string;
+  isExpired?: boolean;
 }
 
 // 规则检查结果

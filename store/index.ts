@@ -1,4 +1,5 @@
 import { create } from 'zustand';
+import { persist } from 'zustand/middleware';
 import { Stock, AlertRecord, AlertRule } from '@/types';
 
 interface StockState {
@@ -14,7 +15,6 @@ interface StockState {
   markAsRead: (id: string) => void;
   clearAlerts: (stockCode?: string) => void;
   clearAllAlerts: () => void;
-  unreadCount: number;
 
   // 规则配置
   rules: AlertRule[];
@@ -26,7 +26,9 @@ interface StockState {
   setIsCheckingAlerts: (checking: boolean) => void;
 }
 
-export const useStockStore = create<StockState>((set, get) => ({
+export const useStockStore = create<StockState>()(
+  persist(
+    (set, get) => ({
       // 自选股
       watchlist: [],
       addToWatchlist: (stock) => {
@@ -39,7 +41,7 @@ export const useStockStore = create<StockState>((set, get) => ({
         const { watchlist, alerts } = get();
         set({
           watchlist: watchlist.filter(s => s.code !== code),
-          alerts: alerts.filter(a => a.stockCode !== code)
+          alerts: alerts.filter(a => a.stockCode !== code),
         });
       },
       isInWatchlist: (code) => {
@@ -50,17 +52,18 @@ export const useStockStore = create<StockState>((set, get) => ({
       alerts: [],
       addAlerts: (newAlerts) => {
         const { alerts } = get();
-        // 去重
         const existingKeys = new Set(alerts.map(a => `${a.stockCode}-${a.ruleId}`));
-        const filtered = newAlerts.filter(a => !existingKeys.has(`${a.stockCode}-${a.ruleId}`));
+        const filtered = newAlerts.filter(
+          a => !existingKeys.has(`${a.stockCode}-${a.ruleId}`)
+        );
         if (filtered.length > 0) {
-          set({ alerts: [...filtered, ...alerts] });
+          set({ alerts: [...filtered, ...alerts].slice(0, 500) }); // keep max 500
         }
       },
       markAsRead: (id) => {
         const { alerts } = get();
         set({
-          alerts: alerts.map(a => a.id === id ? { ...a, isRead: true } : a)
+          alerts: alerts.map(a => (a.id === id ? { ...a, isRead: true } : a)),
         });
       },
       clearAlerts: (stockCode) => {
@@ -72,27 +75,37 @@ export const useStockStore = create<StockState>((set, get) => ({
         }
       },
       clearAllAlerts: () => set({ alerts: [] }),
-      get unreadCount() {
-        return get().alerts.filter(a => !a.isRead).length;
-      },
 
       // 规则配置
-      rules: [], // 初始化时从 ALERT_RULES 加载
+      rules: [],
       toggleRule: (ruleId) => {
         const { rules } = get();
         set({
-          rules: rules.map(r => r.id === ruleId ? { ...r, isEnabled: !r.isEnabled } : r)
+          rules: rules.map(r =>
+            r.id === ruleId ? { ...r, isEnabled: !r.isEnabled } : r
+          ),
         });
       },
       updateRuleThreshold: (ruleId, threshold) => {
         const { rules } = get();
         set({
-          rules: rules.map(r => r.id === ruleId ? { ...r, thresholdValue: threshold } : r)
+          rules: rules.map(r =>
+            r.id === ruleId ? { ...r, thresholdValue: threshold } : r
+          ),
         });
       },
 
       // 加载状态
       isCheckingAlerts: false,
-      setIsCheckingAlerts: (checking) => set({ isCheckingAlerts: checking })
-    })
-  );
+      setIsCheckingAlerts: (checking) => set({ isCheckingAlerts: checking }),
+    }),
+    {
+      name: 'stock-alert-store',
+      partialize: (state) => ({
+        watchlist: state.watchlist,
+        alerts: state.alerts,
+        rules: state.rules,
+      }),
+    }
+  )
+);

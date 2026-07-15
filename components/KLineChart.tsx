@@ -1,145 +1,225 @@
 'use client';
 
-import React, { useMemo } from 'react';
+import React, { useEffect, useRef, useCallback } from 'react';
+import {
+  createChart,
+  IChartApi,
+  ISeriesApi,
+  CandlestickSeries,
+  HistogramSeries,
+  LineSeries,
+  Time,
+  ColorType,
+} from 'lightweight-charts';
 import { KLineData } from '@/types';
-import { formatPrice, formatVolume, cn } from '@/lib/utils';
+import { useTheme } from '@/components/providers/theme-provider';
+
+interface AlertMarker {
+  barIndex: number;
+  number: number;
+  level: string;
+}
 
 interface KLineChartProps {
   data: KLineData[];
   height?: number;
   showVolume?: boolean;
+  alertMarkers?: AlertMarker[];
   onBarClick?: (index: number) => void;
 }
 
-export function KLineChart({ data, height = 300, showVolume = true, onBarClick }: KLineChartProps) {
-  const { chartData, volumeData, scales } = useMemo(() => {
-    if (data.length === 0) {
-      return { chartData: [], volumeData: [], scales: { minPrice: 0, maxPrice: 0, maxVolume: 0 } };
+export function KLineChart({
+  data,
+  height = 400,
+  showVolume = true,
+  alertMarkers = [],
+  onBarClick,
+}: KLineChartProps) {
+  const containerRef = useRef<HTMLDivElement>(null);
+  const chartRef = useRef<IChartApi | null>(null);
+  const { resolvedTheme } = useTheme();
+
+  const initChart = useCallback(() => {
+    if (!containerRef.current || data.length === 0) return;
+
+    if (chartRef.current) {
+      chartRef.current.remove();
+      chartRef.current = null;
     }
 
-    const prices = data.flatMap(d => [d.open, d.high, d.low, d.close]);
-    const minPrice = Math.min(...prices);
-    const maxPrice = Math.max(...prices);
-    const priceRange = maxPrice - minPrice || 1;
+    const isDark = resolvedTheme === 'dark';
 
-    const volumes = data.map(d => d.volume);
-    const maxVolume = Math.max(...volumes);
+    const chart = createChart(containerRef.current, {
+      height,
+      layout: {
+        background: { type: ColorType.Solid, color: isDark ? '#111827' : '#ffffff' },
+        textColor: isDark ? '#9ca3af' : '#6b7280',
+        attributionLogo: false,
+      },
+      grid: {
+        vertLines: { color: isDark ? '#1f2937' : '#f3f4f6' },
+        horzLines: { color: isDark ? '#1f2937' : '#f3f4f6' },
+      },
+      crosshair: {
+        mode: 1,
+        vertLine: { color: isDark ? '#374151' : '#d1d5db', style: 2, width: 1, labelVisible: true },
+        horzLine: { color: isDark ? '#374151' : '#d1d5db', style: 2, width: 1, labelVisible: true },
+      },
+      rightPriceScale: {
+        borderColor: isDark ? '#374151' : '#e5e7eb',
+        scaleMargins: showVolume ? { top: 0.05, bottom: 0.25 } : { top: 0.05, bottom: 0.05 },
+      },
+      timeScale: {
+        borderColor: isDark ? '#374151' : '#e5e7eb',
+        timeVisible: false,
+        rightOffset: 3,
+      },
+    });
 
-    const barWidth = Math.max(2, (800 / data.length) * 0.7);
-    const spacing = Math.max(2, (800 / data.length) * 0.3);
+    // K线 (A股配色: 红涨绿跌)
+    const candleSeries = chart.addSeries(CandlestickSeries, {
+      upColor: '#ef4444',
+      downColor: '#22c55e',
+      borderUpColor: '#ef4444',
+      borderDownColor: '#22c55e',
+      wickUpColor: '#ef4444',
+      wickDownColor: '#22c55e',
+    });
 
-    const chartData = data.map((d, i) => {
-      const x = i * (barWidth + spacing);
-      const yOpen = ((maxPrice - d.open) / priceRange) * (height * 0.8);
-      const yClose = ((maxPrice - d.close) / priceRange) * (height * 0.8);
-      const yHigh = ((maxPrice - d.high) / priceRange) * (height * 0.8);
-      const yLow = ((maxPrice - d.low) / priceRange) * (height * 0.8);
-
-      const isUp = d.close >= d.open;
-      const bodyTop = Math.min(yOpen, yClose);
-      const bodyHeight = Math.abs(yClose - yOpen) || 1;
-
+    const candleData = data.map(k => {
+      // 标准化日期格式 yyyy-mm-dd（腾讯API返回yyyyMMdd，新浪返回yyyy-mm-dd）
+      const raw = (k.date || '').replace(/-/g, '');
+      const time = raw.length === 8
+        ? `${raw.slice(0, 4)}-${raw.slice(4, 6)}-${raw.slice(6, 8)}`
+        : raw;
       return {
-        x,
-        yHigh,
-        yLow,
-        bodyTop,
-        bodyHeight,
-        barWidth,
-        isUp,
-        date: d.date,
-        index: i
+        time: time as Time,
+        open: k.open,
+        high: k.high,
+        low: k.low,
+        close: k.close,
       };
     });
 
-    const volumeHeight = height * 0.15;
-    const volumeData = data.map((d, i) => {
-      const x = i * (barWidth + spacing);
-      const y = height - volumeHeight;
-      const h = (d.volume / maxVolume) * volumeHeight;
-      const isUp = d.close >= d.open;
-      return { x, y, h, barWidth, isUp, volume: d.volume, index: i };
-    });
+    candleSeries.setData(candleData);
 
-    return { chartData, volumeData, scales: { minPrice, maxPrice, maxVolume } };
-  }, [data, height]);
+    // 成交量
+    if (showVolume) {
+      const volumeSeries = chart.addSeries(HistogramSeries, {
+        priceFormat: { type: 'volume' },
+        priceScaleId: 'volume',
+      });
+      volumeSeries.priceScale().applyOptions({
+        scaleMargins: { top: 0.75, bottom: 0.01 },
+      });
+
+      const volumeData = data.map(k => {
+        const raw = (k.date || '').replace(/-/g, '');
+        const time = raw.length === 8
+          ? `${raw.slice(0, 4)}-${raw.slice(4, 6)}-${raw.slice(6, 8)}`
+          : raw;
+        return {
+          time: time as Time,
+          value: k.volume,
+          color: k.close >= k.open ? 'rgba(239, 68, 68, 0.5)' : 'rgba(34, 197, 94, 0.5)',
+        };
+      });
+
+      volumeSeries.setData(volumeData);
+    }
+
+    // 预警标记 — v5 中用独立 LineSeries 绘制标记点
+    if (alertMarkers.length > 0) {
+      const markerPoints: { time: Time; value: number }[] = [];
+      const markerColors: string[] = [];
+
+      alertMarkers.forEach(m => {
+        const kLine = data[m.barIndex];
+        if (!kLine) return;
+        const raw = (kLine.date || '').replace(/-/g, '');
+        const time = raw.length === 8
+          ? `${raw.slice(0, 4)}-${raw.slice(4, 6)}-${raw.slice(6, 8)}`
+          : raw;
+        const color =
+          m.level === 'CRITICAL' ? '#ef4444' :
+          m.level === 'WARNING' ? '#f59e0b' : '#3b82f6';
+
+        // 每个标记用单独的线序（lineVisible=false，只显示点标记），用不同偏移避免重叠
+        for (let i = 0; i < markerPoints.length; i++) {
+          if (markerPoints[i].time === time && Math.abs(markerPoints[i].value - kLine.high * 1.02) < 0.01) {
+            markerPoints[i].value += (kLine.high - kLine.low) * 0.05; // 偏移避免重叠
+          }
+        }
+
+        markerPoints.push({
+          time: time as Time,
+          value: kLine.high * 1.02 + markerPoints.length * (kLine.high - kLine.low) * 0.03,
+        });
+        markerColors.push(color);
+      });
+
+      // 为每个标记创建一个带颜色的散点series
+      const uniqueColors = [...new Set(markerColors)];
+      uniqueColors.forEach(color => {
+        const colorPoints = markerPoints.filter((_, i) => markerColors[i] === color);
+        if (colorPoints.length === 0) return;
+        const markerSeries = chart.addSeries(LineSeries, {
+          lineVisible: false,
+          lastValueVisible: false,
+          priceLineVisible: false,
+          color: color,
+          pointMarkersVisible: true,
+        });
+        markerSeries.setData(colorPoints);
+      });
+    }
+
+    // 点击
+    if (onBarClick) {
+      chart.subscribeClick(param => {
+        if (param.time && candleData.length > 0) {
+          const timeStr = param.time as string;
+          const index = candleData.findIndex(c => c.time === timeStr);
+          if (index >= 0) onBarClick(index);
+        }
+      });
+    }
+
+    chart.timeScale().fitContent();
+    chartRef.current = chart;
+    return chart;
+  }, [data, showVolume, height, onBarClick, resolvedTheme, alertMarkers]);
+
+  useEffect(() => {
+    const chart = initChart();
+
+    const handleResize = () => {
+      if (containerRef.current && chartRef.current) {
+        chartRef.current.applyOptions({ width: containerRef.current.clientWidth });
+      }
+    };
+    window.addEventListener('resize', handleResize);
+
+    return () => {
+      window.removeEventListener('resize', handleResize);
+      if (chartRef.current) {
+        chartRef.current.remove();
+        chartRef.current = null;
+      }
+    };
+  }, [initChart]);
 
   if (data.length === 0) {
     return (
-      <div className="flex items-center justify-center h-full text-gray-400">
-        暂无数据
+      <div className="flex items-center justify-center text-gray-400" style={{ height }}>
+        <p>暂无K线数据</p>
       </div>
     );
   }
 
   return (
-    <div className="relative w-full" style={{ height }}>
-      <svg className="w-full h-full" viewBox={`0 0 800 ${height}`} preserveAspectRatio="none">
-        {/* 背景网格 */}
-        {[0, 25, 50, 75, 100].map(p => (
-          <line
-            key={p}
-            x1={0}
-            y1={(p / 100) * (height * 0.8)}
-            x2={800}
-            y2={(p / 100) * (height * 0.8)}
-            stroke="#e5e7eb"
-            strokeDasharray="4"
-            strokeWidth={0.5}
-          />
-        ))}
-
-        {/* K线 */}
-        {chartData.map((bar) => (
-          <g key={bar.index} onClick={() => onBarClick?.(bar.index)} className="cursor-pointer">
-            {/* 影线 */}
-            <line
-              x1={bar.x + bar.barWidth / 2}
-              y1={bar.yHigh}
-              x2={bar.x + bar.barWidth / 2}
-              y2={bar.yLow}
-              stroke={bar.isUp ? '#ef4444' : '#22c55e'}
-              strokeWidth={1}
-            />
-            {/* 实体 */}
-            <rect
-              x={bar.x}
-              y={bar.bodyTop}
-              width={bar.barWidth}
-              height={bar.bodyHeight}
-              fill={bar.isUp ? '#ef4444' : '#22c55e'}
-              opacity={0.9}
-            />
-          </g>
-        ))}
-
-        {/* 成交量 */}
-        {showVolume && volumeData.map((bar) => (
-          <rect
-            key={`vol-${bar.index}`}
-            x={bar.x}
-            y={bar.y + bar.h}
-            width={bar.barWidth}
-            height={bar.h}
-            fill={bar.isUp ? '#ef4444' : '#22c55e'}
-            opacity={0.4}
-            onClick={() => onBarClick?.(bar.index)}
-            className="cursor-pointer"
-          />
-        ))}
-
-        {/* 价格标签 */}
-        {scales.maxPrice > 0 && (
-          <text x="805" y="15" fontSize="10" fill="#9ca3af" textAnchor="start">
-            {formatPrice(scales.maxPrice)}
-          </text>
-        )}
-        {scales.minPrice > 0 && (
-          <text x="805" y={height * 0.8 - 5} fontSize="10" fill="#9ca3af" textAnchor="start">
-            {formatPrice(scales.minPrice)}
-          </text>
-        )}
-      </svg>
+    <div className="w-full overflow-hidden rounded-lg">
+      <div ref={containerRef} style={{ width: '100%', height: `${height}px` }} />
     </div>
   );
 }

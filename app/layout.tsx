@@ -1,5 +1,7 @@
 import type { Metadata, Viewport } from "next";
 import { Geist, Geist_Mono } from "next/font/google";
+import { Providers } from "./providers";
+import { Shell } from "@/components/layout/shell";
 import "./globals.css";
 
 const geistSans = Geist({
@@ -13,13 +15,13 @@ const geistMono = Geist_Mono({
 });
 
 export const metadata: Metadata = {
-  title: "A股形态预警系统",
-  description: "智能A股形态预警，17条专业规则实时监测",
+  title: "StockAlert - 股票预警",
+  description: "A股技术分析预警工具，心姐交易规则体系",
   manifest: "/manifest.json",
   icons: {
     icon: "/favicon.ico",
-    apple: "/icon-192.png"
-  }
+    apple: "/icon-192.png",
+  },
 };
 
 export const viewport: Viewport = {
@@ -39,6 +41,7 @@ export default function RootLayout({
     <html
       lang="zh-CN"
       className={`${geistSans.variable} ${geistMono.variable} h-full antialiased`}
+      suppressHydrationWarning
     >
       <head>
         <link rel="icon" href="/favicon.ico" />
@@ -46,7 +49,11 @@ export default function RootLayout({
         <meta name="apple-mobile-web-app-capable" content="yes" />
         <meta name="apple-mobile-web-app-status-bar-style" content="default" />
       </head>
-      <body className="min-h-full flex flex-col bg-gray-50">{children}</body>
+      <body className="min-h-full bg-gray-50 dark:bg-gray-950">
+        <Providers>
+          <Shell>{children}</Shell>
+        </Providers>
+      </body>
     </html>
   );
 }
