@@ -3,25 +3,58 @@
 const fs = require('fs');
 const path = require('path');
 
-async function fetchAll() {
-  let all = [];
-  for (let p = 1; p <= 12; p++) {
-    const url = `https://push2.eastmoney.com/api/qt/clist/get?pn=${p}&pz=500&np=1&fields=f12,f14&fid=f12&fs=m:0+t:6,m:0+t:80,m:1+t:2,m:1+t:23`;
+const HEADERS = {
+  'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36',
+  'Referer': 'https://finance.sina.com.cn/',
+};
+
+async function fetchBoard(node, maxPages) {
+  const all = new Map();
+  for (let p = 1; p <= maxPages; p++) {
+    const url = `https://vip.stock.finance.sina.com.cn/quotes_service/api/json_v2.php/Market_Center.getHQNodeData?page=${p}&num=100&sort=symbol&asc=1&node=${node}`;
+    let items = [];
     try {
-      const r = await fetch(url, { signal: AbortSignal.timeout(15000) });
-      const d = await r.json();
-      const items = (d.data?.diff || []).map(i => ({ c: i.f12, n: i.f14 }));
-      if (items.length === 0) break;
-      all = all.concat(items);
-      console.log(`Page ${p}: ${items.length} items (total: ${all.length})`);
+      const r = await fetch(url, { headers: HEADERS, signal: AbortSignal.timeout(15000) });
+      const text = await r.text();
+      items = text.startsWith('[') ? JSON.parse(text) : [];
+      for (const it of items) {
+        const code = String(it.symbol || '').replace(/^(sh|sz|bj)/i, '');
+        if (/^\d{6}$/.test(code)) all.set(code, it.name);
+      }
+      process.stdout.write(`p${p}:${items.length} `);
     } catch (e) {
-      console.log(`Page ${p} failed: ${e.message}`);
+      process.stdout.write(`p${p}:err `);
+      break;
     }
-    await new Promise(r => setTimeout(r, 1500));
+    if (items.length < 100) break;
+    await new Promise(r => setTimeout(r, 10000));
   }
-  const outPath = path.join(__dirname, '..', 'public', 'stocks.json');
-  fs.writeFileSync(outPath, JSON.stringify(all));
-  console.log(`Done: ${all.length} stocks saved to ${outPath}`);
+  return all;
 }
 
-fetchAll();
+async function main() {
+  const outPath = path.join(__dirname, '..', 'public', 'stocks.json');
+
+  console.log('沪市...');
+  const sh = await fetchBoard('sh_a', 25);
+  console.log(`= ${sh.size}`);
+
+  // 先保存沪市，防止中断丢失
+  const shArr = Array.from(sh.entries()).map(([c, n]) => ({ c, n }));
+  fs.writeFileSync(outPath, JSON.stringify(shArr));
+  console.log(`已保存 ${shArr.length} 只 (仅沪市)，继续抓深市...`);
+
+  console.log('等60秒...');
+  await new Promise(r => setTimeout(r, 60000));
+
+  console.log('深市...');
+  const sz = await fetchBoard('sz_a', 30);
+  console.log(`= ${sz.size}`);
+
+  const merged = new Map([...sh, ...sz]);
+  const result = Array.from(merged.entries()).map(([c, n]) => ({ c, n }));
+  fs.writeFileSync(outPath, JSON.stringify(result));
+  console.log(`\n总计: ${result.length} 只股票`);
+}
+
+main();
