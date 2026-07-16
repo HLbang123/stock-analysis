@@ -47,7 +47,13 @@ export async function getMinuteData(code: string): Promise<{ time: string; price
     if (!res.ok) return [];
     const data = await res.json();
     if (data.error) return [];
-    return data;
+    // 去重：腾讯API可能返回重复时间点
+    const seen = new Set();
+    return data.filter((p: { time: string }) => {
+      if (seen.has(p.time)) return false;
+      seen.add(p.time);
+      return true;
+    });
   } catch (error) {
     console.error('获取分时数据失败:', error);
     return [];

@@ -86,9 +86,11 @@ export default function WatchlistPage() {
         </div>
 
         {/* 搜索结果 */}
-        {searchResults.length > 0 && (
+        {(searchResults.length > 0 || isSearching) && (
           <div className="mt-3 border-t border-gray-100 dark:border-gray-800 pt-3 space-y-1">
-            {searchResults.map((quote) => (
+            {isSearching && searchResults.length === 0 ? (
+              <div className="p-3 text-center text-sm text-gray-400">正在搜索...</div>
+            ) : searchResults.map((quote) => (
               <div key={quote.code} className="flex items-center justify-between p-2 hover:bg-gray-50 dark:hover:bg-gray-800 rounded-lg transition">
                 <div>
                   <span className="font-medium text-sm">{quote.name}</span>

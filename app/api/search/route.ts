@@ -21,13 +21,17 @@ export async function GET(request: NextRequest) {
     const data = await res.json();
     const items = data?.QuotationCodeTable?.Data || [];
 
-    // 过滤：只要沪深A股（排除北交所8开头、板块BK、指数ZS）
+    // 过滤：只要沪深A股
     const results = items
       .filter((item: any) => {
         const code = item.Code || '';
-        // 只保留沪深6位数字代码（0/3开头深交所，6开头上交所，排除8开头北交所）
         if (!/^[036]\d{5}$/.test(code)) return false;
-        if (item.Classify === 'BK' || item.Classify === 'ZS') return false;
+        if (['BK', 'ZS', 'ZQ', 'FJ', 'JJ'].includes(item.Classify || '')) return false;
+        if ((item.Name || '').includes('债')) return false;
+        // 排除"债券型"等类型
+        if ((item.TypeName || '').includes('债券')) return false;
+        if ((item.SecurityTypeName || '').includes('债')) return false;
+        if (String(item.Type || '').length > 0 && !['1', '2', '6'].includes(String(item.Type))) return false;
         return true;
       })
       .map((item: any) => {
