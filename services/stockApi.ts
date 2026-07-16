@@ -55,22 +55,23 @@ export async function getMinuteData(code: string): Promise<{ time: string; price
 }
 
 /**
- * 股票搜索（通过服务端代理）
+ * 股票搜索（通过服务端代理，不预取行情避免香港→国内API延迟）
  */
 export async function searchStocks(keyword: string): Promise<RealtimeQuote[]> {
   try {
-    // 先通过东方财富搜索股票代码
     const res = await fetch(`/api/search?keyword=${encodeURIComponent(keyword)}`);
     if (!res.ok) return [];
     const results = await res.json();
     if (!Array.isArray(results) || results.length === 0) return [];
 
-    // 对搜索结果获取实时行情
-    const quotes = await Promise.all(
-      results.slice(0, 10).map((r: { code: string }) => getRealtimeQuote(r.code))
-    );
-
-    return quotes.filter((q): q is RealtimeQuote => q !== null);
+    // 直接返回搜索结果，不逐个获取行情（香港服务器连国内API太慢）
+    return results.slice(0, 10).map((r: { code: string; name: string }) => ({
+      code: r.code,
+      name: r.name,
+      price: 0, open: 0, high: 0, low: 0, preClose: 0,
+      volume: 0, amount: 0, change: 0, changePercent: 0,
+      updateTime: '',
+    }));
   } catch (error) {
     console.error('股票搜索失败:', error);
     return [];

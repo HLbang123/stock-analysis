@@ -1,6 +1,6 @@
 'use client';
 
-import React, { useEffect, useState } from 'react';
+import React, { useEffect, useState, useRef } from 'react';
 import { useRouter } from 'next/navigation';
 import { useStockStore } from '@/store';
 import { getRealtimeQuote, parseStockCode, searchStocks } from '@/services/stockApi';
@@ -15,6 +15,7 @@ export default function WatchlistPage() {
   const [searchResults, setSearchResults] = useState<RealtimeQuote[]>([]);
   const [isSearching, setIsSearching] = useState(false);
   const [stockQuotes, setStockQuotes] = useState<Map<string, RealtimeQuote>>(new Map());
+  const debounceRef = useRef<NodeJS.Timeout | null>(null);
 
   // 刷新自选股行情
   const refreshQuotes = async () => {
@@ -32,19 +33,26 @@ export default function WatchlistPage() {
     refreshQuotes();
   }, [watchlist]);
 
-  // 搜索股票
-  const handleSearch = async () => {
-    if (!searchQuery.trim()) return;
+  // 输入即搜（防抖300ms）
+  useEffect(() => {
+    if (debounceRef.current) clearTimeout(debounceRef.current);
+
+    if (searchQuery.trim().length < 2) {
+      setSearchResults([]);
+      return;
+    }
+
     setIsSearching(true);
-    try {
+    debounceRef.current = setTimeout(async () => {
       const results = await searchStocks(searchQuery);
       setSearchResults(results);
-    } catch (error) {
-      console.error('搜索失败:', error);
-    } finally {
       setIsSearching(false);
-    }
-  };
+    }, 300);
+
+    return () => {
+      if (debounceRef.current) clearTimeout(debounceRef.current);
+    };
+  }, [searchQuery]);
 
   // 添加到自选
   const handleAddStock = (quote: RealtimeQuote) => {
@@ -63,54 +71,37 @@ export default function WatchlistPage() {
     <div>
       {/* 搜索框 */}
       <div className="bg-white dark:bg-gray-900 rounded-xl p-4 shadow-sm mb-6">
-        <div className="flex gap-2">
-          <div className="flex-1 relative">
-            <Search className="absolute left-3 top-1/2 -translate-y-1/2 text-gray-400 w-5 h-5" />
-            <input
-              type="text"
-              value={searchQuery}
-              onChange={(e) => setSearchQuery(e.target.value)}
-              onKeyDown={(e) => e.key === 'Enter' && handleSearch()}
-              placeholder="输入股票代码搜索 (如: 600519, 000858)"
-              className="w-full pl-10 pr-4 py-3 border border-gray-200 dark:border-gray-700 rounded-lg bg-white dark:bg-gray-800 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500"
-            />
-          </div>
-          <button
-            onClick={handleSearch}
-            disabled={isSearching}
-            className="px-6 py-3 bg-blue-600 text-white rounded-lg hover:bg-blue-700 transition disabled:opacity-50"
-          >
-            {isSearching ? '搜索中...' : '搜索'}
-          </button>
+        <div className="relative">
+          <Search className="absolute left-3 top-1/2 -translate-y-1/2 text-gray-400 w-5 h-5" />
+          <input
+            type="text"
+            value={searchQuery}
+            onChange={(e) => setSearchQuery(e.target.value)}
+            placeholder="输入股票代码搜索 (如: 600519, 000858)"
+            className="w-full pl-10 pr-4 py-3 border border-gray-200 dark:border-gray-700 rounded-lg bg-white dark:bg-gray-800 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500"
+          />
+          {isSearching && (
+            <span className="absolute right-3 top-1/2 -translate-y-1/2 text-gray-400 text-sm">搜索中...</span>
+          )}
         </div>
 
         {/* 搜索结果 */}
         {searchResults.length > 0 && (
-          <div className="mt-3 border-t border-gray-100 dark:border-gray-800 pt-3 space-y-2">
+          <div className="mt-3 border-t border-gray-100 dark:border-gray-800 pt-3 space-y-1">
             {searchResults.map((quote) => (
-              <div key={quote.code} className="flex items-center justify-between p-3 bg-gray-50 dark:bg-gray-800 rounded-lg">
+              <div key={quote.code} className="flex items-center justify-between p-2 hover:bg-gray-50 dark:hover:bg-gray-800 rounded-lg transition">
                 <div>
-                  <p className="font-medium">{quote.name}</p>
-                  <p className="text-sm text-gray-500">{quote.code}</p>
+                  <span className="font-medium text-sm">{quote.name}</span>
+                  <span className="text-xs text-gray-500 ml-2">{quote.code}</span>
                 </div>
-                <div className="flex items-center gap-3">
-                  <div className="text-right">
-                    <p className={cn("font-medium", quote.changePercent >= 0 ? "text-red-500" : "text-green-500")}>
-                      {formatPrice(quote.price)}
-                    </p>
-                    <p className={cn("text-sm", quote.changePercent >= 0 ? "text-red-500" : "text-green-500")}>
-                      {formatChange(quote.changePercent)}
-                    </p>
-                  </div>
-                  {!isInWatchlist(quote.code) && (
-                    <button
-                      onClick={() => handleAddStock(quote)}
-                      className="p-2 bg-blue-100 text-blue-600 rounded-lg hover:bg-blue-200 transition"
-                    >
-                      <Plus className="w-4 h-4" />
-                    </button>
-                  )}
-                </div>
+                {!isInWatchlist(quote.code) && (
+                  <button
+                    onClick={() => handleAddStock(quote)}
+                    className="p-1.5 bg-blue-100 text-blue-600 rounded-lg hover:bg-blue-200 transition"
+                  >
+                    <Plus className="w-4 h-4" />
+                  </button>
+                )}
               </div>
             ))}
           </div>
