@@ -1,8 +1,8 @@
 import { NextRequest, NextResponse } from 'next/server';
 
 /**
- * AI分析代理 — 避免浏览器暴露API Key
- * 转发到 OpenAI 兼容的 LLM API
+ * AI分析代理 — 流式SSE转发
+ * 将 LLM 的 stream 响应以 SSE 格式逐块推送给客户端
  */
 export async function POST(request: NextRequest) {
   try {
@@ -30,12 +30,12 @@ export async function POST(request: NextRequest) {
       headers['Authorization'] = `Bearer ${apiKey}`;
     }
 
-    console.log(`[AI Proxy] Calling ${url} with model ${model}`);
+    console.log(`[AI Proxy] Streaming ${url} with model ${model}`);
 
     const controller = new AbortController();
     const timeout = setTimeout(() => controller.abort(), 120000);
 
-    const response = await fetch(url, {
+    const llmResponse = await fetch(url, {
       method: 'POST',
       headers,
       body: JSON.stringify({
@@ -43,23 +43,78 @@ export async function POST(request: NextRequest) {
         messages,
         temperature: 0.3,
         max_tokens: 8192,
+        stream: true,
       }),
       signal: controller.signal,
     });
 
     clearTimeout(timeout);
 
-    if (!response.ok) {
-      const errorText = await response.text().catch(() => '');
-      console.error(`[AI Proxy] Error ${response.status}: ${errorText.slice(0, 200)}`);
+    if (!llmResponse.ok) {
+      const errorText = await llmResponse.text().catch(() => '');
+      console.error(`[AI Proxy] Error ${llmResponse.status}: ${errorText.slice(0, 200)}`);
       return NextResponse.json(
-        { error: `API请求失败 (${response.status})` },
-        { status: response.status }
+        { error: `API请求失败 (${llmResponse.status})` },
+        { status: llmResponse.status }
       );
     }
 
-    const data = await response.json();
-    return NextResponse.json(data);
+    // 创建 SSE 流
+    const encoder = new TextEncoder();
+    const stream = new ReadableStream({
+      async start(controller) {
+        const reader = llmResponse.body!.getReader();
+        const decoder = new TextDecoder();
+        let buffer = '';
+
+        try {
+          while (true) {
+            const { done, value } = await reader.read();
+            if (done) break;
+
+            buffer += decoder.decode(value, { stream: true });
+            const lines = buffer.split('\n');
+            buffer = lines.pop() || '';
+
+            for (const line of lines) {
+              const trimmed = line.trim();
+              if (!trimmed || !trimmed.startsWith('data:')) continue;
+
+              const data = trimmed.slice(5).trim();
+              if (data === '[DONE]') {
+                controller.enqueue(encoder.encode('data: [DONE]\n\n'));
+                continue;
+              }
+
+              try {
+                const parsed = JSON.parse(data);
+                const delta = parsed.choices?.[0]?.delta?.content;
+                if (delta) {
+                  controller.enqueue(encoder.encode(`data: ${JSON.stringify(delta)}\n\n`));
+                }
+              } catch {
+                // 跳过无法解析的行
+              }
+            }
+          }
+        } catch (e: any) {
+          console.error('[AI Proxy] Stream read error:', e.message);
+          controller.enqueue(encoder.encode(`data: ${JSON.stringify('\n\n[流中断]')}\n\n`));
+        } finally {
+          controller.enqueue(encoder.encode('data: [DONE]\n\n'));
+          controller.close();
+        }
+      },
+    });
+
+    return new Response(stream, {
+      headers: {
+        'Content-Type': 'text/event-stream',
+        'Cache-Control': 'no-cache',
+        'Connection': 'keep-alive',
+        'X-Accel-Buffering': 'no',
+      },
+    });
   } catch (error: any) {
     console.error('[AI Proxy] Exception:', error.message);
     if (error.name === 'AbortError') {

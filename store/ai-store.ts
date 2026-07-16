@@ -24,20 +24,11 @@ export interface AiAnalysisRecord {
   createdAt: number;
 }
 
-const DEFAULT_PROFILE: AiProfile = {
-  id: 'default-pollinations',
-  name: 'Pollinations 免费',
-  apiKey: 'pollinations-not-needed',
-  baseUrl: 'https://text.pollinations.ai/openai',
-  model: 'openai-fast',
-};
-
 interface AiStoreState {
   profiles: AiProfile[];
   currentProfileId: string;
   history: AiAnalysisRecord[];
 
-  ensureDefaults: () => void;
   addProfile: (p: AiProfile) => void;
   updateProfile: (p: AiProfile) => void;
   deleteProfile: (id: string) => void;
@@ -45,24 +36,23 @@ interface AiStoreState {
   getCurrentProfile: () => AiProfile | undefined;
   addHistory: (record: AiAnalysisRecord) => void;
   deleteHistory: (id: string) => void;
+  clearHistory: () => void;
 }
 
 export const useAiStore = create<AiStoreState>()(
   persist(
     (set, get) => ({
-      profiles: [DEFAULT_PROFILE],
-      currentProfileId: DEFAULT_PROFILE.id,
+      profiles: [],
+      currentProfileId: '',
       history: [],
 
-      ensureDefaults: () => {
-        const { profiles } = get();
-        if (profiles.length === 0) {
-          set({ profiles: [DEFAULT_PROFILE], currentProfileId: DEFAULT_PROFILE.id });
-        }
-      },
-
       addProfile: (p) => {
-        set({ profiles: [...get().profiles, p] });
+        const { profiles } = get();
+        const isFirst = profiles.length === 0;
+        set({
+          profiles: [...profiles, p],
+          currentProfileId: isFirst ? p.id : get().currentProfileId,
+        });
       },
 
       updateProfile: (p) => {
@@ -72,11 +62,11 @@ export const useAiStore = create<AiStoreState>()(
       },
 
       deleteProfile: (id) => {
-        if (id === DEFAULT_PROFILE.id) return;
         const { profiles, currentProfileId } = get();
+        const newProfiles = profiles.filter(p => p.id !== id);
         set({
-          profiles: profiles.filter(p => p.id !== id),
-          currentProfileId: currentProfileId === id ? DEFAULT_PROFILE.id : currentProfileId,
+          profiles: newProfiles,
+          currentProfileId: currentProfileId === id ? (newProfiles[0]?.id || '') : currentProfileId,
         });
       },
 
@@ -95,6 +85,10 @@ export const useAiStore = create<AiStoreState>()(
 
       deleteHistory: (id) => {
         set({ history: get().history.filter(h => h.id !== id) });
+      },
+
+      clearHistory: () => {
+        set({ history: [] });
       },
     }),
     {

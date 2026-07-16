@@ -22,7 +22,7 @@ export function SidebarNav() {
       <div className="flex h-16 items-center border-b border-gray-200 px-6 dark:border-gray-800">
         <Link href={ROUTES.home} className="flex items-center">
           <span className="text-lg font-bold text-gray-900 dark:text-white">
-            股票预警
+            预警小工具
           </span>
         </Link>
       </div>

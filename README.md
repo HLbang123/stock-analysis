@@ -26,7 +26,7 @@
 - **状态管理**: Zustand
 - **图标**: Lucide React
 - **图表**: 自研SVG K线组件
-- **部署**: Vercel (免费版)
+- **部署**: 硅云
 
 ## 开发
 
@@ -42,36 +42,6 @@ npm run build
 
 # 启动生产服务器
 npm start
-```
-
-## 部署到Vercel
-
-### 方式一: 通过Vercel CLI
-
-```bash
-# 安装Vercel CLI
-npm install -g vercel
-
-# 登录
-vercel login
-
-# 部署
-vercel
-```
-
-### 方式二: 通过GitHub
-
-1. 将代码推送到GitHub仓库
-2. 访问 [vercel.com](https://vercel.com)
-3. 点击 "New Project"
-4. 选择GitHub仓库并导入
-5. 配置项目设置（默认即可）
-6. 点击 "Deploy"
-
-### 方式三: 手动部署
-
-```bash
-vercel --prod
 ```
 
 ## 项目结构
@@ -95,7 +65,6 @@ stock-analysis/
 │   ├── scanner/       # 筛选页
 │   └── layout.tsx     # 根布局
 ├── public/            # 静态资源
-├── vercel.json        # Vercel配置
 └── package.json
 ```
 
@@ -104,17 +73,11 @@ stock-analysis/
 ### CORS问题
 - 股票数据API来自新浪财经、腾讯财经
 - 直接从浏览器访问可能遇到CORS限制
-- 解决方案：部署后使用Vercel代理或添加CORS头
+- 解决方案：通过服务端代理或添加CORS头
 
 ### 数据源限制
 - 数据来源于公开API，可能不稳定
 - 建议添加备用数据源或错误处理
-
-### Vercel免费版限制
-- 构建时间: 60秒
-- 函数执行: 10秒（本应用主要为客户端执行，不受限制）
-- 带宽: 100GB/月
-- 部署次数: 无限
 
 ## License
 
