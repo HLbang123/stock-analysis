@@ -1,4 +1,5 @@
 import { NextRequest, NextResponse } from 'next/server';
+import { formatAiError, formatNetworkError } from '@/lib/ai-error';
 
 /**
  * 代理测试AI连接
@@ -45,9 +46,10 @@ export async function POST(request: NextRequest) {
 
     if (!response.ok) {
       const text = await response.text().catch(() => '');
+      console.error(`[AI Test] ${response.status}: ${text.slice(0, 300)}`);
       return NextResponse.json({
         success: false,
-        message: `HTTP ${response.status}: ${text.slice(0, 100)}`,
+        message: formatAiError(response.status, text),
         latencyMs: latency,
       });
     }
@@ -58,9 +60,10 @@ export async function POST(request: NextRequest) {
       latencyMs: latency,
     });
   } catch (error: any) {
+    console.error('[AI Test] Network error:', error.message);
     return NextResponse.json({
       success: false,
-      message: `连接失败: ${error.message}`,
+      message: formatNetworkError(error),
       latencyMs: 0,
     });
   }

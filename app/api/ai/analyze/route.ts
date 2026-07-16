@@ -1,4 +1,5 @@
 import { NextRequest, NextResponse } from 'next/server';
+import { formatAiError, formatNetworkError } from '@/lib/ai-error';
 
 /**
  * AI分析代理 — 流式SSE转发
@@ -52,9 +53,9 @@ export async function POST(request: NextRequest) {
 
     if (!llmResponse.ok) {
       const errorText = await llmResponse.text().catch(() => '');
-      console.error(`[AI Proxy] Error ${llmResponse.status}: ${errorText.slice(0, 200)}`);
+      console.error(`[AI Proxy] Error ${llmResponse.status}: ${errorText.slice(0, 300)}`);
       return NextResponse.json(
-        { error: `API请求失败 (${llmResponse.status})` },
+        { error: formatAiError(llmResponse.status, errorText) },
         { status: llmResponse.status }
       );
     }
@@ -119,12 +120,12 @@ export async function POST(request: NextRequest) {
     console.error('[AI Proxy] Exception:', error.message);
     if (error.name === 'AbortError') {
       return NextResponse.json(
-        { error: '请求超时（120秒），AI模型响应过慢' },
+        { error: '请求超时（120秒），AI 模型响应过慢，请稍后重试' },
         { status: 504 }
       );
     }
     return NextResponse.json(
-      { error: `代理请求失败: ${error.message}` },
+      { error: formatNetworkError(error) },
       { status: 500 }
     );
   }

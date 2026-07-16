@@ -1,4 +1,5 @@
 import { NextRequest, NextResponse } from 'next/server';
+import { formatAiError, formatNetworkError } from '@/lib/ai-error';
 
 /**
  * 深度分析代理 — 三阶段 SSE 流式编排
@@ -72,7 +73,8 @@ export async function POST(request: NextRequest) {
 
             if (!llmResponse.ok) {
               const errorText = await llmResponse.text().catch(() => '');
-              throw new Error(`HTTP ${llmResponse.status}: ${errorText.slice(0, 100)}`);
+              console.error(`[Deep AI Proxy] ${stageKey} HTTP ${llmResponse.status}: ${errorText.slice(0, 300)}`);
+              throw new Error(formatAiError(llmResponse.status, errorText));
             }
 
             const reader = llmResponse.body!.getReader();
@@ -206,7 +208,7 @@ export async function POST(request: NextRequest) {
           console.error('[Deep AI Proxy] Fatal error:', e.message);
           controller.enqueue(
             encoder.encode(
-              `data: ${JSON.stringify({ error: `分析失败: ${e.message}` })}\n\n`
+              `data: ${JSON.stringify({ error: e.message || '分析失败' })}\n\n`
             )
           );
         } finally {
@@ -226,8 +228,14 @@ export async function POST(request: NextRequest) {
     });
   } catch (error: any) {
     console.error('[Deep AI Proxy] Exception:', error.message);
+    if (error.name === 'AbortError') {
+      return NextResponse.json(
+        { error: '请求超时，AI 模型响应过慢' },
+        { status: 504 }
+      );
+    }
     return NextResponse.json(
-      { error: `代理请求失败: ${error.message}` },
+      { error: formatNetworkError(error) },
       { status: 500 }
     );
   }

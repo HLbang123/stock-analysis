@@ -1,4 +1,5 @@
 import { NextRequest, NextResponse } from 'next/server';
+import { formatAiError, formatNetworkError } from '@/lib/ai-error';
 
 /**
  * 代理获取模型列表
@@ -9,7 +10,7 @@ export async function POST(request: NextRequest) {
     const { baseUrl, apiKey } = body;
 
     if (!baseUrl) {
-      return NextResponse.json({ error: '缺少 baseUrl' }, { status: 400 });
+      return NextResponse.json({ error: '缺少 Base URL' }, { status: 400 });
     }
 
     const url = `${baseUrl.replace(/\/$/, '')}/models`;
@@ -24,8 +25,10 @@ export async function POST(request: NextRequest) {
     const response = await fetch(url, { headers });
 
     if (!response.ok) {
+      const text = await response.text().catch(() => '');
+      console.error(`[AI Models] ${response.status}: ${text.slice(0, 300)}`);
       return NextResponse.json(
-        { error: `获取模型列表失败 (${response.status})` },
+        { error: formatAiError(response.status, text) },
         { status: response.status }
       );
     }
@@ -38,8 +41,9 @@ export async function POST(request: NextRequest) {
 
     return NextResponse.json({ models });
   } catch (error: any) {
+    console.error('[AI Models] Network error:', error.message);
     return NextResponse.json(
-      { error: `请求失败: ${error.message}` },
+      { error: formatNetworkError(error) },
       { status: 500 }
     );
   }
