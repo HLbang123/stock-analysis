@@ -4,14 +4,13 @@ import Link from "next/link";
 import { usePathname } from "next/navigation";
 import { cn } from "@/lib/cn";
 import { ROUTES } from "@/lib/constants";
-import { AlertTriangle, Star, Search, Brain, ScanLine } from "lucide-react";
+import { AlertTriangle, Star, Search, Brain } from "lucide-react";
 
 const navItems = [
   { href: ROUTES.home, label: "预警", icon: AlertTriangle },
   { href: ROUTES.watchlist, label: "自选", icon: Star },
   { href: ROUTES.ai, label: "AI分析", icon: Brain },
   { href: ROUTES.scanner, label: "全市场扫描", icon: Search },
-  { href: ROUTES.ocr, label: "持仓识别", icon: ScanLine },
 ];
 
 export function SidebarNav() {

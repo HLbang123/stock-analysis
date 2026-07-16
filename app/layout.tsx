@@ -15,8 +15,8 @@ const geistMono = Geist_Mono({
 });
 
 export const metadata: Metadata = {
-  title: "StockAlert - 股票预警",
-  description: "A股技术分析预警工具，心姐交易规则体系",
+  title: "预警小工具",
+  description: "大A技术形态预警与AI深度分析",
   manifest: "/manifest.json",
   icons: {
     icon: "/favicon.ico",
