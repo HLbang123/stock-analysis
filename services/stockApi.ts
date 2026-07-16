@@ -61,16 +61,47 @@ export async function getMinuteData(code: string): Promise<{ time: string; price
 }
 
 /**
- * 股票搜索（通过服务端代理，不预取行情避免香港→国内API延迟）
+ * 股票搜索 — 本地优先，无结果再调API
  */
+let cachedStocks: { c: string; n: string }[] | null = null;
+
 export async function searchStocks(keyword: string): Promise<RealtimeQuote[]> {
+  const kw = keyword.trim().toLowerCase();
+
+  // 本地搜索
+  if (!cachedStocks) {
+    try {
+      const res = await fetch('/stocks.json');
+      if (res.ok) cachedStocks = await res.json();
+    } catch {}
+  }
+
+  if (cachedStocks) {
+    const localResults = cachedStocks
+      .filter(s => s.c.includes(kw) || s.n.toLowerCase().includes(kw))
+      .slice(0, 15);
+    if (localResults.length > 0) {
+      return localResults.map(s => {
+        let market = 'sh';
+        if (/^(0|3)/.test(s.c)) market = 'sz';
+        return {
+          code: `${market}${s.c}`,
+          name: s.n,
+          price: 0, open: 0, high: 0, low: 0, preClose: 0,
+          volume: 0, amount: 0, change: 0, changePercent: 0,
+          updateTime: '',
+        };
+      });
+    }
+  }
+
+  // API 兜底
   try {
     const res = await fetch(`/api/search?keyword=${encodeURIComponent(keyword)}`);
     if (!res.ok) return [];
     const results = await res.json();
     if (!Array.isArray(results) || results.length === 0) return [];
 
-    // 直接返回搜索结果，不逐个获取行情（香港服务器连国内API太慢）
     return results.slice(0, 10).map((r: { code: string; name: string }) => ({
       code: r.code,
       name: r.name,
