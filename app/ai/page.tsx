@@ -87,6 +87,7 @@ export default function AiPage() {
   const [chatInput, setChatInput] = useState('');
   const [isChatStreaming, setIsChatStreaming] = useState(false);
   const [attachStockContext, setAttachStockContext] = useState(true);
+  const [attachAnalysisResult, setAttachAnalysisResult] = useState(true);
   const chatAbortRef = useRef<AbortController | null>(null);
   const chatEndRef = useRef<HTMLDivElement>(null);
 
@@ -763,20 +764,21 @@ export default function AiPage() {
           stockContext = `当前股票：${stock?.name || quote.name} (${selectedCode})\n实时行情：${JSON.stringify({ price: quote.price, changePercent: quote.changePercent.toFixed(2) + '%', high: quote.high, low: quote.low, open: quote.open, volume: quote.volume })}\n近20日K线：\n${klineSummary}`;
 
           // 如果有最新分析结果，附上
-          if (result) {
-            stockContext += `\n\n最新快速分析结论：风险${result.riskLevel}，支撑${result.supportPrice}，压力${result.resistancePrice}\n${result.analysis}`;
-          }
-          if (deepResult?.structured?.action) {
-            const ds = deepResult.structured;
-            stockContext += `\n\n最新深度分析结论：${ds.action} | 风险${ds.riskLevel} | 信心${ds.confidence}% | 仓位${ds.position} | 目标${ds.targetLow}-${ds.targetHigh} | 止损${ds.stopLoss}`;
-            if (ds.keyPoints && ds.keyPoints.length > 0) {
-              stockContext += `\n关键要点：${ds.keyPoints.join('；')}`;
+          if (attachAnalysisResult) {
+            if (result) {
+              stockContext += `\n\n最新快速分析结论：风险${result.riskLevel}，支撑${result.supportPrice}，压力${result.resistancePrice}\n${result.analysis}`;
             }
-            if (ds.reasoning) {
-              stockContext += `\n决策理由：${ds.reasoning.slice(0, 300)}`;
+            if (deepResult?.structured?.action) {
+              const ds = deepResult.structured;
+              stockContext += `\n\n最新深度分析结论：${ds.action} | 风险${ds.riskLevel} | 信心${ds.confidence}% | 仓位${ds.position} | 目标${ds.targetLow}-${ds.targetHigh} | 止损${ds.stopLoss}`;
+              if (ds.keyPoints && ds.keyPoints.length > 0) {
+                stockContext += `\n关键要点：${ds.keyPoints.join('；')}`;
+              }
+              if (ds.reasoning) {
+                stockContext += `\n决策理由：${ds.reasoning.slice(0, 300)}`;
+              }
             }
           }
-        }
       }
 
       // 构建 messages（最近10轮）
@@ -1041,18 +1043,6 @@ export default function AiPage() {
               {result?.analysis || ''}
               {isAnalyzing && <span className="inline-block w-0.5 h-4 bg-purple-500 ml-0.5 animate-pulse align-middle" />}
             </p>
-            {result?.analysis && currentProfile && (
-              <button
-                onClick={() => {
-                  setChatInput('请针对以上分析结果，帮我进一步解读这只股票的风险点和机会');
-                  document.querySelector<HTMLInputElement>('#chat-input')?.focus();
-                }}
-                className="mt-2 text-xs text-blue-600 hover:text-blue-700 flex items-center gap-1"
-              >
-                <Send className="w-3 h-3" />
-                追问 AI
-              </button>
-            )}
           </div>
 
           {/* 操作建议 */}
@@ -1376,6 +1366,18 @@ export default function AiPage() {
                   {selectedCode ? `附上 ${watchlist.find(s => s.code === selectedCode)?.name || selectedCode} 数据` : '附上股票数据'}
                 </span>
               </label>
+              {/* 附带分析结论开关 */}
+              {(result || deepResult?.structured?.action) && (
+                <label className="flex items-center gap-1.5 cursor-pointer select-none">
+                  <input
+                    type="checkbox"
+                    checked={attachAnalysisResult}
+                    onChange={(e) => setAttachAnalysisResult(e.target.checked)}
+                    className="w-3.5 h-3.5 rounded accent-blue-600"
+                  />
+                  <span className="text-xs text-gray-500">附带分析结论</span>
+                </label>
+              )}
               {chatMessages.length > 0 && (
                 <button
                   onClick={clearChat}
