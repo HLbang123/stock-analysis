@@ -4,6 +4,7 @@ import React, { useEffect, useState, useRef } from 'react';
 import { useRouter } from 'next/navigation';
 import { useStockStore } from '@/store';
 import { getRealtimeQuote, parseStockCode, searchStocks } from '@/services/stockApi';
+import { isETF } from '@/lib/identify';
 import { RealtimeQuote } from '@/types';
 import { formatPrice, formatChange, formatVolume, cn } from '@/lib/utils';
 import { Plus, Search, Trash2, TrendingUp, ScanLine, Upload, Camera, X, Check, Loader2 } from 'lucide-react';
@@ -28,19 +29,24 @@ export default function WatchlistPage() {
   const [ocrStatus, setOcrStatus] = useState<string | null>(null);
   const [ocrResults, setOcrResults] = useState<{ code: string; name: string; added: boolean }[]>([]);
 
-  // A股代码范围验证
+  // A股代码范围验证（含ETF）
   const isValidAStock = (code: number) => {
-    const ranges = [
+    // 个股范围
+    const stockRanges = [
       { min: 600000, max: 605999, market: 'sh' },
       { min: 688000, max: 689999, market: 'sh' },
       { min: 0, max: 3999, market: 'sz' },
       { min: 300000, max: 301999, market: 'sz' },
     ];
-    for (const r of ranges) {
+    for (const r of stockRanges) {
       if (code >= r.min && code <= r.max) {
         return { market: r.market, pureCode: String(code).padStart(6, '0') };
       }
     }
+    // ETF 范围: sh51xxxx, sh588xxx, sz159xxx
+    if (code >= 510000 && code <= 519999) return { market: 'sh', pureCode: String(code).padStart(6, '0') };
+    if (code >= 588000 && code <= 588999) return { market: 'sh', pureCode: String(code).padStart(6, '0') };
+    if (code >= 159000 && code <= 159999) return { market: 'sz', pureCode: String(code).padStart(6, '0') };
     return null;
   };
 
@@ -330,7 +336,12 @@ export default function WatchlistPage() {
                 >
                   <div className="flex items-center justify-between">
                     <div>
-                      <h3 className="font-semibold">{stock.name}</h3>
+                      <h3 className="font-semibold">
+                        {stock.name}
+                        {isETF(stock.code) && (
+                          <span className="inline-block align-middle ml-1.5 px-1.5 py-0.5 text-[10px] font-bold bg-amber-100 text-amber-700 dark:bg-amber-900/40 dark:text-amber-400 rounded">ETF</span>
+                        )}
+                      </h3>
                       <p className="text-sm text-gray-500">{stock.code}</p>
                     </div>
                     {quote ? (

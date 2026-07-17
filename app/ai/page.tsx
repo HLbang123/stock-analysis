@@ -14,6 +14,7 @@ import {
 } from '@/services/deepAnalysisPrompt';
 import { KLineData, RealtimeQuote } from '@/types';
 import { calculateIndicators, formatIndicatorsForPrompt } from '@/lib/indicators';
+import { isETF } from '@/lib/identify';
 import { formatPrice, formatChange, cn } from '@/lib/utils';
 import { Brain, Settings, X, Plus, Pencil, Trash2, Check, Loader2, ChevronDown, ChevronRight } from 'lucide-react';
 import { toast } from 'sonner';
@@ -344,7 +345,7 @@ export default function AiPage() {
         ? `注意：该股票占用户总持仓的${stock.positionPercent}%，请在分析中考虑仓位集中度风险。`
         : undefined;
 
-      const systemPrompt = buildSystemPrompt();
+      const systemPrompt = buildSystemPrompt(isETF(selectedCode));
       const userPrompt = buildUserPrompt(selectedCode, stock.name, quoteJson, klineSummary, engineSummary, indicatorBlock, positionNote);
 
       // SSE 流式调用AI代理
@@ -526,9 +527,10 @@ export default function AiPage() {
         : undefined;
 
       // 构建三阶段 prompts
+      const etf = isETF(selectedCode);
       const stage1 = {
-        systemPrompt: buildAnalystSystemPrompt(),
-        userPrompt: buildAnalystUserPrompt(selectedCode, stock.name, quoteJson, klineSummary, engineSummary, indicatorBlock, reflectionBlock, positionNote),
+        systemPrompt: buildAnalystSystemPrompt(etf),
+        userPrompt: buildAnalystUserPrompt(selectedCode, stock.name, quoteJson, klineSummary, engineSummary, indicatorBlock, reflectionBlock, positionNote, etf),
       };
       // Stage 2 和 Stage 3 的 user prompt 由 route 根据前阶段输出动态构建
       const stage2 = {

@@ -1,4 +1,5 @@
 import { NextRequest, NextResponse } from 'next/server';
+import { detectMarket } from '@/lib/identify';
 
 export async function GET(request: NextRequest) {
   const code = request.nextUrl.searchParams.get('code');
@@ -11,9 +12,13 @@ export async function GET(request: NextRequest) {
   if (code.startsWith('sh') || code.startsWith('sz') || code.startsWith('bj')) {
     market = code.substring(0, 2);
     pureCode = code.substring(2);
-  } else if (/^6/.test(code)) market = 'sh';
-  else if (/^(0|3)/.test(code)) market = 'sz';
-  else if (/^8/.test(code)) market = 'bj';
+  } else {
+    const detected = detectMarket(code);
+    if (detected) {
+      market = detected;
+      pureCode = code;
+    }
+  }
 
   console.log(`[minute] Fetching for ${market}${pureCode}`);
 

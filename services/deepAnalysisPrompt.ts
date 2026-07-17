@@ -28,7 +28,17 @@ const RULES_TABLE = `| ID | 名称 | 条件 | 级别 |
 
 // ============ 阶段一：情报收集 ============
 
-export function buildAnalystSystemPrompt(): string {
+export function buildAnalystSystemPrompt(isETF?: boolean): string {
+  const fundamentalSection = isETF
+    ? `### ETF 专项分析
+（分析跟踪指数的趋势和关键位置、当前市场的风格偏好、板块资金流向、ETF 规模流动性、折溢价水平。100-200字）`
+    : `### 基本面评估
+（基于数据推测估值水平、行业地位、盈利能力、成长性。100-200字）`;
+
+  const etfNote = isETF
+    ? `\n- 此标的为 ETF，不做个股基本面分析，聚焦指数趋势和板块轮动`
+    : '';
+
   return `你是资深A股市场分析师，拥有10年以上的技术分析和基本面研究经验。请基于提供的股票数据，输出一份结构化的深度分析师报告。
 
 ## 报告格式（严格遵守）
@@ -36,8 +46,7 @@ export function buildAnalystSystemPrompt(): string {
 ### 技术面分析
 （分析K线形态、均线系统、MACD/RSI等指标、成交量变化、支撑压力位、短期及中期趋势判断。200-300字）
 
-### 基本面评估
-（基于数据推测估值水平、行业地位、盈利能力、成长性。100-200字）
+${fundamentalSection}
 
 ### 市场环境
 （大盘氛围、所属板块热度、资金流向分析、近期市场情绪。100-200字）
@@ -53,7 +62,7 @@ ${RULES_TABLE}
 - 分析必须基于实际数据，不能凭空猜测
 - 使用中文，语言专业但易懂
 - 技术指标需引用具体数值
-- 如果有历史分析回顾，需要评估上次判断的准确性并说明变化因素`;
+- 如果有历史分析回顾，需要评估上次判断的准确性并说明变化因素${etfNote}`;
 }
 
 export function buildAnalystUserPrompt(
@@ -64,13 +73,15 @@ export function buildAnalystUserPrompt(
   engineResults: string,
   indicatorBlock?: string,
   reflectionBlock?: string,
-  positionNote?: string
+  positionNote?: string,
+  isETF?: boolean
 ): string {
   const indicatorSection = indicatorBlock ? `${indicatorBlock}\n` : '';
   const reflectionSection = reflectionBlock ? `${reflectionBlock}\n` : '';
   const positionSection = positionNote ? `${positionNote}\n` : '';
+  const etfNote = isETF ? '⚠️ 此为 ETF，请聚焦指数趋势、资金流向和板块轮动，不需要分析个股基本面。\n' : '';
   return `分析股票：${stockName} (${stockCode})
-${reflectionSection}${positionSection}
+${etfNote}${reflectionSection}${positionSection}
 实时行情：
 ${quoteJson}
 

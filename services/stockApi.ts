@@ -1,4 +1,5 @@
 import { RealtimeQuote, KLineData } from '@/types';
+import { detectMarket, parseCode as parseIdent } from '@/lib/identify';
 
 /**
  * 获取实时行情（通过服务端代理，避免浏览器CORS限制）
@@ -82,8 +83,7 @@ export async function searchStocks(keyword: string): Promise<RealtimeQuote[]> {
       .slice(0, 15);
     if (localResults.length > 0) {
       return localResults.map(s => {
-        let market = 'sh';
-        if (/^(0|3)/.test(s.c)) market = 'sz';
+        const market = detectMarket(s.c) || 'sh';
         return {
           code: `${market}${s.c}`,
           name: s.n,
@@ -119,10 +119,12 @@ export async function searchStocks(keyword: string): Promise<RealtimeQuote[]> {
  * 解析股票代码输入
  */
 export function parseStockCode(input: string): { market: string; pureCode: string; fullCode: string } {
+  const parsed = parseIdent(input);
+  if (parsed) return parsed;
+  // 回退：无法识别市场时，保留原有逻辑
   const trimmed = input.trim().toLowerCase();
   let market = 'sh';
   let pureCode = trimmed;
-
   if (trimmed.startsWith('sh')) {
     market = 'sh';
     pureCode = trimmed.substring(2);
@@ -132,16 +134,6 @@ export function parseStockCode(input: string): { market: string; pureCode: strin
   } else if (trimmed.startsWith('bj')) {
     market = 'bj';
     pureCode = trimmed.substring(2);
-  } else if (/^6\d{5}$/.test(trimmed)) {
-    market = 'sh';
-    pureCode = trimmed;
-  } else if (/^(0|3)\d{5}$/.test(trimmed)) {
-    market = 'sz';
-    pureCode = trimmed;
-  } else if (/^8\d{5}$/.test(trimmed)) {
-    market = 'bj';
-    pureCode = trimmed;
   }
-
   return { market, pureCode, fullCode: `${market}${pureCode}` };
 }

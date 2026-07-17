@@ -4,6 +4,7 @@ import React, { useEffect, useState, useMemo } from 'react';
 import { useParams } from 'next/navigation';
 import { useStockStore } from '@/store';
 import { getRealtimeQuote, getKLineSina, getMinuteData } from '@/services/stockApi';
+import { parseCode } from '@/lib/identify';
 import { ALERT_RULES, checkAllRules } from '@/services/alertRules';
 import { RealtimeQuote, KLineData, RuleCheckResult } from '@/types';
 import { formatPrice, formatChange, formatVolume, cn, getAlertLevelColor } from '@/lib/utils';
@@ -178,8 +179,13 @@ export default function StockDetailPage() {
           <button
             onClick={() => {
               if (quote) {
-                const market = code.startsWith('6') ? 'sh' : code.startsWith('0') || code.startsWith('3') ? 'sz' : 'bj';
-                addToWatchlist({ code, name: quote.name, market, pureCode: code.replace(/^[a-z]+/, '') });
+                const parsed = parseCode(code);
+                addToWatchlist({
+                  code,
+                  name: quote.name,
+                  market: parsed?.market || 'sh',
+                  pureCode: parsed?.pureCode || code.replace(/^[a-z]+/, ''),
+                });
               }
             }}
             className="px-4 py-2 text-sm bg-blue-600 text-white rounded-lg hover:bg-blue-700 transition"

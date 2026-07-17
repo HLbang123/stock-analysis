@@ -1,4 +1,5 @@
 import { NextRequest, NextResponse } from 'next/server';
+import { detectMarket } from '@/lib/identify';
 
 const UA = 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/130.0.0.0 Safari/537.36';
 
@@ -43,10 +44,12 @@ async function fetchTencentKLine(code: string, days: number) {
     if (code.startsWith('sh') || code.startsWith('sz') || code.startsWith('bj')) {
       market = code.substring(0, 2);
       pureCode = code.substring(2);
-    } else if (/^6/.test(code)) {
-      market = 'sh';
     } else {
-      market = 'sz';
+      const detected = detectMarket(code);
+      if (detected) {
+        market = detected;
+        pureCode = code;
+      }
     }
 
     const url = `http://web.ifzq.gtimg.cn/appstock/app/fqkline/get?param=${market}${pureCode},day,,,${days},qfq`;

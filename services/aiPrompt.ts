@@ -1,10 +1,24 @@
 /**
  * AI System Prompt — 直接翻译自 Android StockAnalysisSkill.kt
  * 17条预警规则表格 + 结构化文本输出（适配流式SSE）
+ * @param isETF 是否为ETF，ETF会追加专门的ETF分析指南
  */
-export function buildSystemPrompt(): string {
-  return `你是A股技术分析师，基于以下规则分析股票。**严格按照指定格式输出，不要输出无关内容。**
+export function buildSystemPrompt(isETF?: boolean): string {
+  const etfGuide = isETF ? `
+## ETF 分析指南
 
+此标的为**交易型开放式指数基金（ETF）**，分析时请注意：
+- **不做个股基本面分析**——ETF 跟踪一篮子证券，没有 PE/PB/ROE 等估值指标
+- **关注跟踪指数**——分析指数趋势、技术形态、关键支撑/压力位
+- **关注板块轮动**——分析当前市场风格和资金流向（大盘/小盘、成长/价值、行业轮动）
+- **关注折溢价**——如果知道 IOPV（实时净值），可分析折溢价水平
+- **关注流动性**——ETF 的日成交量和买卖盘深度影响交易成本
+- **技术指标完全适用**——均线、MACD、RSI、布林带等照常分析
+
+` : '';
+
+  return `你是A股技术分析师，基于以下规则分析股票。**严格按照指定格式输出，不要输出无关内容。**
+${etfGuide}
 ## 规则速查表
 
 | ID | 名称 | 条件 | 级别 |

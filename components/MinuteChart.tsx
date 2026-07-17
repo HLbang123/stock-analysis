@@ -136,16 +136,22 @@ export function MinuteChart({
 
     // 预警标记 — v5 中用独立 LineSeries 绘制
     if (alertMarkers.length > 0) {
+      const seenTimes = new Set<number>();
       const markerPoints: { time: Time; value: number }[] = [];
       alertMarkers.forEach(m => {
         const point = data[m.index];
         if (!point) return;
+        const t = toTime(point.time) as number;
+        if (seenTimes.has(t)) return; // 去重：同一时刻只保留一个标记
+        seenTimes.add(t);
         markerPoints.push({
-          time: toTime(point.time),
+          time: t as Time,
           value: point.price * 1.005,
         });
       });
       if (markerPoints.length > 0) {
+        // 按时间升序排列（lightweight-charts 要求）
+        markerPoints.sort((a, b) => (a.time as number) - (b.time as number));
         const markerSeries = chart.addSeries(LineSeries, {
           lineVisible: false,
           lastValueVisible: false,

@@ -1,4 +1,5 @@
 import { NextRequest, NextResponse } from 'next/server';
+import { detectMarket } from '@/lib/identify';
 
 /**
  * 解码GBK编码的响应（腾讯/新浪API使用GBK编码中文）
@@ -36,17 +37,13 @@ export async function GET(request: NextRequest) {
   if (code.startsWith('sh') || code.startsWith('sz') || code.startsWith('bj')) {
     market = code.substring(0, 2);
     pureCode = code.substring(2);
-  } else if (/^6\d{5}$/.test(code)) {
-    market = 'sh';
-    pureCode = code;
-  } else if (/^(0|3)\d{5}$/.test(code)) {
-    market = 'sz';
-    pureCode = code;
-  } else if (/^8\d{5}$/.test(code)) {
-    market = 'bj';
-    pureCode = code;
   } else {
-    return NextResponse.json({ error: '无效的股票代码' }, { status: 400 });
+    const detected = detectMarket(code);
+    if (!detected) {
+      return NextResponse.json({ error: '无效的股票代码' }, { status: 400 });
+    }
+    market = detected;
+    pureCode = code;
   }
 
   const symbol = `${market}${pureCode}`;

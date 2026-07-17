@@ -1,4 +1,5 @@
 import { NextRequest, NextResponse } from 'next/server';
+import { detectMarket } from '@/lib/identify';
 
 /**
  * 股票搜索代理 — 东方财富主源 + 新浪备用
@@ -66,16 +67,15 @@ function filterResults(items: any[]) {
   return items
     .filter((item: any) => {
       const code = item.Code || '';
-      if (!/^[036]\d{5}$/.test(code)) return false;
+      // 允许个股代码 + ETF代码
+      if (!/^([036]\d{5}|51\d{4}|588\d{3}|159\d{3})$/.test(code)) return false;
       if (['BK', 'ZS', 'ZQ', 'FJ', 'JJ'].includes(item.Classify || '')) return false;
       if ((item.Name || '').includes('债')) return false;
       return true;
     })
     .map((item: any) => {
       const code = item.Code;
-      let market = 'sh';
-      if (/^6/.test(code)) market = 'sh';
-      else if (/^(0|3)/.test(code)) market = 'sz';
+      const market = detectMarket(code) || 'sh';
 
       return {
         code: `${market}${code}`,
