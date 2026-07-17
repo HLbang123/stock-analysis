@@ -1,6 +1,6 @@
 'use client';
 
-import React, { useState, useCallback, useRef } from 'react';
+import React, { useState, useCallback, useRef, useEffect } from 'react';
 import { useStockStore } from '@/store';
 import { useAiStore, AiProfile, AiAnalysisRecord } from '@/store/ai-store';
 import { getRealtimeQuote, getKLineSina } from '@/services/stockApi';
@@ -15,8 +15,9 @@ import {
 import { KLineData, RealtimeQuote } from '@/types';
 import { calculateIndicators, formatIndicatorsForPrompt } from '@/lib/indicators';
 import { isETF } from '@/lib/identify';
+import { getMarketStatus } from '@/lib/identify';
 import { formatPrice, formatChange, cn } from '@/lib/utils';
-import { Brain, Settings, X, Plus, Pencil, Trash2, Check, Loader2, ChevronDown, ChevronRight } from 'lucide-react';
+import { Brain, Settings, X, Plus, Pencil, Trash2, Check, Loader2, ChevronDown, ChevronRight, Send, Trash } from 'lucide-react';
 import { toast } from 'sonner';
 
 const PRESET_PLATFORMS: { name: string; baseUrl: string; model: string }[] = [
@@ -80,6 +81,14 @@ export default function AiPage() {
   } | null>(null);
   const deepAbortRef = useRef<AbortController | null>(null);
   const [showHistory, setShowHistory] = useState(false);
+
+  // 对话状态
+  const [chatMessages, setChatMessages] = useState<{ role: 'user' | 'assistant'; content: string }[]>([]);
+  const [chatInput, setChatInput] = useState('');
+  const [isChatStreaming, setIsChatStreaming] = useState(false);
+  const [attachStockContext, setAttachStockContext] = useState(true);
+  const chatAbortRef = useRef<AbortController | null>(null);
+  const chatEndRef = useRef<HTMLDivElement>(null);
 
   // 表单状态
   const [formName, setFormName] = useState('');
@@ -346,7 +355,8 @@ export default function AiPage() {
         : undefined;
 
       const systemPrompt = buildSystemPrompt(isETF(selectedCode));
-      const userPrompt = buildUserPrompt(selectedCode, stock.name, quoteJson, klineSummary, engineSummary, indicatorBlock, positionNote);
+      const marketNote = `[市场状态] ${getMarketStatus().note}\n\n`;
+      const userPrompt = marketNote + buildUserPrompt(selectedCode, stock.name, quoteJson, klineSummary, engineSummary, indicatorBlock, positionNote);
 
       // SSE 流式调用AI代理
       const res = await fetch('/api/ai/analyze', {
@@ -527,19 +537,20 @@ export default function AiPage() {
         : undefined;
 
       // 构建三阶段 prompts
+      const marketStatusNote = `[市场状态] ${getMarketStatus().note}\n\n`;
       const etf = isETF(selectedCode);
       const stage1 = {
         systemPrompt: buildAnalystSystemPrompt(etf),
-        userPrompt: buildAnalystUserPrompt(selectedCode, stock.name, quoteJson, klineSummary, engineSummary, indicatorBlock, reflectionBlock, positionNote, etf),
+        userPrompt: marketStatusNote + buildAnalystUserPrompt(selectedCode, stock.name, quoteJson, klineSummary, engineSummary, indicatorBlock, reflectionBlock, positionNote, etf),
       };
       // Stage 2 和 Stage 3 的 user prompt 由 route 根据前阶段输出动态构建
       const stage2 = {
         systemPrompt: buildDebateRound1SystemPrompt(),
-        userPrompt: buildDebateUserPrompt(selectedCode, stock.name, '', quoteJson, indicatorBlock),
+        userPrompt: marketStatusNote + buildDebateUserPrompt(selectedCode, stock.name, '', quoteJson, indicatorBlock),
       };
       const stage3 = {
         systemPrompt: buildVerdictSystemPrompt(),
-        userPrompt: buildVerdictUserPrompt(selectedCode, stock.name, '', '', quoteJson, positionNoteVerdict),
+        userPrompt: marketStatusNote + buildVerdictUserPrompt(selectedCode, stock.name, '', '', quoteJson, positionNoteVerdict),
       };
 
       // SSE 流式调用深度分析
@@ -701,11 +712,149 @@ export default function AiPage() {
   };
 
   const cancelAnalysis = () => {
-    if (abortRef.current) {
-      abortRef.current.abort();
+    if (abortRef.current) abortRef.current.abort();
+    if (deepAbortRef.current) deepAbortRef.current.abort();
+  };
+
+  const cancelChat = () => {
+    if (chatAbortRef.current) {
+      chatAbortRef.current.abort();
+      chatAbortRef.current = null;
     }
-    if (deepAbortRef.current) {
-      deepAbortRef.current.abort();
+    setIsChatStreaming(false);
+  };
+
+  const clearChat = () => {
+    setChatMessages([]);
+  };
+
+  // 自动滚动到底部
+  useEffect(() => {
+    chatEndRef.current?.scrollIntoView({ behavior: 'smooth' });
+  }, [chatMessages]);
+
+  // 发送对话消息
+  const sendMessage = async (text?: string) => {
+    const msg = (text || chatInput).trim();
+    if (!msg || !currentProfile || isChatStreaming) return;
+
+    setChatInput('');
+    const userMsg = { role: 'user' as const, content: msg };
+    setChatMessages(prev => [...prev, userMsg]);
+    setIsChatStreaming(true);
+
+    const abortController = new AbortController();
+    chatAbortRef.current = abortController;
+
+    try {
+      // 构建股票上下文（可选）
+      let stockContext = '';
+      if (attachStockContext && selectedCode) {
+        const stock = watchlist.find(s => s.code === selectedCode);
+        // 获取最新行情和K线
+        const [quote, kLines] = await Promise.all([
+          getRealtimeQuote(selectedCode),
+          getKLineSina(selectedCode, 240, 60),
+        ]);
+        if (quote) {
+          const klineSummary = kLines.slice(-20).map(k =>
+            `${k.date} ${k.open} ${k.high} ${k.low} ${k.close} ${k.volume}`
+          ).join('\n');
+          stockContext = `当前股票：${stock?.name || quote.name} (${selectedCode})\n实时行情：${JSON.stringify({ price: quote.price, changePercent: quote.changePercent.toFixed(2) + '%', high: quote.high, low: quote.low, open: quote.open, volume: quote.volume })}\n近20日K线：\n${klineSummary}`;
+
+          // 如果有最新分析结果，附上
+          if (result) {
+            stockContext += `\n\n最新快速分析结论：风险${result.riskLevel}，支撑${result.supportPrice}，压力${result.resistancePrice}\n${result.analysis}`;
+          }
+          if (deepResult?.structured?.action) {
+            const ds = deepResult.structured;
+            stockContext += `\n\n最新深度分析结论：${ds.action} | 风险${ds.riskLevel} | 信心${ds.confidence}% | 仓位${ds.position} | 目标${ds.targetLow}-${ds.targetHigh} | 止损${ds.stopLoss}`;
+            if (ds.keyPoints && ds.keyPoints.length > 0) {
+              stockContext += `\n关键要点：${ds.keyPoints.join('；')}`;
+            }
+            if (ds.reasoning) {
+              stockContext += `\n决策理由：${ds.reasoning.slice(0, 300)}`;
+            }
+          }
+        }
+      }
+
+      // 构建 messages（最近10轮）
+      const recentMessages = chatMessages.slice(-20).map(m => ({
+        role: m.role,
+        content: m.content,
+      }));
+      const allMessages = [...recentMessages, { role: 'user', content: msg }];
+
+      const res = await fetch('/api/ai/chat', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          messages: allMessages,
+          stockContext: stockContext || undefined,
+          baseUrl: currentProfile.baseUrl,
+          apiKey: currentProfile.apiKey,
+          model: currentProfile.model,
+        }),
+        signal: abortController.signal,
+      });
+
+      if (!res.ok) {
+        const errData = await res.json().catch(() => ({ error: `HTTP ${res.status}` }));
+        throw new Error(errData.error || '请求失败');
+      }
+
+      // SSE 流式读取
+      const reader = res.body!.getReader();
+      const decoder = new TextDecoder();
+      let sseBuffer = '';
+      let aiContent = '';
+
+      // 添加空的 assistant 消息
+      setChatMessages(prev => [...prev, { role: 'assistant', content: '' }]);
+
+      while (true) {
+        const { done, value } = await reader.read();
+        if (done) break;
+
+        sseBuffer += decoder.decode(value, { stream: true });
+        const lines = sseBuffer.split('\n');
+        sseBuffer = lines.pop() || '';
+
+        for (const line of lines) {
+          const trimmed = line.trim();
+          if (!trimmed || !trimmed.startsWith('data:')) continue;
+          const data = trimmed.slice(5).trim();
+          if (data === '[DONE]') continue;
+
+          try {
+            const chunk = JSON.parse(data);
+            if (typeof chunk === 'string') {
+              aiContent += chunk;
+              // 更新最后一条消息
+              setChatMessages(prev => {
+                const updated = [...prev];
+                updated[updated.length - 1] = { role: 'assistant', content: aiContent };
+                return updated;
+              });
+            }
+          } catch {}
+        }
+      }
+    } catch (err: any) {
+      if (err.name !== 'AbortError') {
+        setChatMessages(prev => [...prev, { role: 'assistant', content: `❌ ${err.message}` }]);
+      }
+    } finally {
+      setIsChatStreaming(false);
+      chatAbortRef.current = null;
+    }
+  };
+
+  const handleChatKeyDown = (e: React.KeyboardEvent) => {
+    if (e.key === 'Enter' && !e.shiftKey) {
+      e.preventDefault();
+      sendMessage();
     }
   };
 
@@ -892,6 +1041,18 @@ export default function AiPage() {
               {result?.analysis || ''}
               {isAnalyzing && <span className="inline-block w-0.5 h-4 bg-purple-500 ml-0.5 animate-pulse align-middle" />}
             </p>
+            {result?.analysis && currentProfile && (
+              <button
+                onClick={() => {
+                  setChatInput('请针对以上分析结果，帮我进一步解读这只股票的风险点和机会');
+                  document.querySelector<HTMLInputElement>('#chat-input')?.focus();
+                }}
+                className="mt-2 text-xs text-blue-600 hover:text-blue-700 flex items-center gap-1"
+              >
+                <Send className="w-3 h-3" />
+                追问 AI
+              </button>
+            )}
           </div>
 
           {/* 操作建议 */}
@@ -1191,6 +1352,101 @@ export default function AiPage() {
           <Brain className="w-16 h-16 mx-auto mb-4 opacity-20" />
           <p className="text-lg">选择股票开始AI分析</p>
           <p className="text-sm mt-2">支持所有OpenAI兼容API（DeepSeek、GLM、GPT等）</p>
+        </div>
+      )}
+
+      {/* ======= AI 对话 ======= */}
+      {currentProfile && (
+        <div className="bg-white dark:bg-gray-900 rounded-xl p-4 shadow-sm mb-6">
+          <div className="flex items-center justify-between mb-3">
+            <h3 className="font-semibold text-sm flex items-center gap-2">
+              <Send className="w-4 h-4 text-blue-500" />
+              AI 对话
+            </h3>
+            <div className="flex items-center gap-2">
+              {/* 上下文开关 */}
+              <label className="flex items-center gap-1.5 cursor-pointer select-none">
+                <input
+                  type="checkbox"
+                  checked={attachStockContext}
+                  onChange={(e) => setAttachStockContext(e.target.checked)}
+                  className="w-3.5 h-3.5 rounded accent-blue-600"
+                />
+                <span className="text-xs text-gray-500">
+                  {selectedCode ? `附上 ${watchlist.find(s => s.code === selectedCode)?.name || selectedCode} 数据` : '附上股票数据'}
+                </span>
+              </label>
+              {chatMessages.length > 0 && (
+                <button
+                  onClick={clearChat}
+                  className="p-1 text-gray-400 hover:text-red-500 transition"
+                  title="清空对话"
+                >
+                  <Trash className="w-3.5 h-3.5" />
+                </button>
+              )}
+            </div>
+          </div>
+
+          {/* 消息列表 */}
+          {(chatMessages.length > 0 || isChatStreaming) && (
+            <div className="max-h-80 overflow-y-auto space-y-3 mb-3">
+            {chatMessages.map((msg, i) => (
+              <div
+                key={i}
+                className={cn(
+                  "flex",
+                  msg.role === 'user' ? "justify-end" : "justify-start"
+                )}
+              >
+                <div className={cn(
+                  "max-w-[85%] rounded-xl px-3.5 py-2.5 text-sm",
+                  msg.role === 'user'
+                    ? "bg-blue-600 text-white rounded-br-md"
+                    : "bg-gray-100 dark:bg-gray-800 text-gray-700 dark:text-gray-300 rounded-bl-md"
+                )}>
+                  <div className="whitespace-pre-wrap break-words leading-relaxed">
+                    {msg.content}
+                    {isChatStreaming && i === chatMessages.length - 1 && msg.role === 'assistant' && (
+                      <span className="inline-block w-0.5 h-4 bg-blue-500 ml-0.5 animate-pulse align-middle" />
+                    )}
+                  </div>
+                </div>
+              </div>
+            ))}
+            <div ref={chatEndRef} />
+          </div>
+          )}
+
+          {/* 输入区 */}
+          <div className="flex gap-2">
+            <input
+              id="chat-input"
+              type="text"
+              value={chatInput}
+              onChange={(e) => setChatInput(e.target.value)}
+              onKeyDown={handleChatKeyDown}
+              placeholder="输入问题，Enter 发送..."
+              disabled={isChatStreaming}
+              className="flex-1 px-3.5 py-2.5 border border-gray-200 dark:border-gray-700 rounded-xl bg-white dark:bg-gray-800 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500 disabled:opacity-50"
+            />
+            {isChatStreaming ? (
+              <button
+                onClick={cancelChat}
+                className="px-4 py-2.5 bg-red-500 text-white rounded-xl text-sm font-medium hover:bg-red-600 transition"
+              >
+                停止
+              </button>
+            ) : (
+              <button
+                onClick={() => sendMessage()}
+                disabled={!chatInput.trim()}
+                className="px-4 py-2.5 bg-blue-600 text-white rounded-xl text-sm font-medium hover:bg-blue-700 transition disabled:opacity-50 disabled:cursor-not-allowed"
+              >
+                <Send className="w-4 h-4" />
+              </button>
+            )}
+          </div>
         </div>
       )}
 

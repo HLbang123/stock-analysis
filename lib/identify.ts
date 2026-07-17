@@ -43,8 +43,40 @@ export function detectMarket(code: string): Market | null {
 }
 
 /**
- * 从输入字符串中提取市场前缀和纯数字代码
+ * 获取A股市场当前状态（交易日判断简化：周一到周五为交易日）
  */
+export function getMarketStatus(): { isOpen: boolean; note: string } {
+  const now = new Date();
+  const day = now.getDay(); // 0=周日 6=周六
+  const h = now.getHours();
+  const m = now.getMinutes();
+  const time = h * 60 + m; // 分钟数
+
+  const isWeekend = day === 0 || day === 6;
+
+  if (isWeekend) {
+    return { isOpen: false, note: '今天是周末，A股休市。以下数据为最近交易日收盘数据。' };
+  }
+
+  const isMorning = time >= 570 && time < 690;   // 9:30-11:30
+  const isAfternoon = time >= 780 && time < 900;  // 13:00-15:00
+
+  if (isMorning || isAfternoon) {
+    const session = isMorning ? '上午' : '下午';
+    return { isOpen: true, note: `当前A股正在交易中（${session}盘），价格仍在实时波动，今日K线尚未定型，请以盘中动态视角分析，不宜将当前价位视为收盘价。` };
+  }
+
+  if (time < 570) {
+    return { isOpen: false, note: '当前为盘前时段，A股尚未开盘。以下数据为最近交易日收盘数据，今日走势尚未展开。' };
+  }
+
+  if (time >= 690 && time < 780) {
+    return { isOpen: false, note: '当前为午间休市时段。上午交易已结束，下午将于13:00开盘。' };
+  }
+
+  // 15:00 之后
+  return { isOpen: false, note: 'A股已收盘。以下数据为今日最终收盘数据。' };
+}
 export function parseCode(input: string): { market: Market; pureCode: string; fullCode: string } | null {
   const trimmed = input.trim().toLowerCase();
 
