@@ -131,7 +131,6 @@ export default function WatchlistPage() {
     }
 
     setIsSearching(true);
-    setHasSearched(false);
     debounceRef.current = setTimeout(async () => {
       const results = await searchStocks(searchQuery);
       setSearchResults(results);
