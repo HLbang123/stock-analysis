@@ -779,6 +779,7 @@ export default function AiPage() {
               }
             }
           }
+        }
       }
 
       // 构建 messages（最近10轮）
