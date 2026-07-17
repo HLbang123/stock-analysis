@@ -8,6 +8,7 @@ interface StockState {
   addToWatchlist: (stock: Stock) => void;
   removeFromWatchlist: (code: string) => void;
   isInWatchlist: (code: string) => boolean;
+  updateStockPosition: (code: string, positionPercent: number | undefined) => void;
 
   // 预警记录
   alerts: AlertRecord[];
@@ -46,6 +47,13 @@ export const useStockStore = create<StockState>()(
       },
       isInWatchlist: (code) => {
         return get().watchlist.some(s => s.code === code);
+      },
+      updateStockPosition: (code, positionPercent) => {
+        set({
+          watchlist: get().watchlist.map(s =>
+            s.code === code ? { ...s, positionPercent } : s
+          ),
+        });
       },
 
       // 预警记录

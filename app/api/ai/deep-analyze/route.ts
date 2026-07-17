@@ -154,17 +154,29 @@ export async function POST(request: NextRequest) {
             return;
           }
 
-          // ===== 阶段二：多空辩论 =====
-          console.log('[Deep AI Proxy] Stage 2: Bull/Bear Debate');
+          // ===== 阶段二：多空辩论（两轮）=====
+          console.log('[Deep AI Proxy] Stage 2: Bull/Bear Debate (2 rounds)');
           let stage2Output = '';
           try {
-            // 动态构建 stage2 prompt，注入阶段一输出
-            const s2System = stage2?.systemPrompt || buildFallbackDebatePrompt();
-            const s2User = [
+            // Round 1: 多方初始论点 + 空方初始论点
+            const s2r1System = stage2?.systemPrompt || buildFallbackDebateRound1Prompt();
+            const s2r1User = [
               stage2?.userPrompt?.split('以下是一份深度分析师报告')[0]?.trim() || '',
               `以下是一份深度分析师报告，请基于这份报告进行多空辩论：\n\n${stage1Output}`,
             ].filter(Boolean).join('\n\n');
-            stage2Output = await runStage('debate', s2System, s2User);
+            const round1Output = await runStage('debate', s2r1System, s2r1User);
+            stage2Output += round1Output;
+
+            // Round 2: 多方反驳 + 空方反驳 + 研究经理综合评判
+            controller.enqueue(
+              encoder.encode(
+                `data: ${JSON.stringify({ stage: 'debate', text: '\n\n--- 第二轮 ---\n\n' })}\n\n`
+              )
+            );
+            const s2r2System = buildFallbackDebateRound2Prompt();
+            const s2r2User = `以下为第一轮多空辩论的完整记录：\n\n${round1Output}\n\n请基于第一轮辩论内容，进行第二轮反驳和综合评判。`;
+            const round2Output = await runStage('debate', s2r2System, s2r2User);
+            stage2Output += '\n\n--- 第二轮 ---\n\n' + round2Output;
           } catch (e: any) {
             console.error('[Deep AI Proxy] Stage 2 failed:', e.message);
             controller.enqueue(
@@ -241,20 +253,50 @@ export async function POST(request: NextRequest) {
   }
 }
 
-/** 备用：如果客户端未传入阶段二 prompt */
-function buildFallbackDebatePrompt(): string {
-  return `你是投资辩论主持人。请基于分析师报告进行多空辩论。
+/** 备用：第一轮辩论 prompt */
+function buildFallbackDebateRound1Prompt(): string {
+  return `你是投资辩论主持人。请依次扮演多方研究员和空方研究员，进行第一轮辩论。
 
-## 辩论流程
+## 第一轮
 
-### 多方研究员
-以"【多方观点】"开头，列出3-5个看涨理由。200-300字。
+### 多方研究员（看涨论点）
+以"【多方观点】"开头，列出3-5个看涨理由：
+- 每个理由必须有具体数据支撑
+- 200-300字
 
-###  空方研究员
-以"【空方观点】"开头，列出3-5个看跌理由，直接反驳多方。200-300字。
+### 空方研究员（看跌论点）
+以"【空方观点】"开头，列出3-5个看跌理由：
+- 直接针对多方提出的论点进行质疑
+- 200-300字
 
-### 研究经理
-以"【综合评判】"开头，给出偏多/偏空/中性的判断及依据。150-250字。`;
+注意：严格遵守角色切换。`;
+}
+
+/** 备用：第二轮辩论 prompt */
+function buildFallbackDebateRound2Prompt(): string {
+  return `你是投资辩论主持人。基于第一轮双方的初始论点，现在进入第二轮深度辩论。
+
+## 第二轮
+
+### 多方反驳
+以"【多方反驳】"开头：
+- 针对空方第一轮的每个质疑进行反驳
+- 补充新的看涨证据
+- 150-250字
+
+### 空方反驳
+以"【空方反驳】"开头：
+- 针对多方第一轮的每个论点进行质疑
+- 补充新的看跌证据
+- 150-250字
+
+### 研究经理综合评判
+以"【综合评判】"开头：
+- 客观权衡双方两轮论点的说服力
+- 给出偏向性判断：偏多 / 偏空 / 中性
+- 150-250字
+
+注意：严格遵守角色切换。`;
 }
 
 /** 备用：如果客户端未传入阶段三 prompt */

@@ -8,10 +8,12 @@ import { ALERT_RULES, checkAllRules } from '@/services/alertRules';
 import { buildSystemPrompt, buildUserPrompt } from '@/services/aiPrompt';
 import {
   buildAnalystSystemPrompt, buildAnalystUserPrompt,
-  buildDebateSystemPrompt, buildDebateUserPrompt,
+  buildDebateRound1SystemPrompt, buildDebateUserPrompt,
   buildVerdictSystemPrompt, buildVerdictUserPrompt,
+  buildReflectionContext,
 } from '@/services/deepAnalysisPrompt';
 import { KLineData, RealtimeQuote } from '@/types';
+import { calculateIndicators, formatIndicatorsForPrompt } from '@/lib/indicators';
 import { formatPrice, formatChange, cn } from '@/lib/utils';
 import { Brain, Settings, X, Plus, Pencil, Trash2, Check, Loader2, ChevronDown, ChevronRight } from 'lucide-react';
 import { toast } from 'sonner';
@@ -71,6 +73,8 @@ export default function AiPage() {
       reasoning: string;
       plan: string;
       riskNote: string;
+      confidenceScore?: number;
+      keyPoints?: string[];
     } | null;
   } | null>(null);
   const deepAbortRef = useRef<AbortController | null>(null);
@@ -237,10 +241,12 @@ export default function AiPage() {
     const actionMatch = text.match(/ACTION:(.+)/);
     const riskMatch = text.match(/RISK_LEVEL:(.+)/);
     const confMatch = text.match(/CONFIDENCE:(.+)/);
+    const confScoreMatch = text.match(/CONFIDENCE_SCORE:\s*([\d.]+)/);
     const targetLowMatch = text.match(/TARGET_LOW:(.+)/);
     const targetHighMatch = text.match(/TARGET_HIGH:(.+)/);
     const stopMatch = text.match(/STOP_LOSS:(.+)/);
     const posMatch = text.match(/POSITION:(.+)/);
+    const keyPointsMatch = text.match(/KEY_POINTS:\s*(.+)/);
 
     const bodySplit = text.split(/^---\s*$/m);
     const body = bodySplit.length > 1 ? bodySplit.slice(1).join('---') : '';
@@ -270,6 +276,10 @@ export default function AiPage() {
       stopLoss: stopMatch?.[1]?.trim() || '--',
       position: posMatch?.[1]?.trim() || '--',
       reasoning, plan, riskNote,
+      confidenceScore: confScoreMatch ? parseFloat(confScoreMatch[1]) : undefined,
+      keyPoints: keyPointsMatch
+        ? keyPointsMatch[1].split('|').map(p => p.trim()).filter(p => p.length > 0)
+        : [],
     };
   }, []);
 
@@ -324,8 +334,18 @@ export default function AiPage() {
       const klineSummary = kLines.slice(-20).map(k =>
         `${k.date} ${k.open} ${k.high} ${k.low} ${k.close} ${k.volume}`
       ).join('\n');
+
+      // 计算技术指标
+      const indicatorResult = calculateIndicators(updatedKLines);
+      const indicatorBlock = formatIndicatorsForPrompt(indicatorResult);
+
+      // 持仓占比
+      const positionNote = stock.positionPercent !== undefined
+        ? `注意：该股票占用户总持仓的${stock.positionPercent}%，请在分析中考虑仓位集中度风险。`
+        : undefined;
+
       const systemPrompt = buildSystemPrompt();
-      const userPrompt = buildUserPrompt(selectedCode, stock.name, quoteJson, klineSummary, engineSummary);
+      const userPrompt = buildUserPrompt(selectedCode, stock.name, quoteJson, klineSummary, engineSummary, indicatorBlock, positionNote);
 
       // SSE 流式调用AI代理
       const res = await fetch('/api/ai/analyze', {
@@ -486,19 +506,38 @@ export default function AiPage() {
         `${k.date} ${k.open} ${k.high} ${k.low} ${k.close} ${k.volume}`
       ).join('\n');
 
+      // 计算技术指标
+      const indicatorResult = calculateIndicators(updatedKLines);
+      const indicatorBlock = formatIndicatorsForPrompt(indicatorResult);
+
+      // 反思上下文（历史分析回顾）
+      const reflectionBlock = buildReflectionContext(
+        selectedCode,
+        history,
+        { price: quote.price, changePercent: quote.changePercent }
+      );
+
+      // 持仓占比
+      const positionNote = stock.positionPercent !== undefined
+        ? `注意：该股票占用户总持仓的${stock.positionPercent}%，请在分析中考虑仓位集中度风险。`
+        : undefined;
+      const positionNoteVerdict = stock.positionPercent !== undefined
+        ? `用户当前持仓占比为${stock.positionPercent}%，请在仓位建议中考虑现有持仓，如需减持请明确说明。`
+        : undefined;
+
       // 构建三阶段 prompts
       const stage1 = {
         systemPrompt: buildAnalystSystemPrompt(),
-        userPrompt: buildAnalystUserPrompt(selectedCode, stock.name, quoteJson, klineSummary, engineSummary),
+        userPrompt: buildAnalystUserPrompt(selectedCode, stock.name, quoteJson, klineSummary, engineSummary, indicatorBlock, reflectionBlock, positionNote),
       };
       // Stage 2 和 Stage 3 的 user prompt 由 route 根据前阶段输出动态构建
       const stage2 = {
-        systemPrompt: buildDebateSystemPrompt(),
-        userPrompt: buildDebateUserPrompt(selectedCode, stock.name, '', quoteJson),
+        systemPrompt: buildDebateRound1SystemPrompt(),
+        userPrompt: buildDebateUserPrompt(selectedCode, stock.name, '', quoteJson, indicatorBlock),
       };
       const stage3 = {
         systemPrompt: buildVerdictSystemPrompt(),
-        userPrompt: buildVerdictUserPrompt(selectedCode, stock.name, '', '', quoteJson),
+        userPrompt: buildVerdictUserPrompt(selectedCode, stock.name, '', '', quoteJson, positionNoteVerdict),
       };
 
       // SSE 流式调用深度分析
@@ -996,6 +1035,40 @@ export default function AiPage() {
                       <p className="text-red-600 font-medium">{deepResult.structured.stopLoss}</p>
                     </div>
                   </div>
+
+                  {/* 信心指数进度条 */}
+                  {deepResult.structured.confidenceScore !== undefined && (
+                    <div className="mt-3 pt-3 border-t border-gray-200/60 dark:border-gray-700/60">
+                      <div className="flex items-center gap-2">
+                        <span className="text-gray-500 text-xs w-16 shrink-0">信心指数</span>
+                        <div className="flex-1 h-2.5 bg-gray-200 dark:bg-gray-700 rounded-full overflow-hidden">
+                          <div
+                            className={cn(
+                              "h-full rounded-full transition-all",
+                              deepResult.structured.confidenceScore >= 0.7 ? "bg-green-500" :
+                              deepResult.structured.confidenceScore >= 0.4 ? "bg-amber-500" : "bg-red-500"
+                            )}
+                            style={{ width: `${(deepResult.structured.confidenceScore * 100).toFixed(0)}%` }}
+                          />
+                        </div>
+                        <span className="text-sm font-semibold w-10 text-right">
+                          {(deepResult.structured.confidenceScore * 100).toFixed(0)}%
+                        </span>
+                      </div>
+                    </div>
+                  )}
+
+                  {/* 关键要点 */}
+                  {deepResult.structured.keyPoints && deepResult.structured.keyPoints.length > 0 && (
+                    <div className="mt-3 pt-3 border-t border-gray-200/60 dark:border-gray-700/60">
+                      <h4 className="text-xs font-medium text-gray-500 mb-1.5">关键要点</h4>
+                      <ul className="list-disc list-inside text-xs text-gray-600 dark:text-gray-400 space-y-0.5">
+                        {deepResult.structured.keyPoints.map((point, i) => (
+                          <li key={i}>{point}</li>
+                        ))}
+                      </ul>
+                    </div>
+                  )}
                 </div>
               ) : isDeepAnalyzing && deepStage === 'verdict' ? (
                 <div className="rounded-xl p-4 mb-4 bg-gray-50 dark:bg-gray-950 border border-gray-200 animate-pulse">

@@ -4,6 +4,7 @@ export interface Stock {
   name: string;      // 股票名称
   market: string;    // 市场: sh/sz/bj
   pureCode: string;  // 纯数字代码: 600519
+  positionPercent?: number; // 可选: 持仓占比 0-100
 }
 
 // 实时行情
@@ -85,4 +86,21 @@ export interface RuleCheckResult {
   message?: string;
   extraData?: string;
   barIndex?: number;
+}
+
+// 技术指标结果 (lib/indicators.ts)
+export interface IndicatorResult {
+  ma5: number;
+  ma10: number;
+  ma20: number;
+  ma60: number;
+  macd: { dif: number; dea: number; histogram: number };
+  rsi6: number;
+  rsi12: number;
+  rsi24: number;
+  bollinger: { upper: number; mid: number; lower: number; position: number };
+  volMa5: number;
+  volMa20: number;
+  lastClose: number;
+  lastVolume: number;
 }

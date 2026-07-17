@@ -1,7 +1,9 @@
 /**
  * 深度分析 Prompt — 提取自 TradingAgents-CN 多智能体协作架构
- * 三阶段：情报收集 → 多空辩论 → 最终裁决
+ * 三阶段：情报收集 → 多空辩论（两轮） → 最终裁决
  */
+
+import { AiAnalysisRecord } from '@/store/ai-store';
 
 // 17条规则速查表（阶段一引用）
 const RULES_TABLE = `| ID | 名称 | 条件 | 级别 |
@@ -50,7 +52,8 @@ ${RULES_TABLE}
 注意：
 - 分析必须基于实际数据，不能凭空猜测
 - 使用中文，语言专业但易懂
-- 技术指标需引用具体数值`;
+- 技术指标需引用具体数值
+- 如果有历史分析回顾，需要评估上次判断的准确性并说明变化因素`;
 }
 
 export function buildAnalystUserPrompt(
@@ -58,13 +61,20 @@ export function buildAnalystUserPrompt(
   stockName: string,
   quoteJson: string,
   klineSummary: string,
-  engineResults: string
+  engineResults: string,
+  indicatorBlock?: string,
+  reflectionBlock?: string,
+  positionNote?: string
 ): string {
+  const indicatorSection = indicatorBlock ? `${indicatorBlock}\n` : '';
+  const reflectionSection = reflectionBlock ? `${reflectionBlock}\n` : '';
+  const positionSection = positionNote ? `${positionNote}\n` : '';
   return `分析股票：${stockName} (${stockCode})
-
+${reflectionSection}${positionSection}
 实时行情：
 ${quoteJson}
 
+${indicatorSection}
 近60日K线（日期 开 高 低 收 量）：
 ${klineSummary}
 
@@ -73,39 +83,63 @@ ${klineSummary}
 
 // ============ 阶段二：多空辩论 ============
 
-export function buildDebateSystemPrompt(): string {
-  return `你是投资辩论主持人。你会依次扮演三个角色进行严谨的多空辩论，最后给出综合评判。每个角色都必须基于数据和逻辑，不能空洞说"我觉得会涨"。
+/** 第一轮：多方初始论点 + 空方初始论点 */
+export function buildDebateRound1SystemPrompt(): string {
+  return `你是投资辩论主持人。请依次扮演多方研究员和空方研究员，进行第一轮辩论。
 
-## 辩论流程
+## 第一轮
 
-### 第一轮——多方研究员（看涨论点）
+### 多方研究员（看涨论点）
 以"【多方观点】"开头，列出3-5个看涨理由：
-- 每个理由必须有具体数据支撑（价格、成交量、均线位置等）
+- 每个理由必须有具体数据支撑（价格、成交量、均线位置、技术指标等）
 - 分析上涨的催化剂和潜在空间
 - 200-300字
 
-### 第二轮——空方研究员（看跌论点）
+### 空方研究员（看跌论点）
 以"【空方观点】"开头，列出3-5个看跌理由：
-- 直接回驳多方提出的论点
+- 直接针对多方提出的论点进行质疑
 - 指出被多方忽视的负面因素
 - 同样需要数据支撑
 - 200-300字
 
-### 第三轮——研究经理（综合评判）
+注意：严格遵守角色切换，不要混淆身份。`;
+}
+
+/** 第二轮：多方反驳 + 空方反驳 + 研究经理综合评判 */
+export function buildDebateRound2SystemPrompt(): string {
+  return `你是投资辩论主持人。基于第一轮双方的初始论点，现在进入第二轮深度辩论。
+
+## 第二轮
+
+### 多方反驳
+以"【多方反驳】"开头：
+- 针对空方第一轮的每个质疑，逐一进行反驳
+- 补充新的看涨证据
+- 强调空方逻辑中的漏洞或忽视的利好因素
+- 150-250字
+
+### 空方反驳
+以"【空方反驳】"开头：
+- 针对多方第一轮的每个论点，逐一进行质疑
+- 补充新的看跌证据
+- 强调多方逻辑中的风险盲点
+- 150-250字
+
+### 研究经理综合评判
 以"【综合评判】"开头：
-- 客观权衡双方论点的说服力
+- 客观权衡双方两轮论点的说服力
 - 点出市场最关心的核心矛盾
 - 给出偏向性判断：偏多 / 偏空 / 中性
 - 说明做出这个判断的关键依据
 - 150-250字
 
-注意：严格遵守角色切换，不要混淆身份。`;
+注意：严格遵守角色切换。`;
 }
 
-export function buildDebateUserPrompt(
+export function buildDebateRound2UserPrompt(
   stockCode: string,
   stockName: string,
-  stage1Output: string,
+  round1Output: string,
   quoteJson: string
 ): string {
   return `股票：${stockName} (${stockCode})
@@ -113,9 +147,36 @@ export function buildDebateUserPrompt(
 当前行情参考：
 ${quoteJson}
 
+以下为第一轮多空辩论的完整记录：
+
+${round1Output}
+
+请基于第一轮辩论内容，进行第二轮反驳和综合评判。`;
+}
+
+// 保持旧接口兼容（用于快速分析场景，不参与深度分析的辩论）
+export function buildDebateUserPrompt(
+  stockCode: string,
+  stockName: string,
+  stage1Output: string,
+  quoteJson: string,
+  indicatorBlock?: string
+): string {
+  const indicatorSection = indicatorBlock ? `${indicatorBlock}\n` : '';
+  return `股票：${stockName} (${stockCode})
+
+当前行情参考：
+${quoteJson}
+
+${indicatorSection}
 以下是一份深度分析师报告，请基于这份报告进行多空辩论：
 
 ${stage1Output}`;
+}
+
+/** @deprecated 保留用于客户端回退，深度分析使用 buildDebateRound1SystemPrompt */
+export function buildDebateSystemPrompt(): string {
+  return buildDebateRound1SystemPrompt();
 }
 
 // ============ 阶段三：最终裁决 ============
@@ -128,10 +189,12 @@ export function buildVerdictSystemPrompt(): string {
 ACTION:（买入/持有/卖出，三选一，必须用中文）
 RISK_LEVEL:（高风险/中风险/低风险，三选一）
 CONFIDENCE:（0-100的整数，60以上才算有信心）
+CONFIDENCE_SCORE:（0-1之间的浮点数，如0.75表示75%的信心，保留两位小数）
 TARGET_LOW:（目标价下限，仅数字，如10.50）
 TARGET_HIGH:（目标价上限，仅数字，如12.80）
 STOP_LOSS:（止损价，仅数字，如9.20）
 POSITION:（建议仓位百分比，如20%、50%、80%，含%符号）
+KEY_POINTS:（用 | 分隔的关键要点，如：1. MACD金叉多头动能充足 | 2. 成交量温和放大突破有效 | 3. 上方120日均线构成压力需保守）
 
 ---
 ### 决策理由
@@ -154,13 +217,15 @@ export function buildVerdictUserPrompt(
   stockName: string,
   stage1Output: string,
   stage2Output: string,
-  quoteJson: string
+  quoteJson: string,
+  positionNote?: string
 ): string {
+  const positionSection = positionNote ? `${positionNote}\n` : '';
   return `股票：${stockName} (${stockCode})
 
 **当前实时行情（务必以此为准）**：
 ${quoteJson}
-
+${positionSection}
 ## 分析师报告
 ${stage1Output}
 
@@ -168,4 +233,38 @@ ${stage1Output}
 ${stage2Output || '(辩论环节跳过)'}
 
 请基于以上信息，做出最终投资决策。**注意：目标价和止损价必须参考上方实时行情中的当前价格。**`;
+}
+
+// ============ 反思/记忆机制 ============
+
+/**
+ * 从历史记录构建反思上下文。
+ * 返回空字符串表示无可用历史。
+ */
+export function buildReflectionContext(
+  stockCode: string,
+  history: AiAnalysisRecord[],
+  currentQuote: { price: number; changePercent: number }
+): string {
+  const recentRecords = history
+    .filter(r => r.stockCode === stockCode)
+    .sort((a, b) => b.createdAt - a.createdAt);
+
+  if (recentRecords.length === 0) return '';
+
+  const latest = recentRecords[0];
+  const timeStr = new Date(latest.createdAt).toLocaleString('zh-CN');
+
+  let summary = `时间：${timeStr}\n模型：${latest.model}\n风险等级：${latest.riskLevel}`;
+  summary += `\n历史建议：${latest.suggestion}`;
+  summary += `\n历史分析摘要：${latest.analysis.slice(0, 300)}`;
+
+  if (latest.suggestion?.includes('买入') || latest.riskLevel?.includes('买入')) {
+    summary += `\n注意：该股票上次分析时给出"买入"建议，请结合当前价格${currentQuote.price}（涨跌${currentQuote.changePercent.toFixed(2)}%）评估上次建议的准确性。`;
+  }
+
+  return `## 历史分析回顾
+${summary}
+
+请结合当前情况，评估上次判断的准确性，并说明哪些因素发生了变化。`;
 }

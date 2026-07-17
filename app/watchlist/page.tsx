@@ -356,10 +356,31 @@ export default function WatchlistPage() {
                   </div>
 
                   {quote && (
+                    <>
                     <div className="mt-3 pt-3 border-t border-gray-100 dark:border-gray-800 flex items-center justify-between text-sm">
-                      <span className="text-gray-500">成交量: {formatVolume(quote.volume)}</span>
+                      {/* 持仓占比输入 */}
+                      <div className="flex items-center gap-1.5" onClick={(e) => e.stopPropagation()}>
+                        <span className="text-gray-400 text-xs">持仓占比</span>
+                        <input
+                          type="number"
+                          min="0"
+                          max="100"
+                          value={stock.positionPercent ?? ''}
+                          placeholder="--"
+                          onChange={(e) => {
+                            const val = e.target.value === '' ? undefined : Math.min(100, Math.max(0, Number(e.target.value)));
+                            useStockStore.getState().updateStockPosition(stock.code, val);
+                          }}
+                          className="w-14 px-2 py-1 text-xs border border-gray-200 dark:border-gray-700 rounded bg-white dark:bg-gray-800 text-center"
+                        />
+                        <span className="text-gray-400 text-xs">%</span>
+                      </div>
                       <span className="text-blue-600">查看详情 →</span>
                     </div>
+                    <div className="flex items-center justify-between text-sm">
+                      <span className="text-gray-500">成交量: {formatVolume(quote.volume)}</span>
+                    </div>
+                    </>
                   )}
                 </div>
               );
