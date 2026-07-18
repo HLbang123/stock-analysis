@@ -1,5 +1,4 @@
-import { cn } from "@/lib/cn";
-import { ALERT_COLORS } from "@/lib/constants";
+import { cn } from "@/lib/utils";
 import type { AlertLevel } from "@/types";
 
 interface BadgeProps {

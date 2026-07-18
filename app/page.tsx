@@ -1,17 +1,18 @@
 'use client';
 
-import React, { useEffect, useMemo, useState } from 'react';
+import { useEffect, useMemo, useState } from 'react';
 import { useRouter } from 'next/navigation';
 import { useStockStore } from '@/store';
 import { getRealtimeQuote, getKLineSina } from '@/services/stockApi';
 import { ALERT_RULES, checkAllRules } from '@/services/alertRules';
 import { AlertRecord } from '@/types';
 import { formatTime, cn, getAlertLevelColor } from '@/lib/utils';
-import { AlertTriangle, RefreshCw, Trash2, Plus } from 'lucide-react';
+import { buildUpdatedKLines } from '@/lib/stock-helpers';
+import { AlertTriangle, RefreshCw, Trash2 } from 'lucide-react';
 
 export default function HomePage() {
   const router = useRouter();
-  const { watchlist, alerts, isCheckingAlerts, addAlerts, markAsRead, clearAlerts, clearAllAlerts, setIsCheckingAlerts, rules } = useStockStore();
+  const { watchlist, alerts, isCheckingAlerts, clearAlerts, clearAllAlerts, setIsCheckingAlerts, rules } = useStockStore();
 
   const [resultMessage, setResultMessage] = useState<string | null>(null);
 
@@ -85,20 +86,7 @@ export default function HomePage() {
 
         if (kLines.length < 10) continue;
 
-        // 获取最新一天的实时数据
-        const todayStr = new Date().toISOString().split('T')[0];
-        const todayKLine = {
-          date: todayStr,
-          open: quote.open,
-          high: quote.high,
-          low: quote.low,
-          close: quote.price,
-          volume: quote.volume
-        };
-
-        // 移除K线中已有的今天数据，用实时数据替换
-        const historicalKLines = kLines.filter(k => k.date !== todayStr);
-        const updatedKLines = [...historicalKLines, todayKLine];
+        const updatedKLines = buildUpdatedKLines(quote, kLines);
 
         // 检查规则
         const enabledRules = rules.filter(r => r.isEnabled);

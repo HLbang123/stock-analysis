@@ -20,6 +20,7 @@ interface DailyBasicItem {
 
 interface FinaIndicatorItem {
   ts_code: string;
+  ann_date?: string;
   end_date: string;
   roe?: number;
   roe_dt?: number;
@@ -27,38 +28,46 @@ interface FinaIndicatorItem {
   grossprofit_margin?: number;
   netprofit_margin?: number;
   debt_to_assets?: number;
-  or_yoy?: number;         // 营收同比增速
-  tr_yoy?: number;         // 归属净利润同比增速
-  profit_dedt?: number;    // 扣非净利润同比
-  op_yoy?: number;         // 营业利润同比
+  or_yoy?: number;
+  tr_yoy?: number;
+  profit_dedt?: number;
+  basic_eps_yoy?: number;
+  equity_yoy?: number;
+  op_yoy?: number;
   current_ratio?: number;
   quick_ratio?: number;
-  ocf_to_or?: number;      // 经营现金流/营业收入
+  ocf_to_or?: number;
 }
 
 interface MoneyflowItem {
   ts_code: string;
   trade_date: string;
-  net_mf_amount?: number;   // 主力净流入（万元）
-  buy_elg_amount?: number;  // 超大单买入
+  net_mf_amount?: number;
+  buy_elg_amount?: number;
   sell_elg_amount?: number;
-  buy_lg_amount?: number;   // 大单买入
+  buy_lg_amount?: number;
   sell_lg_amount?: number;
-  buy_md_amount?: number;   // 中单买入
+  net_lg_amount?: number;
+  buy_md_amount?: number;
   sell_md_amount?: number;
-  buy_sm_amount?: number;   // 小单买入
+  net_md_amount?: number;
+  buy_sm_amount?: number;
   sell_sm_amount?: number;
+  net_sm_amount?: number;
 }
 
 export interface TushareData {
-  dailyBasic: DailyBasicItem[];
-  finaIndicator: FinaIndicatorItem[];
-  moneyflow: MoneyflowItem[];
+  dailyBasic?: DailyBasicItem[];
+  finaIndicator?: FinaIndicatorItem[];
+  moneyflow?: MoneyflowItem[];
   holderNumber?: HolderNumberItem[];
   margin?: MarginItem[];
   hkHold?: HkHoldItem[];
   forecast?: ForecastItem[];
-  errors?: string[];
+  topList?: TopListItem[];
+  indexData?: IndexDataItem[];
+  errors?: string[];       // 服务端聚合接口的部分调用失败（来自 /api/tushare/stock-data）
+  warnings?: string[];     // 客户端 sanitize 时丢弃的 section（数据异常）
 }
 
 // ===== 新增数据接口 =====
@@ -103,6 +112,76 @@ interface ForecastItem {
   change_reason?: string;
 }
 
+interface TopListItem {
+  trade_date: string;
+  ts_code: string;
+  name: string;
+  close?: number;
+  pct_change?: number;
+  turnover_rate?: number;
+  amount?: number;
+  l_sell?: number;
+  l_buy?: number;
+  l_amount?: number;
+  net_amount?: number;
+  net_rate?: number;
+  amount_rate?: number;
+  reason?: string;
+}
+
+interface IndexDataItem {
+  ts_code: string;
+  trade_date: string;
+  pe?: number;
+  pe_ttm?: number;
+  pb?: number;
+  total_mv?: number;
+  turnover_rate?: number;
+  pct_chg?: number;      // 涨跌幅（来自 index_daily）
+  close?: number;         // 收盘点位
+}
+
+/**
+ * 按 section 校验 tushare 数据合理性，丢弃损坏的 section（保留正常的）。
+ * token 错误/接口异常时，某些 section（典型如 margin）会返回市场总量级别的离谱大数
+ * 或重复行，塞进 prompt 会触发中转站安全风控（400 安全拦截）。
+ * 任一数值字段为 NaN/Infinity 或绝对值 > 1e11 → 该 section 整体丢弃。
+ * （1e11 宽松上界：个股市值~1e8万元、北向持股~1e9股、工行净利润~4e7万元，均远低于此；
+ *  而市场总量级垃圾值如 1.4e12 会被准确拦下。）
+ */
+function sanitizeTushareData(data: TushareData): TushareData {
+  const MAX = 1e11;
+  const warnings: string[] = [];
+  const check = <T,>(recs: T[] | undefined, name: string): T[] | undefined => {
+    if (!recs || recs.length === 0) return recs;
+    for (const rec of recs) {
+      for (const v of Object.values(rec as Record<string, unknown>)) {
+        if (typeof v === 'number' && (!Number.isFinite(v) || Math.abs(v) > MAX)) {
+          const msg = `${name} 数据异常（含离谱大数 ${v}），已丢弃该 section`;
+          console.warn(`[Tushare] ${msg}:`, rec);
+          warnings.push(msg);
+          return undefined;
+        }
+      }
+    }
+    return recs;
+  };
+  const sanitized: TushareData = {
+    ...data,
+    dailyBasic: check(data.dailyBasic, 'dailyBasic'),
+    finaIndicator: check(data.finaIndicator, 'finaIndicator'),
+    moneyflow: check(data.moneyflow, 'moneyflow'),
+    holderNumber: check(data.holderNumber, 'holderNumber'),
+    margin: check(data.margin, 'margin'),
+    hkHold: check(data.hkHold, 'hkHold'),
+    forecast: check(data.forecast, 'forecast'),
+    topList: check(data.topList, 'topList'),
+    indexData: check(data.indexData, 'indexData'),
+  };
+  if (warnings.length > 0) sanitized.warnings = warnings;
+  return sanitized;
+}
+
 /**
  * 从服务端聚合接口获取 Tushare 数据
  */
@@ -114,7 +193,9 @@ export async function fetchTushareData(code: string): Promise<TushareData | null
     if (!json.success) {
       console.warn('[Tushare] 部分数据获取失败:', json.errors);
     }
-    return json.data as TushareData;
+    const data = json.data as TushareData;
+    if (!data) return null;
+    return sanitizeTushareData(data);
   } catch (e) {
     console.warn('[Tushare] 数据获取失败:', e);
     return null;
@@ -143,17 +224,9 @@ export async function fetchTushareDataCached(code: string): Promise<TushareData 
  * 格式化市值（万元 → 亿）
  */
 function fmtMv(wan: number | undefined): string {
-  if (!wan) return '暂无';
+  if (wan == null) return '暂无';
   const yi = wan / 10000;
   return yi >= 1 ? `${yi.toFixed(1)}亿` : `${wan.toFixed(0)}万元`;
-}
-
-/**
- * 格式化百分比
- */
-function pct(v: number | undefined): string {
-  if (v === undefined || v === null) return '暂无';
-  return `${v.toFixed(2)}%`;
 }
 
 /**
@@ -198,6 +271,28 @@ export function formatTushareForPrompt(data: TushareData | null): string {
     if (latestBasic.volume_ratio !== undefined) valuationLines.push(`- 量比：${latestBasic.volume_ratio.toFixed(2)}`);
 
     sections.push(`### 估值与市值\n${valuationLines.join('\n')}`);
+  }
+
+  // ===== 1.5. 大盘环境（六大指数最新指标） =====
+  const idxData = data.indexData;
+  if (idxData && idxData.length > 0) {
+    const IDX_NAMES: Record<string, string> = {
+      '000001.SH': '上证综指', '399001.SZ': '深证成指', '399006.SZ': '创业板指',
+      '000016.SH': '上证50', '000905.SH': '中证500', '399005.SZ': '中小板指',
+    };
+    const idxLines: string[] = [];
+    for (const idx of idxData) {
+      const name = IDX_NAMES[idx.ts_code] || idx.ts_code;
+      const parts: string[] = [name];
+      if (idx.pct_chg !== undefined) {
+        parts.push(`${idx.pct_chg > 0 ? '+' : ''}${idx.pct_chg.toFixed(2)}%`);
+      }
+      if (idx.pe_ttm !== undefined) parts.push(`PE ${idx.pe_ttm.toFixed(1)}`);
+      if (idx.pb !== undefined) parts.push(`PB ${idx.pb.toFixed(2)}`);
+      if (idx.turnover_rate !== undefined) parts.push(`换手 ${idx.turnover_rate.toFixed(2)}%`);
+      idxLines.push(`- ${parts.join('，')}`);
+    }
+    sections.push(`### 大盘环境\n${idxLines.join('\n')}`);
   }
 
   // ===== 2. 财务指标（最近一季度 + 同比） =====
@@ -325,8 +420,9 @@ export function formatTushareForPrompt(data: TushareData | null): string {
       const dateStr = mg.trade_date
         ? `${mg.trade_date.slice(4, 6)}-${mg.trade_date.slice(6, 8)}`
         : '';
-      const rzyeYi = (mg.rzye || 0) / 10000;
-      const netBuy = (mg.rzmre || 0) - (mg.rzche || 0);
+      // margin 字段单位为「元」：rzye/1e8 → 亿；netBuy 先 /1e4 转万元 再交给 fmtFlow（fmtFlow 按万元计）
+      const rzyeYi = (mg.rzye || 0) / 1e8;
+      const netBuy = ((mg.rzmre || 0) - (mg.rzche || 0)) / 1e4;
       const netStr = netBuy > 0 ? `净买入 ${fmtFlow(netBuy)}` : netBuy < 0 ? `净卖出 ${fmtFlow(Math.abs(netBuy))}` : '';
       mgLines.push(`- ${dateStr}：融资余额 ${rzyeYi.toFixed(2)}亿${netStr ? '，' + netStr : ''}`);
     }
@@ -354,15 +450,33 @@ export function formatTushareForPrompt(data: TushareData | null): string {
       hkLines.push(`- ${dateStr}：持股 ${hk.hold_ratio?.toFixed(2) || '--'}%${dir}`);
       prevRatio = hk.hold_ratio;
     }
-    if (hkData.length >= 2 && hkData[0].hold_ratio && hkData[hkData.length - 1].hold_ratio) {
-      const trend = hkData[0].hold_ratio > hkData[hkData.length - 1].hold_ratio ? '北向资金持续增持，外资看好' :
-        hkData[0].hold_ratio < hkData[hkData.length - 1].hold_ratio ? '北向资金持续减持，外资态度谨慎' : '';
-      if (trend) hkLines.push(`\n趋势：${trend}`);
+    if (hkData.length >= 2) {
+      const first = hkData[0].hold_ratio;
+      const last = hkData[hkData.length - 1].hold_ratio;
+      if (first && last) {
+        const trend = first > last ? '北向资金持续增持，外资看好' :
+          first < last ? '北向资金持续减持，外资态度谨慎' : '';
+        if (trend) hkLines.push(`\n趋势：${trend}`);
+      }
     }
     sections.push(`### 北向资金持股\n${hkLines.join('\n')}`);
   }
 
-  // ===== 7. 业绩预告 =====
+  // ===== 7. 龙虎榜 =====
+  const tlData = data.topList;
+  if (tlData && tlData.length > 0) {
+    const tl = tlData[0];
+    const netDir = (tl.net_amount || 0) > 0 ? '净买入' : '净卖出';
+    const tlLines = [
+      `- 上榜理由：${tl.reason || '--'}`,
+      `- 龙虎榜成交额：${fmtFlow(tl.l_amount)}（占当日总成交 ${tl.amount_rate?.toFixed(1) || '--'}%）`,
+      `- 龙虎榜${netDir}：${fmtFlow(Math.abs(tl.net_amount || 0))}（净占比 ${tl.net_rate?.toFixed(1) || '--'}%）`,
+      `- 买入额：${fmtFlow(tl.l_buy)} | 卖出额：${fmtFlow(tl.l_sell)}`,
+    ];
+    sections.push(`### 龙虎榜\n${tlLines.join('\n')}`);
+  }
+
+  // ===== 8. 业绩预告 =====
   const fcData = data.forecast;
   if (fcData && fcData.length > 0) {
     const fc = fcData[0];
@@ -392,8 +506,10 @@ export function formatTushareForPrompt(data: TushareData | null): string {
     sections.push(`### 业绩预告\n${fcLines.join('\n')}`);
   }
 
-  // ===== 8. AI 分析提示 =====
-  sections.push(`### 基本面分析提示（请用以下阈值做判断）
+  // ===== 8. AI 分析提示（仅当有实际数据时才追加） =====
+  const hasData = (data.dailyBasic?.length || 0) > 0 || (data.finaIndicator?.length || 0) > 0;
+  if (hasData) {
+    sections.push(`### 基本面分析提示（请用以下阈值做判断）
 
 估值：
 - PEG = PE_TTM / 净利润增速(%)，< 1 → 低估，1-2 → 合理，> 2 → 高估
@@ -421,7 +537,22 @@ export function formatTushareForPrompt(data: TushareData | null): string {
 - 主力连续3日净流入 + 股价横盘 → 可能是吸筹，关注突破
 - 主力连续3日净流出 + 股价上涨 → 量价背离，诱多嫌疑
 - 北向资金连续增持 + 股价低迷 → 外资左侧抄底，长线看好`);
+  }
 
   sections.push('---');
   return sections.join('\n');
+}
+
+/**
+ * 龙虎榜对话速览（一行）
+ */
+export function formatTopListForChat(data: TushareData | null): string {
+  if (!data?.topList?.length) return '';
+  const tl = data.topList[0];
+  const net = tl.net_amount || 0;
+  const dir = net > 0 ? '净买入' : '净卖出';
+  const parts = [`龙虎榜：${dir} ${fmtFlow(Math.abs(net))}`];
+  if (tl.net_rate !== undefined) parts.push(`占比 ${tl.net_rate.toFixed(1)}%`);
+  if (tl.reason) parts.push(tl.reason);
+  return parts.join(' | ');
 }

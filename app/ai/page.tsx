@@ -1,9 +1,9 @@
 'use client';
 
-import React, { useState, useCallback, useRef, useEffect } from 'react';
+import { useState, useCallback, useRef } from 'react';
 import { useStockStore } from '@/store';
-import { useAiStore, AiProfile, AiAnalysisRecord } from '@/store/ai-store';
-import { getRealtimeQuote, getKLineSina, getRealtimeQuoteCached, getKLineSinaCached } from '@/services/stockApi';
+import { useAiStore, AiProfile } from '@/store/ai-store';
+import { getRealtimeQuote, getKLineSina, getRealtimeQuoteCached, getKLineSinaCached, getIndustry, fetchMarketStatusNote } from '@/services/stockApi';
 import { ALERT_RULES, checkAllRules } from '@/services/alertRules';
 import { buildXinJieQuickSystemPrompt } from '@/services/xinjiePrompt';
 import { buildUserPrompt } from '@/services/aiPrompt';
@@ -12,26 +12,19 @@ import {
   buildVerdictSystemPrompt, buildVerdictUserPrompt,
   buildReflectionContext, buildDebateDataPrompt,
 } from '@/services/deepAnalysisPrompt';
-import { KLineData, RealtimeQuote } from '@/types';
 import { calculateIndicators, formatIndicatorsForPrompt } from '@/lib/indicators';
 import { isETF } from '@/lib/identify';
-import { getMarketStatus } from '@/lib/identify';
-import { formatPrice, formatChange, cn } from '@/lib/utils';
-import { Brain, Settings, X, Plus, Pencil, Trash2, Check, Loader2, ChevronDown, ChevronRight, Send, Trash } from 'lucide-react';
+import { cn } from '@/lib/utils';
+import { buildUpdatedKLines } from '@/lib/stock-helpers';
+import { Brain, Settings, Loader2 } from 'lucide-react';
 import { fetchTushareData, formatTushareForPrompt } from '@/services/tushareData';
 import { toast } from 'sonner';
-
-const PRESET_PLATFORMS: { name: string; baseUrl: string; model: string }[] = [
-  { name: 'DeepSeek', baseUrl: 'https://api.deepseek.com/v1', model: 'deepseek-chat' },
-  { name: '智谱 GLM', baseUrl: 'https://open.bigmodel.cn/api/paas/v4', model: 'glm-4-flash' },
-  { name: 'Groq', baseUrl: 'https://api.groq.com/openai/v1', model: 'llama-3.1-8b-instant' },
-  { name: '通义千问', baseUrl: 'https://dashscope.aliyuncs.com/compatible-mode/v1', model: 'qwen-plus' },
-  { name: 'OpenAI', baseUrl: 'https://api.openai.com/v1', model: 'gpt-4o-mini' },
-];
-
-function generateId() {
-  return Date.now().toString(36) + Math.random().toString(36).slice(2);
-}
+import { Button } from '@/components/ui/button';
+import { ProfileSettingsModal } from '@/components/ai/ProfileSettingsModal';
+import { ProfileFormModal } from '@/components/ai/ProfileFormModal';
+import { AnalysisHistory } from '@/components/ai/AnalysisHistory';
+import { AiChat } from '@/components/ai/AiChat';
+import { generateId } from '@/components/ai/shared';
 
 export default function AiPage() {
   const { watchlist } = useStockStore();
@@ -52,11 +45,9 @@ export default function AiPage() {
     resistancePrice: string;
   } | null>(null);
   const [error, setError] = useState<string | null>(null);
-  const [expandedHistory, setExpandedHistory] = useState<Set<string>>(new Set());
   const [streamingText, setStreamingText] = useState('');
   const abortRef = useRef<AbortController | null>(null);
 
-  // 深度分析状态
   const [isDeepAnalyzing, setIsDeepAnalyzing] = useState(false);
   const [deepStage, setDeepStage] = useState<'idle' | 'analyst' | 'debate' | 'verdict'>('idle');
   const [deepResult, setDeepResult] = useState<{
@@ -81,131 +72,21 @@ export default function AiPage() {
     } | null;
   } | null>(null);
   const deepAbortRef = useRef<AbortController | null>(null);
-  const [showHistory, setShowHistory] = useState(false);
-
-  // 对话状态
-  const [chatMessages, setChatMessages] = useState<{ role: 'user' | 'assistant'; content: string }[]>([]);
-  const [chatInput, setChatInput] = useState('');
-  const [isChatStreaming, setIsChatStreaming] = useState(false);
-  const [attachStockContext, setAttachStockContext] = useState(true);
-  const [attachAnalysisResult, setAttachAnalysisResult] = useState(true);
-  const chatAbortRef = useRef<AbortController | null>(null);
-  const chatEndRef = useRef<HTMLDivElement>(null);
-
-  // 表单状态
-  const [formName, setFormName] = useState('');
-  const [formApiKey, setFormApiKey] = useState('');
-  const [formBaseUrl, setFormBaseUrl] = useState('');
-  const [formModel, setFormModel] = useState('');
-  const [formModels, setFormModels] = useState<string[]>([]);
-  const [isFetchingModels, setIsFetchingModels] = useState(false);
-  const [isTesting, setIsTesting] = useState(false);
-  const [testResult, setTestResult] = useState<string | null>(null);
+  // 断点续传：记录已完成阶段的输出文本 { analyst, tech, risk, ... }
+  const [deepCompleted, setDeepCompleted] = useState<Record<string, string>>({});
 
   const currentProfile = profiles.find(p => p.id === currentProfileId);
 
-  // 重置表单
-  const resetForm = () => {
-    setFormName('');
-    setFormApiKey('');
-    setFormBaseUrl('');
-    setFormModel('');
-    setFormModels([]);
-    setTestResult(null);
-  };
-
   const openAddProfile = () => {
-    resetForm();
     setEditingProfile(null);
+    setShowSettings(false);
     setShowAddProfile(true);
   };
 
   const openEditProfile = (p: AiProfile) => {
-    setFormName(p.name);
-    setFormApiKey(p.apiKey);
-    setFormBaseUrl(p.baseUrl);
-    setFormModel(p.model);
     setEditingProfile(p);
+    setShowSettings(false);
     setShowAddProfile(true);
-  };
-
-  // 获取模型列表
-  const fetchModels = async () => {
-    if (!formBaseUrl) return;
-    setIsFetchingModels(true);
-    try {
-      const res = await fetch('/api/ai/models', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ baseUrl: formBaseUrl, apiKey: formApiKey }),
-      });
-      const data = await res.json();
-      if (data.models) {
-        setFormModels(data.models);
-      } else {
-        toast.error(data.error || '获取失败');
-      }
-    } catch {
-      toast.error('获取模型列表失败');
-    } finally {
-      setIsFetchingModels(false);
-    }
-  };
-
-  // 测试连接
-  const testConnection = async () => {
-    if (!formBaseUrl || !formModel) return;
-    setIsTesting(true);
-    setTestResult(null);
-    try {
-      const res = await fetch('/api/ai/test', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ baseUrl: formBaseUrl, apiKey: formApiKey, model: formModel }),
-      });
-      const data = await res.json();
-      setTestResult(data.success ? `✅ ${data.message}` : `❌ ${data.message}`);
-    } catch {
-      setTestResult('❌ 连接失败');
-    } finally {
-      setIsTesting(false);
-    }
-  };
-
-  // 保存Profile
-  const saveProfile = () => {
-    if (!formName || !formBaseUrl || !formModel) {
-      toast.error('请填写名称、Base URL 和 Model');
-      return;
-    }
-    if (editingProfile) {
-      aiStore.updateProfile({
-        ...editingProfile,
-        name: formName,
-        apiKey: formApiKey,
-        baseUrl: formBaseUrl,
-        model: formModel,
-      });
-      toast.success('配置已更新');
-    } else {
-      aiStore.addProfile({
-        id: generateId(),
-        name: formName,
-        apiKey: formApiKey,
-        baseUrl: formBaseUrl,
-        model: formModel,
-      });
-      toast.success('配置已添加');
-    }
-    setShowAddProfile(false);
-    resetForm();
-  };
-
-  // 选择预设平台
-  const selectPreset = (preset: typeof PRESET_PLATFORMS[0]) => {
-    setFormBaseUrl(preset.baseUrl);
-    setFormModel(preset.model);
-    if (!formName) setFormName(preset.name);
   };
 
   // 从流式文本中逐步解析结构化字段
@@ -216,8 +97,8 @@ export default function AiPage() {
     const rulesMatch = text.match(/RULES:(.+)/);
 
     // 按 --- 分割头部和正文
-    const bodySplit = text.split(/^---\s*$/m);
-    const body = bodySplit.length > 1 ? bodySplit.slice(1).join('---') : '';
+    const bodySplit = text.split(/^---[\r\n]+/m);
+    let body = bodySplit.length > 1 ? bodySplit.slice(1).join('---\n') : text;
 
     let analysis = body;
     let suggestion = '';
@@ -261,8 +142,8 @@ export default function AiPage() {
     const posMatch = text.match(/POSITION:(.+)/);
     const keyPointsMatch = text.match(/KEY_POINTS:\s*(.+)/);
 
-    const bodySplit = text.split(/^---\s*$/m);
-    const body = bodySplit.length > 1 ? bodySplit.slice(1).join('---') : '';
+    const bodySplit = text.split(/^---[\r\n]+/m);
+    let body = bodySplit.length > 1 ? bodySplit.slice(1).join('---\n') : text;
 
     let reasoning = body, plan = '', riskNote = '';
     const planIdx = body.indexOf('### 操作计划');
@@ -328,15 +209,7 @@ export default function AiPage() {
       if (!quote) throw new Error('获取行情失败');
 
       // 运行规则引擎
-      const todayKLine = {
-        date: new Date().toISOString().split('T')[0],
-        open: quote.open,
-        high: quote.high,
-        low: quote.low,
-        close: quote.price,
-        volume: quote.volume,
-      };
-      const updatedKLines = kLines.length >= 5 ? [...kLines, todayKLine] : kLines;
+      const updatedKLines = kLines.length >= 5 ? buildUpdatedKLines(quote, kLines) : kLines;
       const engineResults = checkAllRules(updatedKLines, quote, ALERT_RULES.filter(r => r.isEnabled));
       const engineSummary = engineResults.length > 0
         ? engineResults.map(r => `${r.ruleId}:${r.message}`).join('; ')
@@ -358,7 +231,7 @@ export default function AiPage() {
         : undefined;
 
       const systemPrompt = buildXinJieQuickSystemPrompt(isETF(selectedCode));
-      const marketNote = `[市场状态] ${getMarketStatus().note}\n\n`;
+      const marketNote = `[市场状态] ${await fetchMarketStatusNote()}\n\n`;
       const userPrompt = marketNote + buildUserPrompt(selectedCode, stock.name, quoteJson, klineSummary, engineSummary, indicatorBlock, positionNote);
 
       // SSE 流式调用AI代理
@@ -468,8 +341,8 @@ export default function AiPage() {
     }
   };
 
-  // 深度分析（三阶段）
-  const runDeepAnalysis = async () => {
+  // 深度分析（三阶段）。resumeCompleted 传入时为断点续传，跳过已完成阶段
+  const runDeepAnalysis = async (resumeCompleted?: Record<string, string>) => {
     if (!selectedCode || !currentProfile) {
       toast.error('请先选择股票');
       return;
@@ -490,30 +363,37 @@ export default function AiPage() {
 
     const abortController = new AbortController();
     deepAbortRef.current = abortController;
+    // 断点续传：记录本次运行中已完成的阶段文本
+    const completedMap: Record<string, string> = {};
 
     try {
       // 获取数据（K线取60根，比心姐分析更多）
       const [quote, kLines, tushareData] = await Promise.all([
         getRealtimeQuoteCached(selectedCode),
         getKLineSinaCached(selectedCode, 240, 120),
-        fetchTushareData(selectedCode).catch(() => null),
+        fetchTushareData(selectedCode).catch(async () => {
+          console.warn('[Deep Analysis] Tushare 首次获取失败，2s 后重试...');
+          await new Promise(r => setTimeout(r, 2000));
+          return fetchTushareData(selectedCode).catch(() => null);
+        }),
       ]);
 
       if (!quote) throw new Error('获取行情失败');
+
+      // Tushare 部分接口失败/数据异常时，提示用户但不中断分析
+      const tushareIssues = [
+        ...(tushareData?.errors || []),
+        ...(tushareData?.warnings || []),
+      ];
+      if (tushareIssues.length > 0) {
+        toast.warning(`基本面数据部分缺失：${tushareIssues.join('；')}`);
+      }
 
       // 格式化 Tushare 基本面数据
       const tushareBlock = formatTushareForPrompt(tushareData);
 
       // 运行规则引擎
-      const todayKLine = {
-        date: new Date().toISOString().split('T')[0],
-        open: quote.open,
-        high: quote.high,
-        low: quote.low,
-        close: quote.price,
-        volume: quote.volume,
-      };
-      const updatedKLines = kLines.length >= 5 ? [...kLines, todayKLine] : kLines;
+      const updatedKLines = kLines.length >= 5 ? buildUpdatedKLines(quote, kLines) : kLines;
       const engineResults = checkAllRules(updatedKLines, quote, ALERT_RULES.filter(r => r.isEnabled));
       const engineSummary = engineResults.length > 0
         ? engineResults.map(r => `${r.ruleId}:${r.message}`).join('; ')
@@ -544,11 +424,11 @@ export default function AiPage() {
         : undefined;
 
       // 构建三阶段 prompts
-      const marketStatusNote = `[市场状态] ${getMarketStatus().note}\n\n`;
+      const marketStatusNote = `[市场状态] ${await fetchMarketStatusNote()}\n\n`;
       const etf = isETF(selectedCode);
       const stage1 = {
         systemPrompt: buildAnalystSystemPrompt(etf),
-        userPrompt: marketStatusNote + buildAnalystUserPrompt(selectedCode, stock.name, quoteJson, klineSummary, engineSummary, indicatorBlock, reflectionBlock, positionNote, etf, tushareBlock),
+        userPrompt: marketStatusNote + buildAnalystUserPrompt(selectedCode, stock.name, quoteJson, klineSummary, engineSummary, indicatorBlock, reflectionBlock, positionNote, etf, tushareBlock, getIndustry(selectedCode)),
       };
       // Stage 2 辩论数据（路由自行处理角色分配和调用）
       const debateDataPrompt = buildDebateDataPrompt(selectedCode, stock.name, quoteJson, indicatorBlock, marketStatusNote);
@@ -556,9 +436,12 @@ export default function AiPage() {
         systemPrompt: '', // 路由不再使用，自行构建角色 prompt
         userPrompt: debateDataPrompt,
       };
+      // verdict 不需要完整 quoteJson（含 11 位成交额等裸大数，易触发中转站敏感信息风控），
+      // 只给裁决必需的当前价/关键价位，用中文单位降低数字密度
+      const compactQuote = `当前价 ${quote.price} 元，涨跌 ${quote.changePercent.toFixed(2)}%（昨收 ${quote.preClose}，开盘 ${quote.open}，最高 ${quote.high}，最低 ${quote.low}）`;
       const stage3 = {
         systemPrompt: buildVerdictSystemPrompt(),
-        userPrompt: buildVerdictUserPrompt(selectedCode, stock.name, '', '', quoteJson, positionNoteVerdict),
+        userPrompt: buildVerdictUserPrompt(selectedCode, stock.name, '', '', compactQuote, positionNoteVerdict),
       };
 
       // SSE 流式调用深度分析
@@ -570,6 +453,7 @@ export default function AiPage() {
           baseUrl: currentProfile.baseUrl,
           apiKey: currentProfile.apiKey,
           model: currentProfile.model,
+          completed: resumeCompleted,
         }),
         signal: abortController.signal,
       });
@@ -620,9 +504,13 @@ export default function AiPage() {
                   analyst: analystText,
                 }));
               }
+              if (msg.done) completedMap.analyst = analystText;
             }
 
             if (msg.stage === 'debate') {
+              if (msg.role && msg.text !== undefined) {
+                completedMap[msg.role] = msg.text.replace(/\n+$/, '');
+              }
               if (msg.text !== undefined) {
                 debateText += msg.text;
                 setDeepStage('debate');
@@ -651,6 +539,7 @@ export default function AiPage() {
                   structured: parsed,
                 }));
               }
+              if (msg.done) completedMap.verdict = verdictText;
               if (msg.error) {
                 verdictError = msg.error;
                 setDeepResult(prev => ({
@@ -704,6 +593,7 @@ export default function AiPage() {
       });
 
       toast.success('深度分析完成');
+      setDeepCompleted({});
     } catch (err: any) {
       if (err.name === 'AbortError') {
         // 用户主动取消
@@ -711,6 +601,8 @@ export default function AiPage() {
         const msg = err.message || '深度分析失败';
         setError(msg);
         toast.error(msg);
+        // 保留已完成阶段，供"继续生成"断点续传
+        setDeepCompleted(completedMap);
       }
     } finally {
       setIsDeepAnalyzing(false);
@@ -722,150 +614,6 @@ export default function AiPage() {
   const cancelAnalysis = () => {
     if (abortRef.current) abortRef.current.abort();
     if (deepAbortRef.current) deepAbortRef.current.abort();
-  };
-
-  const cancelChat = () => {
-    if (chatAbortRef.current) {
-      chatAbortRef.current.abort();
-      chatAbortRef.current = null;
-    }
-    setIsChatStreaming(false);
-  };
-
-  const clearChat = () => {
-    setChatMessages([]);
-  };
-
-  // 自动滚动到底部
-  useEffect(() => {
-    chatEndRef.current?.scrollIntoView({ behavior: 'smooth' });
-  }, [chatMessages]);
-
-  // 发送对话消息
-  const sendMessage = async (text?: string) => {
-    const msg = (text || chatInput).trim();
-    if (!msg || !currentProfile || isChatStreaming) return;
-
-    setChatInput('');
-    const userMsg = { role: 'user' as const, content: msg };
-    setChatMessages(prev => [...prev, userMsg]);
-    setIsChatStreaming(true);
-
-    const abortController = new AbortController();
-    chatAbortRef.current = abortController;
-
-    try {
-      // 构建股票上下文（可选）
-      let stockContext = '';
-      if (attachStockContext && selectedCode) {
-        const stock = watchlist.find(s => s.code === selectedCode);
-        // 获取最新行情和K线
-        const [quote, kLines] = await Promise.all([
-          getRealtimeQuote(selectedCode),
-          getKLineSina(selectedCode, 240, 60),
-        ]);
-        if (quote) {
-          const klineSummary = kLines.slice(-20).map(k =>
-            `${k.date} ${k.open} ${k.high} ${k.low} ${k.close} ${k.volume}`
-          ).join('\n');
-          stockContext = `当前股票：${stock?.name || quote.name} (${selectedCode})\n实时行情：${JSON.stringify({ price: quote.price, changePercent: quote.changePercent.toFixed(2) + '%', high: quote.high, low: quote.low, open: quote.open, volume: quote.volume })}\n近20日K线：\n${klineSummary}`;
-
-          // 如果有最新分析结果，附上
-          if (attachAnalysisResult) {
-            if (result) {
-              stockContext += `\n\n最新心姐分析结论：风险${result.riskLevel}，支撑${result.supportPrice}，压力${result.resistancePrice}\n${result.analysis}`;
-            }
-            if (deepResult?.structured?.action) {
-              const ds = deepResult.structured;
-              stockContext += `\n\n最新深度分析结论：${ds.action} | 风险${ds.riskLevel} | 信心${ds.confidence}% | 仓位${ds.position} | 目标${ds.targetLow}-${ds.targetHigh} | 止损${ds.stopLoss}`;
-              if (ds.keyPoints && ds.keyPoints.length > 0) {
-                stockContext += `\n关键要点：${ds.keyPoints.join('；')}`;
-              }
-              if (ds.reasoning) {
-                stockContext += `\n决策理由：${ds.reasoning.slice(0, 300)}`;
-              }
-            }
-          }
-        }
-      }
-
-      // 构建 messages（最近10轮）
-      const recentMessages = chatMessages.slice(-20).map(m => ({
-        role: m.role,
-        content: m.content,
-      }));
-      const allMessages = [...recentMessages, { role: 'user', content: msg }];
-
-      const res = await fetch('/api/ai/chat', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          messages: allMessages,
-          stockContext: stockContext || undefined,
-          baseUrl: currentProfile.baseUrl,
-          apiKey: currentProfile.apiKey,
-          model: currentProfile.model,
-        }),
-        signal: abortController.signal,
-      });
-
-      if (!res.ok) {
-        const errData = await res.json().catch(() => ({ error: `HTTP ${res.status}` }));
-        throw new Error(errData.error || '请求失败');
-      }
-
-      // SSE 流式读取
-      const reader = res.body!.getReader();
-      const decoder = new TextDecoder();
-      let sseBuffer = '';
-      let aiContent = '';
-
-      // 添加空的 assistant 消息
-      setChatMessages(prev => [...prev, { role: 'assistant', content: '' }]);
-
-      while (true) {
-        const { done, value } = await reader.read();
-        if (done) break;
-
-        sseBuffer += decoder.decode(value, { stream: true });
-        const lines = sseBuffer.split('\n');
-        sseBuffer = lines.pop() || '';
-
-        for (const line of lines) {
-          const trimmed = line.trim();
-          if (!trimmed || !trimmed.startsWith('data:')) continue;
-          const data = trimmed.slice(5).trim();
-          if (data === '[DONE]') continue;
-
-          try {
-            const chunk = JSON.parse(data);
-            if (typeof chunk === 'string') {
-              aiContent += chunk;
-              // 更新最后一条消息
-              setChatMessages(prev => {
-                const updated = [...prev];
-                updated[updated.length - 1] = { role: 'assistant', content: aiContent };
-                return updated;
-              });
-            }
-          } catch {}
-        }
-      }
-    } catch (err: any) {
-      if (err.name !== 'AbortError') {
-        setChatMessages(prev => [...prev, { role: 'assistant', content: `❌ ${err.message}` }]);
-      }
-    } finally {
-      setIsChatStreaming(false);
-      chatAbortRef.current = null;
-    }
-  };
-
-  const handleChatKeyDown = (e: React.KeyboardEvent) => {
-    if (e.key === 'Enter' && !e.shiftKey) {
-      e.preventDefault();
-      sendMessage();
-    }
   };
 
   return (
@@ -901,12 +649,7 @@ export default function AiPage() {
       ) : (
         <div className="bg-blue-50 dark:bg-blue-950 border border-blue-200 dark:border-blue-800 rounded-xl p-4 mb-4 text-center">
           <p className="text-sm text-blue-700 dark:text-blue-300 mb-2">尚未配置AI模型</p>
-          <button
-            onClick={() => setShowSettings(true)}
-            className="px-4 py-2 bg-blue-600 text-white rounded-lg text-sm hover:bg-blue-700 transition"
-          >
-            添加API配置
-          </button>
+          <Button onClick={() => setShowSettings(true)}>添加API配置</Button>
         </div>
       )}
 
@@ -941,10 +684,8 @@ export default function AiPage() {
                 : "bg-purple-600 text-white hover:bg-purple-700 shadow-lg shadow-purple-200"
             )}
           >
-            {isAnalyzing && streamingText ? (
-              <><Loader2 className="w-5 h-5 animate-spin" />接收中...</>
-            ) : isAnalyzing ? (
-              <><Loader2 className="w-5 h-5 animate-spin" />连接中...</>
+            {isAnalyzing ? (
+              <><Loader2 className="w-5 h-5 animate-spin" />心姐分析中...</>
             ) : (
               <><Brain className="w-5 h-5" />心姐分析</>
             )}
@@ -952,7 +693,7 @@ export default function AiPage() {
 
           {/* 深度分析 */}
           <button
-            onClick={runDeepAnalysis}
+            onClick={() => runDeepAnalysis()}
             disabled={!selectedCode || isAnalyzing || isDeepAnalyzing}
             className={cn(
               "flex-1 py-3 rounded-xl font-medium flex items-center justify-center gap-2 transition",
@@ -989,6 +730,14 @@ export default function AiPage() {
       {error && (
         <div className="bg-red-50 border border-red-200 rounded-xl p-4 mb-4 text-red-600 text-sm">
           {error}
+          {!isDeepAnalyzing && Object.keys(deepCompleted).length > 0 && (
+            <button
+              onClick={() => runDeepAnalysis(deepCompleted)}
+              className="ml-2 px-3 py-1 bg-red-600 text-white rounded-lg text-xs font-medium hover:bg-red-700 transition"
+            >
+              继续生成（从断点恢复）
+            </button>
+          )}
         </div>
       )}
 
@@ -1122,9 +871,15 @@ export default function AiPage() {
               <div className="text-sm text-gray-600 dark:text-gray-400 whitespace-pre-wrap leading-relaxed">
                 {deepResult.analyst}
                 {isDeepAnalyzing && deepStage === 'analyst' && (
-                  <span className="inline-block w-0.5 h-4 bg-blue-500 ml-0.5 animate-pulse align-middle" />
+                  <span className="text-blue-500 animate-pulse text-lg font-bold">···</span>
                 )}
               </div>
+            </div>
+          )}
+          {isDeepAnalyzing && deepStage === 'debate' && !deepResult?.debate && (
+            <div className="flex items-center gap-2 text-base text-blue-500 font-medium py-2">
+              <Loader2 className="w-5 h-5 animate-spin" />
+              等待辩论...
             </div>
           )}
 
@@ -1142,12 +897,18 @@ export default function AiPage() {
                 <div className="text-sm text-gray-600 dark:text-gray-400 whitespace-pre-wrap leading-relaxed">
                   {deepResult.debate}
                   {isDeepAnalyzing && deepStage === 'debate' && (
-                    <span className="inline-block w-0.5 h-4 bg-amber-500 ml-0.5 animate-pulse align-middle" />
+                    <span className="text-amber-500 animate-pulse">...</span>
                   )}
                 </div>
               ) : isDeepAnalyzing && (deepStage === 'debate' || deepStage === 'verdict') ? (
                 <div className="text-sm text-gray-400 animate-pulse">等待辩论结果...</div>
               ) : null}
+            </div>
+          )}
+          {isDeepAnalyzing && deepStage === 'verdict' && !deepResult?.verdict && (
+            <div className="flex items-center gap-2 text-sm text-gray-400 pl-4">
+              <Loader2 className="w-4 h-4 animate-spin" />
+              等待最终裁决...
             </div>
           )}
 
@@ -1271,78 +1032,7 @@ export default function AiPage() {
       )}
 
       {/* 历史记录 */}
-      {history.length > 0 && (
-        <div className="bg-white dark:bg-gray-900 rounded-xl p-4 shadow-sm">
-          <button
-            onClick={() => setShowHistory(!showHistory)}
-            className="flex items-center gap-2 hover:bg-gray-50 dark:hover:bg-gray-800 rounded-lg p-1 -m-1 transition"
-          >
-            {showHistory ? <ChevronDown className="w-5 h-5" /> : <ChevronRight className="w-5 h-5" />}
-            <h3 className="font-semibold">历史分析 ({history.length})</h3>
-          </button>
-          {showHistory && (
-            <>
-              <div className="flex justify-end mb-2">
-                <button
-                  onClick={() => { aiStore.clearHistory(); toast.success('已清空全部历史'); }}
-                  className="text-xs text-red-500 hover:text-red-600 px-2 py-1 hover:bg-red-50 dark:hover:bg-red-950 rounded transition"
-                >
-                  清空全部
-                </button>
-              </div>
-          <div className="space-y-2">
-            {history.slice(0, 20).map(record => {
-              const isExpanded = expandedHistory.has(record.id);
-              return (
-                <div key={record.id} className="border border-gray-100 dark:border-gray-800 rounded-lg">
-                  <div className="p-3 flex items-center justify-between hover:bg-gray-50 dark:hover:bg-gray-800 rounded-lg transition cursor-pointer"
-                    onClick={() => {
-                      const next = new Set(expandedHistory);
-                      isExpanded ? next.delete(record.id) : next.add(record.id);
-                      setExpandedHistory(next);
-                    }}
-                  >
-                    <div className="flex-1 min-w-0">
-                      <p className="text-sm font-medium">{record.stockName}</p>
-                      <p className="text-xs text-gray-500">
-                        {record.profileName} · {new Date(record.createdAt).toLocaleString('zh-CN')}
-                      </p>
-                    </div>
-                    <div className="flex items-center gap-1.5 shrink-0">
-                      <span className={cn(
-                        "text-xs px-2 py-0.5 rounded-full",
-                        record.riskLevel.includes('高') ? "bg-red-100 text-red-600" :
-                        record.riskLevel.includes('中') ? "bg-orange-100 text-orange-600" :
-                        "bg-blue-100 text-blue-600"
-                      )}>
-                        {record.riskLevel}
-                      </span>
-                      <button
-                        onClick={(e) => { e.stopPropagation(); aiStore.deleteHistory(record.id); }}
-                        className="p-1 text-gray-400 hover:text-red-500 hover:bg-red-50 dark:hover:bg-red-950 rounded transition"
-                        title="删除"
-                      >
-                        <Trash2 className="w-3.5 h-3.5" />
-                      </button>
-                      {isExpanded ? <ChevronDown className="w-4 h-4" /> : <ChevronRight className="w-4 h-4" />}
-                    </div>
-                  </div>
-                  {isExpanded && (
-                    <div className="px-3 pb-3 space-y-2 text-sm text-gray-600 dark:text-gray-400 border-t border-gray-50 dark:border-gray-800 pt-2">
-                      <p>{record.analysis}</p>
-                      {record.suggestion && (
-                        <p className="text-purple-600">💡 {record.suggestion}</p>
-                      )}
-                    </div>
-                  )}
-                </div>
-              );
-            })}
-          </div>
-          </>
-          )}
-        </div>
-      )}
+      <AnalysisHistory history={history} />
 
       {/* 空状态 */}
       {!result && !streamingText && !isAnalyzing && !deepResult && !isDeepAnalyzing && !error && (
@@ -1353,306 +1043,32 @@ export default function AiPage() {
         </div>
       )}
 
-      {/* ======= AI 对话 ======= */}
+      {/* AI 对话 */}
       {currentProfile && (
-        <div className="bg-white dark:bg-gray-900 rounded-xl p-4 shadow-sm mb-6">
-          <div className="flex items-center justify-between mb-3">
-            <h3 className="font-semibold text-sm flex items-center gap-2">
-              <Send className="w-4 h-4 text-blue-500" />
-              AI 对话
-            </h3>
-            <div className="flex items-center gap-2">
-              {/* 上下文开关 */}
-              <label className="flex items-center gap-1.5 cursor-pointer select-none">
-                <input
-                  type="checkbox"
-                  checked={attachStockContext}
-                  onChange={(e) => setAttachStockContext(e.target.checked)}
-                  className="w-3.5 h-3.5 rounded accent-blue-600"
-                />
-                <span className="text-xs text-gray-500">
-                  {selectedCode ? `附上 ${watchlist.find(s => s.code === selectedCode)?.name || selectedCode} 数据` : '附上股票数据'}
-                </span>
-              </label>
-              {/* 附带分析结论开关 */}
-              {(result || deepResult?.structured?.action) && (
-                <label className="flex items-center gap-1.5 cursor-pointer select-none">
-                  <input
-                    type="checkbox"
-                    checked={attachAnalysisResult}
-                    onChange={(e) => setAttachAnalysisResult(e.target.checked)}
-                    className="w-3.5 h-3.5 rounded accent-blue-600"
-                  />
-                  <span className="text-xs text-gray-500">附带分析结论</span>
-                </label>
-              )}
-              {chatMessages.length > 0 && (
-                <button
-                  onClick={clearChat}
-                  className="p-1 text-gray-400 hover:text-red-500 transition"
-                  title="清空对话"
-                >
-                  <Trash className="w-3.5 h-3.5" />
-                </button>
-              )}
-            </div>
-          </div>
-
-          {/* 消息列表 */}
-          {(chatMessages.length > 0 || isChatStreaming) && (
-            <div className="max-h-80 overflow-y-auto space-y-3 mb-3">
-            {chatMessages.map((msg, i) => (
-              <div
-                key={i}
-                className={cn(
-                  "flex",
-                  msg.role === 'user' ? "justify-end" : "justify-start"
-                )}
-              >
-                <div className={cn(
-                  "max-w-[85%] rounded-xl px-3.5 py-2.5 text-sm",
-                  msg.role === 'user'
-                    ? "bg-blue-600 text-white rounded-br-md"
-                    : "bg-gray-100 dark:bg-gray-800 text-gray-700 dark:text-gray-300 rounded-bl-md"
-                )}>
-                  <div className="whitespace-pre-wrap break-words leading-relaxed">
-                    {msg.content}
-                    {isChatStreaming && i === chatMessages.length - 1 && msg.role === 'assistant' && (
-                      <span className="inline-block w-0.5 h-4 bg-blue-500 ml-0.5 animate-pulse align-middle" />
-                    )}
-                  </div>
-                </div>
-              </div>
-            ))}
-            <div ref={chatEndRef} />
-          </div>
-          )}
-
-          {/* 输入区 */}
-          <div className="flex gap-2">
-            <input
-              id="chat-input"
-              type="text"
-              value={chatInput}
-              onChange={(e) => setChatInput(e.target.value)}
-              onKeyDown={handleChatKeyDown}
-              placeholder="输入问题，Enter 发送..."
-              disabled={isChatStreaming}
-              className="flex-1 px-3.5 py-2.5 border border-gray-200 dark:border-gray-700 rounded-xl bg-white dark:bg-gray-800 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500 disabled:opacity-50"
-            />
-            {isChatStreaming ? (
-              <button
-                onClick={cancelChat}
-                className="px-4 py-2.5 bg-red-500 text-white rounded-xl text-sm font-medium hover:bg-red-600 transition"
-              >
-                停止
-              </button>
-            ) : (
-              <button
-                onClick={() => sendMessage()}
-                disabled={!chatInput.trim()}
-                className="px-4 py-2.5 bg-blue-600 text-white rounded-xl text-sm font-medium hover:bg-blue-700 transition disabled:opacity-50 disabled:cursor-not-allowed"
-              >
-                <Send className="w-4 h-4" />
-              </button>
-            )}
-          </div>
-        </div>
+        <AiChat
+          currentProfile={currentProfile}
+          selectedCode={selectedCode}
+          watchlist={watchlist}
+          result={result}
+          deepStructured={deepResult?.structured ?? null}
+        />
       )}
 
-      {/* ======= 设置弹窗 ======= */}
+      {/* 设置弹窗 */}
       {showSettings && (
-        <div className="fixed inset-0 bg-black/50 z-50 flex items-center justify-center p-4">
-          <div className="bg-white dark:bg-gray-900 rounded-2xl w-full max-w-lg max-h-[85vh] overflow-auto">
-            <div className="sticky top-0 bg-white dark:bg-gray-900 border-b border-gray-200 dark:border-gray-800 p-4 flex items-center justify-between">
-              <h2 className="font-semibold text-lg">API 配置管理</h2>
-              <button onClick={() => setShowSettings(false)} className="p-1">
-                <X className="w-5 h-5" />
-              </button>
-            </div>
-
-            <div className="p-4 space-y-3">
-              {profiles.map(p => (
-                <div
-                  key={p.id}
-                  className={cn(
-                    "p-3 rounded-xl border transition",
-                    p.id === currentProfileId
-                      ? "border-blue-500 bg-blue-50 dark:bg-blue-950"
-                      : "border-gray-200 dark:border-gray-700"
-                  )}
-                >
-                  <div className="flex items-center justify-between">
-                    <div>
-                      <p className="font-medium text-sm">{p.name}</p>
-                      <p className="text-xs text-gray-500">{p.model}</p>
-                      <p className="text-xs text-gray-400 truncate max-w-[200px]">{p.baseUrl}</p>
-                    </div>
-                    <div className="flex items-center gap-1">
-                      {p.id !== currentProfileId && (
-                        <button
-                          onClick={() => { aiStore.setCurrentProfile(p.id); setShowSettings(false); }}
-                          className="p-1.5 text-blue-600 hover:bg-blue-100 rounded-lg transition text-xs"
-                        >
-                          使用
-                        </button>
-                      )}
-                      <button
-                        onClick={() => openEditProfile(p)}
-                        className="p-1.5 hover:bg-gray-100 dark:hover:bg-gray-800 rounded-lg transition"
-                      >
-                        <Pencil className="w-4 h-4" />
-                      </button>
-                      <button
-                        onClick={() => {
-                          aiStore.deleteProfile(p.id);
-                          toast.success('已删除');
-                        }}
-                        className="p-1.5 text-red-500 hover:bg-red-50 rounded-lg transition"
-                      >
-                        <Trash2 className="w-4 h-4" />
-                      </button>
-                    </div>
-                  </div>
-                </div>
-              ))}
-
-              <button
-                onClick={openAddProfile}
-                className="w-full py-3 border-2 border-dashed border-gray-300 dark:border-gray-600 rounded-xl text-gray-500 hover:border-blue-400 hover:text-blue-500 transition flex items-center justify-center gap-2"
-              >
-                <Plus className="w-4 h-4" />
-                添加API配置
-              </button>
-            </div>
-          </div>
-        </div>
+        <ProfileSettingsModal
+          onClose={() => setShowSettings(false)}
+          onAdd={openAddProfile}
+          onEdit={openEditProfile}
+        />
       )}
 
-      {/* ======= 添加/编辑Profile弹窗 ======= */}
+      {/* 添加/编辑Profile弹窗 */}
       {showAddProfile && (
-        <div className="fixed inset-0 bg-black/50 z-[60] flex items-center justify-center p-4">
-          <div className="bg-white dark:bg-gray-900 rounded-2xl w-full max-w-md max-h-[85vh] overflow-auto">
-            <div className="sticky top-0 bg-white dark:bg-gray-900 border-b border-gray-200 dark:border-gray-800 p-4 flex items-center justify-between">
-              <h2 className="font-semibold">{editingProfile ? '编辑配置' : '添加API配置'}</h2>
-              <button onClick={() => setShowAddProfile(false)} className="p-1">
-                <X className="w-5 h-5" />
-              </button>
-            </div>
-
-            <div className="p-4 space-y-4">
-              {/* 预设平台 */}
-              <div>
-                <label className="text-sm font-medium mb-2 block">快速选择平台</label>
-                <div className="flex flex-wrap gap-2">
-                  {PRESET_PLATFORMS.map(p => (
-                    <button
-                      key={p.name}
-                      onClick={() => selectPreset(p)}
-                      className="px-3 py-1.5 text-xs bg-gray-100 dark:bg-gray-800 rounded-full hover:bg-blue-100 dark:hover:bg-blue-900 transition"
-                    >
-                      {p.name}
-                    </button>
-                  ))}
-                </div>
-              </div>
-
-              {/* 名称 */}
-              <div>
-                <label className="text-sm font-medium mb-1 block">名称</label>
-                <input
-                  value={formName}
-                  onChange={e => setFormName(e.target.value)}
-                  placeholder="如: 我的DeepSeek"
-                  className="w-full p-2.5 border border-gray-200 dark:border-gray-700 rounded-lg bg-white dark:bg-gray-800 text-sm"
-                />
-              </div>
-
-              {/* API Key */}
-              <div>
-                <label className="text-sm font-medium mb-1 block">API Key</label>
-                <input
-                  type="password"
-                  value={formApiKey}
-                  onChange={e => setFormApiKey(e.target.value)}
-                  placeholder="sk-..."
-                  className="w-full p-2.5 border border-gray-200 dark:border-gray-700 rounded-lg bg-white dark:bg-gray-800 text-sm"
-                />
-              </div>
-
-              {/* Base URL */}
-              <div>
-                <label className="text-sm font-medium mb-1 block">Base URL</label>
-                <input
-                  value={formBaseUrl}
-                  onChange={e => setFormBaseUrl(e.target.value)}
-                  placeholder="https://api.deepseek.com/v1"
-                  className="w-full p-2.5 border border-gray-200 dark:border-gray-700 rounded-lg bg-white dark:bg-gray-800 text-sm"
-                />
-              </div>
-
-              {/* Model */}
-              <div>
-                <div className="flex items-center justify-between mb-1">
-                  <label className="text-sm font-medium">Model</label>
-                  <button
-                    onClick={fetchModels}
-                    disabled={isFetchingModels || !formBaseUrl}
-                    className="text-xs text-blue-600 hover:text-blue-700 disabled:opacity-50"
-                  >
-                    {isFetchingModels ? '获取中...' : '获取模型列表'}
-                  </button>
-                </div>
-                {formModels.length > 0 ? (
-                  <select
-                    value={formModel}
-                    onChange={e => setFormModel(e.target.value)}
-                    className="w-full p-2.5 border border-gray-200 dark:border-gray-700 rounded-lg bg-white dark:bg-gray-800 text-sm"
-                  >
-                    <option value="">-- 选择模型 --</option>
-                    {formModels.map(m => (
-                      <option key={m} value={m}>{m}</option>
-                    ))}
-                  </select>
-                ) : (
-                  <input
-                    value={formModel}
-                    onChange={e => setFormModel(e.target.value)}
-                    placeholder="如: deepseek-chat"
-                    className="w-full p-2.5 border border-gray-200 dark:border-gray-700 rounded-lg bg-white dark:bg-gray-800 text-sm"
-                  />
-                )}
-              </div>
-
-              {/* 测试结果 */}
-              {testResult && (
-                <div className={cn(
-                  "p-3 rounded-lg text-sm",
-                  testResult.startsWith('✅') ? "bg-green-50 text-green-700" : "bg-red-50 text-red-700"
-                )}>
-                  {testResult}
-                </div>
-              )}
-
-              {/* 操作按钮 */}
-              <div className="flex gap-2">
-                <button
-                  onClick={testConnection}
-                  disabled={isTesting || !formBaseUrl || !formModel}
-                  className="flex-1 py-2.5 border border-gray-300 dark:border-gray-600 rounded-lg text-sm font-medium hover:bg-gray-50 dark:hover:bg-gray-800 transition disabled:opacity-50"
-                >
-                  {isTesting ? <Loader2 className="w-4 h-4 animate-spin mx-auto" /> : '测试连接'}
-                </button>
-                <button
-                  onClick={saveProfile}
-                  className="flex-1 py-2.5 bg-blue-600 text-white rounded-lg text-sm font-medium hover:bg-blue-700 transition"
-                >
-                  保存
-                </button>
-              </div>
-            </div>
-          </div>
-        </div>
+        <ProfileFormModal
+          editingProfile={editingProfile}
+          onClose={() => { setShowAddProfile(false); setEditingProfile(null); }}
+        />
       )}
     </div>
   );

@@ -1,9 +1,8 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { detectMarket } from '@/lib/identify';
+import { fetchWithRetry } from '@/lib/api-helpers';
 
-/**
- * 股票搜索代理 — 东方财富主源 + 新浪备用
- */
+/** 股票搜索代理 — 东方财富主源 + 新浪备用 */
 export async function GET(request: NextRequest) {
   const keyword = request.nextUrl.searchParams.get('keyword');
   if (!keyword) {
@@ -12,18 +11,6 @@ export async function GET(request: NextRequest) {
 
   const results = await trySearch(keyword);
   return NextResponse.json(results);
-}
-
-async function fetchWithRetry(url: string, options: RequestInit, retries = 2): Promise<Response | null> {
-  for (let i = 0; i <= retries; i++) {
-    try {
-      const res = await fetch(url, { ...options, signal: AbortSignal.timeout(8000) });
-      if (res.ok) return res;
-    } catch {
-      if (i < retries) await new Promise(r => setTimeout(r, 500));
-    }
-  }
-  return null;
 }
 
 async function trySearch(keyword: string) {

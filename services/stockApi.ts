@@ -1,5 +1,5 @@
 import { RealtimeQuote, KLineData } from '@/types';
-import { detectMarket, parseCode as parseIdent } from '@/lib/identify';
+import { detectMarket, parseCode as parseIdent, getMarketStatus } from '@/lib/identify';
 import { getCached, setCache } from '@/lib/cache';
 
 /**
@@ -65,7 +65,34 @@ export async function getMinuteData(code: string): Promise<{ time: string; price
 /**
  * 股票搜索 — 本地优先，无结果再调API
  */
-let cachedStocks: { c: string; n: string }[] | null = null;
+let cachedStocks: { c: string; n: string; industry?: string }[] | null = null;
+
+/**
+ * 从本地缓存获取股票行业分类
+ */
+export function getIndustry(code: string): string {
+  const pure = code.replace(/^(sh|sz|bj)/i, '');
+  const found = cachedStocks?.find(s => s.c === pure);
+  return found?.industry || '';
+}
+
+/**
+ * 获取市场状态文案（含节假日校验）
+ * 优先调用服务端 /api/market-status（基于 Tushare 交易日历），
+ * 失败时降级到本地周末判断
+ */
+export async function fetchMarketStatusNote(): Promise<string> {
+  try {
+    const res = await fetch('/api/market-status');
+    if (res.ok) {
+      const data = await res.json();
+      if (data?.note) return data.note;
+    }
+  } catch {
+    // 网络失败 → 降级
+  }
+  return getMarketStatus().note;
+}
 
 export async function searchStocks(keyword: string): Promise<RealtimeQuote[]> {
   const kw = keyword.trim().toLowerCase();

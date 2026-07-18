@@ -6,6 +6,8 @@ import { getRealtimeQuote, getKLineSina } from '@/services/stockApi';
 import { ALERT_RULES, checkAllRules } from '@/services/alertRules';
 import { SECTORS } from '@/lib/sectors';
 import { cn } from '@/lib/utils';
+import { buildUpdatedKLines } from '@/lib/stock-helpers';
+import { Card } from '@/components/ui/card';
 import { Search, TrendingUp, Filter, Loader2, Zap, ChevronDown, ChevronUp, Plus } from 'lucide-react';
 import { toast } from 'sonner';
 
@@ -87,9 +89,8 @@ export default function ScannerPage() {
         const kLines = await getKLineSina(s.code, 240, 120);
         if (kLines.length < 5) continue;
 
-        const todayStr = new Date().toISOString().split('T')[0];
-        const todayKLine = { date: todayStr, open: quote.open, high: quote.high, low: quote.low, close: quote.price, volume: quote.volume };
-        const alertResults = checkAllRules([...kLines.filter(k => k.date !== todayStr), todayKLine], quote, SCAN_RULES);
+        const updatedKLines = buildUpdatedKLines(quote, kLines);
+        const alertResults = checkAllRules(updatedKLines, quote, SCAN_RULES);
 
         if (alertResults.length > 0) {
           results.push({ code: s.code, name: quote.name || s.name, quote, alerts: alertResults, alertCount: alertResults.length });
@@ -149,7 +150,7 @@ export default function ScannerPage() {
         )}
       </div>
 
-      <div className="bg-white dark:bg-gray-900 rounded-xl p-4 shadow-sm mb-4">
+      <Card className="mb-4">
         <div className="flex items-center gap-3">
           <label className="text-sm text-gray-600 dark:text-gray-400 whitespace-nowrap">每板块取前</label>
           <select value={perSectorCount} onChange={e => setPerSectorCount(Number(e.target.value))}
@@ -158,7 +159,7 @@ export default function ScannerPage() {
           </select>
           <span className="text-sm text-gray-500">只（每板块共{SECTORS[0]?.stocks.length || 0}只）</span>
         </div>
-      </div>
+      </Card>
 
       <div className="flex gap-3 mb-4">
         <button onClick={quickScanHot} disabled={isScanning}

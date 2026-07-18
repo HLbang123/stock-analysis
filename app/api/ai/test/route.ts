@@ -1,9 +1,8 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { formatAiError, formatNetworkError } from '@/lib/ai-error';
+import { buildChatUrl, buildLLMHeaders, createTimeoutSignal } from '@/lib/llm-client';
 
-/**
- * 代理测试AI连接
- */
+/** 代理测试AI连接 */
 export async function POST(request: NextRequest) {
   try {
     const body = await request.json();
@@ -16,32 +15,22 @@ export async function POST(request: NextRequest) {
       );
     }
 
-    const url = `${baseUrl.replace(/\/$/, '')}/chat/completions`;
-
-    const headers: Record<string, string> = {
-      'Content-Type': 'application/json',
-    };
-    if (apiKey) {
-      headers['Authorization'] = `Bearer ${apiKey}`;
-    }
-
+    const url = buildChatUrl(baseUrl);
     const startTime = Date.now();
-
-    const controller = new AbortController();
-    const timeout = setTimeout(() => controller.abort(), 30000);
+    const { signal, clear } = createTimeoutSignal(30000);
 
     const response = await fetch(url, {
       method: 'POST',
-      headers,
+      headers: buildLLMHeaders(apiKey),
       body: JSON.stringify({
         model,
         messages: [{ role: 'user', content: 'hi' }],
         max_tokens: 5,
       }),
-      signal: controller.signal,
+      signal,
     });
 
-    clearTimeout(timeout);
+    clear();
     const latency = Date.now() - startTime;
 
     if (!response.ok) {

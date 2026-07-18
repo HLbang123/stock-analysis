@@ -43,39 +43,34 @@ export function detectMarket(code: string): Market | null {
 }
 
 /**
- * 获取A股市场当前状态（交易日判断简化：周一到周五为交易日）
+ * 获取A股市场当前状态（仅基于时间+周末判断，不含节假日）
+ * 如需节假日校验，调用 /api/market-status
  */
 export function getMarketStatus(): { isOpen: boolean; note: string } {
   const now = new Date();
-  const day = now.getDay(); // 0=周日 6=周六
+  const day = now.getDay();
   const h = now.getHours();
   const m = now.getMinutes();
-  const time = h * 60 + m; // 分钟数
+  const time = h * 60 + m;
 
   const isWeekend = day === 0 || day === 6;
 
   if (isWeekend) {
-    return { isOpen: false, note: '今天是周末，A股休市。以下数据为最近交易日收盘数据。' };
+    return { isOpen: false, note: "今天是周末，A股休市。以下数据为最近交易日收盘数据。" };
   }
 
-  const isMorning = time >= 570 && time < 690;   // 9:30-11:30
-  const isAfternoon = time >= 780 && time < 900;  // 13:00-15:00
+  const isMorning = time >= 570 && time < 690;
+  const isAfternoon = time >= 780 && time < 900;
 
   if (isMorning || isAfternoon) {
-    const session = isMorning ? '上午' : '下午';
+    const session = isMorning ? "上午" : "下午";
     return { isOpen: true, note: `当前A股正在交易中（${session}盘），价格仍在实时波动，今日K线尚未定型，请以盘中动态视角分析，不宜将当前价位视为收盘价。` };
   }
 
-  if (time < 570) {
-    return { isOpen: false, note: '当前为盘前时段，A股尚未开盘。以下数据为最近交易日收盘数据，今日走势尚未展开。' };
-  }
+  if (time < 570) return { isOpen: false, note: "当前为盘前时段，A股尚未开盘。以下数据为最近交易日收盘数据，今日走势尚未展开。" };
+  if (time >= 690 && time < 780) return { isOpen: false, note: "当前为午间休市时段。上午交易已结束，下午将于13:00开盘。" };
 
-  if (time >= 690 && time < 780) {
-    return { isOpen: false, note: '当前为午间休市时段。上午交易已结束，下午将于13:00开盘。' };
-  }
-
-  // 15:00 之后
-  return { isOpen: false, note: 'A股已收盘。以下数据为今日最终收盘数据。' };
+  return { isOpen: false, note: "A股已收盘。以下数据为今日最终收盘数据。" };
 }
 export function parseCode(input: string): { market: Market; pureCode: string; fullCode: string } | null {
   const trimmed = input.trim().toLowerCase();
@@ -99,4 +94,15 @@ export function parseCode(input: string): { market: Market; pureCode: string; fu
   if (!market) return null;
 
   return { market, pureCode, fullCode: `${market}${pureCode}` };
+}
+
+/**
+ * 校验纯数字股票代码（6 位），返回市场与补零后的纯代码
+ * 用于 OCR 等场景从截图中提取的代码验证
+ */
+export function validateStockCode(code: string | number): { market: Market; pureCode: string } | null {
+  const pure = String(code).padStart(6, '0');
+  const market = detectMarket(pure);
+  if (!market) return null;
+  return { market, pureCode: pure };
 }

@@ -128,7 +128,7 @@ export function KLineChart({
       volumeSeries.setData(volumeData);
     }
 
-    // 预警标记 — v5 中用独立 LineSeries 绘制标记点
+    // 预警标记
     if (alertMarkers.length > 0) {
       const markerPoints: { time: Time; value: number }[] = [];
       const markerColors: string[] = [];

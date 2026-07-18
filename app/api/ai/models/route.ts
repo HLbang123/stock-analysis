@@ -1,9 +1,8 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { formatAiError, formatNetworkError } from '@/lib/ai-error';
+import { normalizeBaseUrl, buildLLMHeaders } from '@/lib/llm-client';
 
-/**
- * 代理获取模型列表
- */
+/** 代理获取模型列表 */
 export async function POST(request: NextRequest) {
   try {
     const body = await request.json();
@@ -13,16 +12,8 @@ export async function POST(request: NextRequest) {
       return NextResponse.json({ error: '缺少 Base URL' }, { status: 400 });
     }
 
-    const url = `${baseUrl.replace(/\/$/, '')}/models`;
-
-    const headers: Record<string, string> = {
-      'Content-Type': 'application/json',
-    };
-    if (apiKey) {
-      headers['Authorization'] = `Bearer ${apiKey}`;
-    }
-
-    const response = await fetch(url, { headers });
+    const url = `${normalizeBaseUrl(baseUrl)}/models`;
+    const response = await fetch(url, { headers: buildLLMHeaders(apiKey) });
 
     if (!response.ok) {
       const text = await response.text().catch(() => '');

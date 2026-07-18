@@ -1,60 +1,115 @@
-// 获取全部A股列表，保存到 public/stocks.json
+// 从 Tushare 获取全部A股列表，保存到 public/stocks.json
 // 用法: node scripts/fetch-stocks.js
+// 依赖: 项目根目录 .env.local 中须配置 TUSHARE_TOKEN
 const fs = require('fs');
 const path = require('path');
 
-const HEADERS = {
-  'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36',
-  'Referer': 'https://finance.sina.com.cn/',
-};
+const TUSHARE_API = 'https://api.tushare.pro';
 
-async function fetchBoard(node, maxPages) {
-  const all = new Map();
-  for (let p = 1; p <= maxPages; p++) {
-    const url = `https://vip.stock.finance.sina.com.cn/quotes_service/api/json_v2.php/Market_Center.getHQNodeData?page=${p}&num=100&sort=symbol&asc=1&node=${node}`;
-    let items = [];
-    try {
-      const r = await fetch(url, { headers: HEADERS, signal: AbortSignal.timeout(15000) });
-      const text = await r.text();
-      items = text.startsWith('[') ? JSON.parse(text) : [];
-      for (const it of items) {
-        const code = String(it.symbol || '').replace(/^(sh|sz|bj)/i, '');
-        if (/^\d{6}$/.test(code)) all.set(code, it.name);
-      }
-      process.stdout.write(`p${p}:${items.length} `);
-    } catch (e) {
-      process.stdout.write(`p${p}:err `);
-      break;
-    }
-    if (items.length < 100) break;
-    await new Promise(r => setTimeout(r, 10000));
+// 从 .env.local 读取 token
+function loadToken() {
+  const envPath = path.join(__dirname, '..', '.env.local');
+  if (!fs.existsSync(envPath)) {
+    console.error('❌ 未找到 .env.local，请先配置 TUSHARE_TOKEN');
+    process.exit(1);
   }
-  return all;
+  const content = fs.readFileSync(envPath, 'utf-8');
+  const match = content.match(/TUSHARE_TOKEN=(.+)/);
+  if (!match) {
+    console.error('❌ .env.local 中未找到 TUSHARE_TOKEN');
+    process.exit(1);
+  }
+  return match[1].trim();
 }
+
+async function callTushare(apiName, params = {}, fields = '') {
+  const body = { api_name: apiName, token, params };
+  if (fields) body.fields = fields;
+
+  const res = await fetch(TUSHARE_API, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(body),
+  });
+  const json = await res.json();
+  if (json.code !== 0) {
+    throw new Error(`Tushare ${apiName} 错误: ${json.msg || json.code}`);
+  }
+  return json;
+}
+
+const token = loadToken();
 
 async function main() {
   const outPath = path.join(__dirname, '..', 'public', 'stocks.json');
+  const allStocks = new Map();
 
-  console.log('沪市...');
-  const sh = await fetchBoard('sh_a', 25);
-  console.log(`= ${sh.size}`);
+  // ===== 1. A股股票（stock_basic）=====
+  console.log('获取 A股列表...');
+  try {
+    const res = await callTushare('stock_basic',
+      { list_status: 'L' },
+      'ts_code,name,area,industry,list_date'
+    );
 
-  // 先保存沪市，防止中断丢失
-  const shArr = Array.from(sh.entries()).map(([c, n]) => ({ c, n }));
-  fs.writeFileSync(outPath, JSON.stringify(shArr));
-  console.log(`已保存 ${shArr.length} 只 (仅沪市)，继续抓深市...`);
+    for (const item of res.data.items) {
+      const ts_code = item[0];  // "000001.SZ"
+      const name = item[1];
+      const industry = item[3] || '';
 
-  console.log('等60秒...');
-  await new Promise(r => setTimeout(r, 60000));
+      // 提取纯数字代码
+      const pureCode = ts_code.replace(/\.(SZ|SH|BJ)$/i, '');
+      if (/^\d{6}$/.test(pureCode)) {
+        allStocks.set(pureCode, { n: name, industry });
+      }
+    }
+    console.log(`  A股: ${allStocks.size} 只`);
+  } catch (e) {
+    console.error(`  A股失败: ${e.message}`);
+  }
 
-  console.log('深市...');
-  const sz = await fetchBoard('sz_a', 30);
-  console.log(`= ${sz.size}`);
+  // ===== 2. ETF（fund_basic）=====
+  console.log('获取 ETF 列表...');
+  try {
+    const res = await callTushare('fund_basic',
+      { market: 'E', status: 'L' },
+      'ts_code,name,fund_type'
+    );
 
-  const merged = new Map([...sh, ...sz]);
-  const result = Array.from(merged.entries()).map(([c, n]) => ({ c, n }));
+    if (!res.data?.items || res.data.items.length === 0) {
+      console.log(`  ETF: 无数据（可能是积分不足或接口不可用）`);
+    } else {
+      let etfAdded = 0;
+      for (const item of res.data.items) {
+        const ts_code = item[0];
+        const name = item[1];
+        const fundType = item[2] || '';
+
+        const pureCode = ts_code.replace(/\.(SZ|SH|BJ)$/i, '');
+        if (/^\d{6}$/.test(pureCode) && !allStocks.has(pureCode)) {
+          const label = fundType ? `${name}(${fundType})` : name;
+          allStocks.set(pureCode, { n: label, industry: 'ETF' });
+          etfAdded++;
+        }
+      }
+      console.log(`  ETF 新增: ${etfAdded} 只，总计: ${allStocks.size} 只`);
+    }
+  } catch (e) {
+    console.error(`  ETF 失败: ${e.message}`);
+  }
+
+  // ===== 3. 保存 =====
+  if (allStocks.size === 0) {
+    console.error('❌ 未获取到任何股票数据');
+    process.exit(1);
+  }
+
+  const result = Array.from(allStocks.entries())
+    .map(([c, { n, industry }]) => ({ c, n: n.replace(/\s/g, ''), industry }))
+    .sort((a, b) => a.c.localeCompare(b.c));
+
   fs.writeFileSync(outPath, JSON.stringify(result));
-  console.log(`\n总计: ${result.length} 只股票`);
+  console.log(`✅ 已保存 ${result.length} 只到 public/stocks.json`);
 }
 
-main();
+main().catch(e => { console.error(e); process.exit(1); });

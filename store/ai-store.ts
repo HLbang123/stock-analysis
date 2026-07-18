@@ -33,7 +33,6 @@ interface AiStoreState {
   updateProfile: (p: AiProfile) => void;
   deleteProfile: (id: string) => void;
   setCurrentProfile: (id: string) => void;
-  getCurrentProfile: () => AiProfile | undefined;
   addHistory: (record: AiAnalysisRecord) => void;
   deleteHistory: (id: string) => void;
   clearHistory: () => void;
@@ -72,11 +71,6 @@ export const useAiStore = create<AiStoreState>()(
 
       setCurrentProfile: (id) => {
         set({ currentProfileId: id });
-      },
-
-      getCurrentProfile: () => {
-        const { profiles, currentProfileId } = get();
-        return profiles.find(p => p.id === currentProfileId);
       },
 
       addHistory: (record) => {

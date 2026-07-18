@@ -31,7 +31,10 @@ export function formatAiError(status: number, responseBody: string): string {
   // ===== 按状态码映射 =====
   switch (status) {
     case 400:
-      return '请求参数有误，请检查模型名称或 Base URL 是否正确';
+      // 透出厂商原始错误（如 context length exceeded / invalid parameter），便于定位
+      return providerMsg
+        ? `请求参数有误 (400)：${providerMsg.slice(0, 150)}`
+        : '请求参数有误，请检查模型名称或 Base URL 是否正确';
 
     case 401: {
       // 最常见：API Key 问题
@@ -78,34 +81,46 @@ export function formatAiError(status: number, responseBody: string): string {
 
 /**
  * 格式化 fetch 阶段网络错误（无法连接、DNS 失败、超时等）
+ * Node 的 fetch 失败时 message 通常是 "fetch failed"，真实原因在 error.cause
+ * （cause.code 如 ENOTFOUND/ECONNREFUSED/ECONNRESET，cause.message 含细节）
  */
 export function formatNetworkError(error: Error): string {
-  const msg = error.message || '';
+  const cause: any = (error as any).cause;
+  const msg = cause?.message || error.message || '';
+  const code: string = cause?.code || '';
 
-  if (error.name === 'AbortError' || msg.includes('abort') || msg.includes('timeout')) {
+  if (error.name === 'AbortError' || cause?.name === 'AbortError' || code === 'ABORT_ERR' || msg.includes('abort') || msg.includes('timeout')) {
     return '连接超时，请检查网络或 API 地址是否可访问';
   }
 
   // DNS / 无法解析
-  if (msg.includes('ENOTFOUND') || msg.includes('getaddrinfo') || msg.includes('DNS')) {
-    return '无法解析域名，请检查 Base URL 是否正确';
+  if (code === 'ENOTFOUND' || msg.includes('ENOTFOUND') || msg.includes('getaddrinfo') || msg.includes('DNS')) {
+    return `无法解析域名${cause?.hostname ? `（${cause.hostname}）` : ''}，请检查 Base URL 是否正确`;
   }
 
   // 连接被拒
-  if (msg.includes('ECONNREFUSED') || msg.includes('refused')) {
+  if (code === 'ECONNREFUSED' || msg.includes('ECONNREFUSED') || msg.includes('refused')) {
     return '连接被拒绝，请检查 Base URL 和端口是否正确';
   }
 
+  // 连接被重置（中转站不稳定 / 限流常见）
+  if (code === 'ECONNRESET' || msg.includes('ECONNRESET')) {
+    return '连接被对端重置（ECONNRESET），可能是服务端不稳定或限流，请稍后重试';
+  }
+
   // SSL / 证书错误
-  if (msg.includes('certificate') || msg.includes('SSL') || msg.includes('TLS') || msg.includes('CERT')) {
+  if (msg.includes('certificate') || msg.includes('SSL') || msg.includes('TLS') || msg.includes('CERT') || code.includes('CERT')) {
     return 'SSL 证书验证失败，请检查 Base URL 的 HTTPS 证书是否有效';
   }
 
   // 网络不可达
-  if (msg.includes('ETIMEDOUT') || msg.includes('ENETUNREACH') || msg.includes('EHOSTUNREACH')) {
+  if (code === 'ETIMEDOUT' || code === 'ENETUNREACH' || code === 'EHOSTUNREACH' || msg.includes('ETIMEDOUT') || msg.includes('ENETUNREACH') || msg.includes('EHOSTUNREACH')) {
     return '网络不可达，请检查 Base URL 是否正确、网络是否连通';
   }
 
-  // 通用网络错误
-  return `网络连接失败: ${msg.slice(0, 80)}，请检查 Base URL 和网络`;
+  // 通用兜底：尽量带上 cause 细节
+  if (msg && msg !== 'fetch failed') {
+    return `网络连接失败: ${msg.slice(0, 120)}，请检查 Base URL 和网络`;
+  }
+  return `网络请求失败${code ? `（${code}）` : ''}，请检查 Base URL 是否正确、网络是否连通`;
 }

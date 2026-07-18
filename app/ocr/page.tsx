@@ -3,32 +3,16 @@
 import React, { useState, useRef, useCallback } from 'react';
 import { useStockStore } from '@/store';
 import { parseStockCode, getRealtimeQuote } from '@/services/stockApi';
+import { validateStockCode } from '@/lib/identify';
 import { cn } from '@/lib/utils';
-import { Camera, Upload, Loader2, Plus, Check, X } from 'lucide-react';
+import { Camera, Upload, Plus, Check, X } from 'lucide-react';
 import { toast } from 'sonner';
+import { Button } from '@/components/ui/button';
 
 interface OcrStockResult {
   code: string;   // full code like sh600519
   name: string;
   added: boolean;
-}
-
-// A股代码范围验证
-const A_SHARE_RANGES: { min: number; max: number; market: string }[] = [
-  { min: 600000, max: 605999, market: 'sh' },  // 上海主板
-  { min: 688000, max: 689999, market: 'sh' },  // 科创板
-  { min: 0, max: 3999, market: 'sz' },          // 深圳主板(000001-003999)
-  { min: 300000, max: 301999, market: 'sz' },  // 创业板
-  { min: 800000, max: 839999, market: 'bj' },  // 北交所
-];
-
-function isValidAStock(code: number): { market: string; pureCode: string } | null {
-  for (const range of A_SHARE_RANGES) {
-    if (code >= range.min && code <= range.max) {
-      return { market: range.market, pureCode: String(code).padStart(6, '0') };
-    }
-  }
-  return null;
 }
 
 export default function OcrPage() {
@@ -115,8 +99,7 @@ export default function OcrPage() {
       const validResults: OcrStockResult[] = [];
 
       for (const codeStr of extractedCodes) {
-        const codeNum = parseInt(codeStr);
-        const valid = isValidAStock(codeNum);
+        const valid = validateStockCode(codeStr);
         if (!valid) continue;
 
         const fullCode = `${valid.market}${valid.pureCode}`;
@@ -207,34 +190,21 @@ export default function OcrPage() {
               </button>
             </div>
             <div className="p-4 flex gap-3">
-              <button
+              <Button
                 onClick={handleSelectImage}
-                className="flex-1 py-2.5 border border-gray-200 dark:border-gray-700 rounded-lg text-sm hover:bg-gray-50 dark:hover:bg-gray-800 transition"
+                variant="outline"
+                className="flex-1"
               >
                 重新选择
-              </button>
-              <button
+              </Button>
+              <Button
                 onClick={handleScan}
-                disabled={isProcessing}
-                className={cn(
-                  "flex-1 py-2.5 rounded-lg text-sm font-medium flex items-center justify-center gap-2 transition",
-                  isProcessing
-                    ? "bg-gray-200 text-gray-400 cursor-not-allowed"
-                    : "bg-blue-600 text-white hover:bg-blue-700"
-                )}
+                loading={isProcessing}
+                className="flex-1"
               >
-                {isProcessing ? (
-                  <>
-                    <Loader2 className="w-4 h-4 animate-spin" />
-                    识别中...
-                  </>
-                ) : (
-                  <>
-                    <Upload className="w-4 h-4" />
-                    开始识别
-                  </>
-                )}
-              </button>
+                <Upload className="w-4 h-4" />
+                {isProcessing ? '识别中...' : '开始识别'}
+              </Button>
             </div>
           </div>
         ) : (
@@ -278,15 +248,11 @@ export default function OcrPage() {
                 <p className="font-medium">{result.name}</p>
                 <p className="text-sm text-gray-500">{result.code}</p>
               </div>
-              <button
+              <Button
                 onClick={() => handleAddStock(result)}
+                variant={result.added ? "secondary" : "primary"}
+                size="sm"
                 disabled={result.added}
-                className={cn(
-                  "px-4 py-2 rounded-lg text-sm font-medium flex items-center gap-1.5 transition",
-                  result.added
-                    ? "bg-gray-100 text-gray-400 cursor-not-allowed"
-                    : "bg-blue-600 text-white hover:bg-blue-700"
-                )}
               >
                 {result.added ? (
                   <>
@@ -299,7 +265,7 @@ export default function OcrPage() {
                     加入自选
                   </>
                 )}
-              </button>
+              </Button>
             </div>
           ))}
         </div>

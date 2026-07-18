@@ -16,13 +16,23 @@ export async function GET(request: NextRequest) {
   const tsCode = toTsCode(code);
   const errors: string[] = [];
 
-  // 并行获取七项数据
-  const [dailyBasicRes, finaRes, moneyflowRes, holderRes, marginRes, hkHoldRes, forecastRes] = await Promise.allSettled([
-    callTushare(
+  // 1. 先取 daily_basic，拿到最新交易日（供大盘指数查询用）
+  let dailyBasic: Record<string, any>[] = [];
+  try {
+    const rawDaily = await callTushare(
       "daily_basic",
       { ts_code: tsCode, limit: 5 },
       "ts_code,trade_date,pe,pe_ttm,pb,ps_ttm,total_mv,circ_mv,turnover_rate,volume_ratio"
-    ),
+    );
+    dailyBasic = toRecords(rawDaily);
+  } catch (e: any) {
+    errors.push("daily_basic: " + e.message);
+  }
+  const latestDate = dailyBasic[0]?.trade_date;
+
+  // 2. 其余并行；大盘指数用 trade_date 一次取回全部指数
+  //    （index_dailybasic / index_daily 不支持逗号分隔 ts_code，按 trade_date 查返回当日全部指数）
+  const [finaRes, moneyflowRes, holderRes, marginRes, hkHoldRes, forecastRes, topListRes, indexBasicRes, indexDailyRes] = await Promise.allSettled([
     callTushare(
       "fina_indicator",
       { ts_code: tsCode, limit: 4 },
@@ -39,9 +49,9 @@ export async function GET(request: NextRequest) {
       "ts_code,ann_date,end_date,holder_num,holder_num_ratio"
     ),
     callTushare(
-      "margin",
+      "margin_detail",
       { ts_code: tsCode, limit: 5 },
-      "ts_code,trade_date,rzye,rqye,rzmre,rzche,rqyl,rqchl"
+      "ts_code,trade_date,rzye,rqye,rzmre,rzche,rqyl,rqchl,rzrqye"
     ),
     callTushare(
       "hk_hold",
@@ -53,12 +63,29 @@ export async function GET(request: NextRequest) {
       { ts_code: tsCode, limit: 1 },
       "ts_code,ann_date,end_date,type,p_change_min,p_change_max,net_profit_min,net_profit_max,last_parent_net,summary,change_reason"
     ),
+    // 龙虎榜（最近交易日，按个股过滤）
+    latestDate
+      ? callTushare(
+          "top_list",
+          { trade_date: latestDate, ts_code: tsCode },
+          "trade_date,ts_code,name,close,pct_change,turnover_rate,amount,l_sell,l_buy,l_amount,net_amount,net_rate,amount_rate,float_values,reason"
+        )
+      : Promise.reject(new Error("无最新交易日，跳过龙虎榜")),
+    latestDate
+      ? callTushare(
+          "index_dailybasic",
+          { trade_date: latestDate },
+          "ts_code,trade_date,pe,pe_ttm,pb,turnover_rate"
+        )
+      : Promise.reject(new Error("无最新交易日，跳过大盘指数")),
+    latestDate
+      ? callTushare(
+          "index_daily",
+          { trade_date: latestDate },
+          "ts_code,trade_date,close,pct_chg"
+        )
+      : Promise.reject(new Error("无最新交易日，跳过大盘指数")),
   ]);
-
-  const dailyBasic =
-    dailyBasicRes.status === "fulfilled"
-      ? toRecords(dailyBasicRes.value)
-      : (errors.push("daily_basic: " + dailyBasicRes.reason?.message), []);
 
   const finaIndicator =
     finaRes.status === "fulfilled"
@@ -78,7 +105,7 @@ export async function GET(request: NextRequest) {
   const margin =
     marginRes.status === "fulfilled"
       ? toRecords(marginRes.value)
-      : (errors.push("margin: " + marginRes.reason?.message), []);
+      : (errors.push("margin_detail: " + marginRes.reason?.message), []);
 
   const hkHold =
     hkHoldRes.status === "fulfilled"
@@ -90,6 +117,33 @@ export async function GET(request: NextRequest) {
       ? toRecords(forecastRes.value)
       : (errors.push("forecast: " + forecastRes.reason?.message), []);
 
+  const topList =
+    topListRes.status === "fulfilled"
+      ? toRecords(topListRes.value)
+      : (errors.push("top_list: " + topListRes.reason?.message), []);
+
+  // 只保留关心的六大指数（trade_date 查询会返回当日全部指数）
+  const IDX_CODES = new Set(["000001.SH", "399001.SZ", "399006.SZ", "000016.SH", "000905.SH", "399005.SZ"]);
+  const indexDailyBasic =
+    indexBasicRes.status === "fulfilled"
+      ? toRecords(indexBasicRes.value).filter((r: any) => IDX_CODES.has(r.ts_code))
+      : (errors.push("index_dailybasic: " + indexBasicRes.reason?.message), []);
+  const indexDaily =
+    indexDailyRes.status === "fulfilled"
+      ? toRecords(indexDailyRes.value).filter((r: any) => IDX_CODES.has(r.ts_code))
+      : (errors.push("index_daily: " + indexDailyRes.reason?.message), []);
+
+  // 合并两份指数数据：ts_code 为 key，index_dailybasic 为主，index_daily 补充 close/pct_chg
+  const idxMap = new Map<string, any>();
+  for (const item of indexDailyBasic) {
+    idxMap.set(item.ts_code, { ...item });
+  }
+  for (const item of indexDaily) {
+    const existing = idxMap.get(item.ts_code);
+    idxMap.set(item.ts_code, { ...existing, ...item });
+  }
+  const indexData = Array.from(idxMap.values());
+
   return NextResponse.json({
     success: errors.length === 0,
     data: {
@@ -100,6 +154,8 @@ export async function GET(request: NextRequest) {
       margin,
       hkHold,
       forecast,
+      topList,
+      indexData,
     },
     errors: errors.length > 0 ? errors : undefined,
   });

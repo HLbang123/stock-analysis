@@ -47,7 +47,6 @@ export function getCached<T>(dataType: string, params?: Record<string, any>): { 
 
   const age = Date.now() - entry.timestamp;
   if (age > entry.maxAge) {
-    cache.delete(key);
     return null;
   }
 

@@ -1,46 +1,39 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { formatAiError, formatNetworkError } from '@/lib/ai-error';
+import { buildChatUrl, buildLLMHeaders, createTimeoutSignal, llmRouteError, sseResponse, defuseLongDigitRuns } from '@/lib/llm-client';
+import { readLlmDeltas, encodeSSE, endSSE } from '@/lib/llm-stream';
 import {
   buildTechR1SystemPrompt, buildRiskR1SystemPrompt,
   buildXinJieR1DebatePrompt, buildXinJieR2RebuttalPrompt,
   buildTechR2RebuttalPrompt, buildRiskR2RebuttalPrompt,
-  buildManagerPrompt,
+  buildManagerPrompt, buildVerdictSystemPrompt,
 } from '@/services/deepAnalysisPrompt';
 
-/**
- * Jaccard 相似度（bigram 分词）
- * 用于检测辩论轮间的卡死（输出高度重复）
- */
+// Jaccard 相似度（bigram 分词）— 检测辩论轮间的卡死
 function jaccardSimilarity(a: string, b: string): number {
   const bigrams = (s: string) => {
     const set = new Set<string>();
-    for (let i = 0; i < s.length - 1; i++) {
-      set.add(s.slice(i, i + 2));
-    }
+    for (let i = 0; i < s.length - 1; i++) set.add(s.slice(i, i + 2));
     return set;
   };
   const sa = bigrams(a);
   const sb = bigrams(b);
   if (sa.size === 0 && sb.size === 0) return 1;
   let intersection = 0;
-  for (const gram of sa) {
-    if (sb.has(gram)) intersection++;
-  }
+  for (const gram of sa) if (sb.has(gram)) intersection++;
   return intersection / (sa.size + sb.size - intersection);
 }
 
-/** 卡死检测阈值：相似度 > 0.7 视为卡死 */
 const STUCK_THRESHOLD = 0.7;
 
 /**
  * 深度分析代理 — 三阶段 SSE 流式编排
  * 阶段一：情报收集 → 阶段二：多空辩论 → 阶段三：最终裁决
- * 每个阶段独立调用 LLM，流式输出到客户端
  */
 export async function POST(request: NextRequest) {
   try {
     const body = await request.json();
-    const { stage1, stage2, stage3, baseUrl, apiKey, model } = body;
+    const { stage1, stage2, stage3, baseUrl, apiKey, model, completed } = body;
 
     if (!baseUrl || !model) {
       return NextResponse.json(
@@ -56,32 +49,18 @@ export async function POST(request: NextRequest) {
       );
     }
 
-    const url = `${baseUrl.replace(/\/$/, '')}/chat/completions`;
-    const llmHeaders: Record<string, string> = {
-      'Content-Type': 'application/json',
-    };
-    if (apiKey) {
-      llmHeaders['Authorization'] = `Bearer ${apiKey}`;
-    }
+    const url = buildChatUrl(baseUrl);
+    const llmHeaders = buildLLMHeaders(apiKey);
 
     console.log(`[Deep AI Proxy] Starting 3-stage analysis with model ${model}`);
 
     const encoder = new TextEncoder();
     const stream = new ReadableStream({
       async start(controller) {
-        /**
-         * 执行一个阶段的 LLM 调用，流式输出到客户端
-         * @returns 该阶段的完整输出文本
-         */
-        async function runStage(
-          stageKey: string,
-          systemPrompt: string,
-          userPrompt: string
-        ): Promise<string> {
+        /** 执行一个阶段的 LLM 调用，流式输出到客户端，返回完整输出文本。任何失败最终都抛出（带 [stage] 前缀） */
+        async function runStage(stageKey: string, systemPrompt: string, userPrompt: string, maxTokens = 4096, attempt = 1): Promise<string> {
           let fullOutput = '';
-
-          const stageController = new AbortController();
-          const timeout = setTimeout(() => stageController.abort(), 90000);
+          const { signal, clear } = createTimeoutSignal(120000);
 
           try {
             const llmResponse = await fetch(url, {
@@ -90,301 +69,174 @@ export async function POST(request: NextRequest) {
               body: JSON.stringify({
                 model,
                 messages: [
-                  { role: 'system', content: systemPrompt },
-                  { role: 'user', content: userPrompt },
+                  { role: 'system', content: defuseLongDigitRuns(systemPrompt) },
+                  { role: 'user', content: defuseLongDigitRuns(userPrompt) },
                 ],
                 temperature: 0.3,
-                max_tokens: 4096,
+                max_tokens: maxTokens,
                 stream: true,
               }),
-              signal: stageController.signal,
+              signal,
             });
 
-            clearTimeout(timeout);
+            clear();
 
             if (!llmResponse.ok) {
               const errorText = await llmResponse.text().catch(() => '');
-              console.error(`[Deep AI Proxy] ${stageKey} HTTP ${llmResponse.status}: ${errorText.slice(0, 300)}`);
-              throw new Error(formatAiError(llmResponse.status, errorText));
+              console.error(`[Deep AI Proxy] ${stageKey} HTTP ${llmResponse.status}: ${errorText}`);
+              // 限流 / 服务端错误：退避重试
+              if (attempt < 3 && (llmResponse.status === 429 || llmResponse.status >= 500)) {
+                const backoff = 2000 * attempt;
+                console.warn(`[Deep AI Proxy] ${stageKey} HTTP ${llmResponse.status}，${backoff}ms 后重试 ${attempt}/2`);
+                await new Promise(r => setTimeout(r, backoff));
+                return runStage(stageKey, systemPrompt, userPrompt, maxTokens, attempt + 1);
+              }
+              throw new Error(`[${stageKey}] ${formatAiError(llmResponse.status, errorText)}`);
             }
 
-            const reader = llmResponse.body!.getReader();
-            const decoder = new TextDecoder();
-            let buffer = '';
             let lastDelta = '';
             let repeatCount = 0;
             let stuckWarning = false;
 
-            while (true) {
-              const { done, value } = await reader.read();
-              if (done) break;
-
-              buffer += decoder.decode(value, { stream: true });
-              const lines = buffer.split('\n');
-              buffer = lines.pop() || '';
-
-              for (const line of lines) {
-                const trimmed = line.trim();
-                if (!trimmed || !trimmed.startsWith('data:')) continue;
-
-                const data = trimmed.slice(5).trim();
-                if (data === '[DONE]') continue;
-
-                try {
-                  const parsed = JSON.parse(data);
-                  const delta = parsed.choices?.[0]?.delta?.content;
-                  if (delta) {
-                    // 卡死检测：连续相同输出
-                    if (delta === lastDelta) {
-                      repeatCount++;
-                    } else {
-                      repeatCount = 0;
-                      lastDelta = delta;
-                    }
-                    if (repeatCount >= 3 && !stuckWarning) {
-                      stuckWarning = true;
-                      console.warn(`[Deep AI Proxy] ${stageKey} 检测到卡死（连续重复输出）`);
-                      controller.enqueue(
-                        encoder.encode(
-                          `data: ${JSON.stringify({ stage: stageKey, warning: '检测到输出重复，可能陷入循环' })}\n\n`
-                        )
-                      );
-                    }
-
-                    fullOutput += delta;
-                    controller.enqueue(
-                      encoder.encode(
-                        `data: ${JSON.stringify({ stage: stageKey, text: delta })}\n\n`
-                      )
-                    );
-                  }
-                } catch {
-                  // 跳过无法解析的行
-                }
+            await readLlmDeltas(llmResponse, (delta) => {
+              // 卡死检测：连续相同输出
+              if (delta === lastDelta) {
+                repeatCount++;
+              } else {
+                repeatCount = 0;
+                lastDelta = delta;
               }
+              if (repeatCount >= 3 && !stuckWarning) {
+                stuckWarning = true;
+                console.warn(`[Deep AI Proxy] ${stageKey} 检测到卡死（连续重复输出）`);
+                encodeSSE(encoder, controller, { stage: stageKey, warning: '检测到输出重复，可能陷入循环' });
+              }
+
+              fullOutput += delta;
+              encodeSSE(encoder, controller, { stage: stageKey, text: delta });
+            });
+
+            // 空输出：模型异常，重试；仍空则抛出
+            if (!fullOutput.trim()) {
+              if (attempt < 3) {
+                console.warn(`[Deep AI Proxy] ${stageKey} 输出为空，重试 ${attempt}/2`);
+                return runStage(stageKey, systemPrompt, userPrompt, maxTokens, attempt + 1);
+              }
+              throw new Error(`[${stageKey}] 输出为空`);
             }
           } catch (e: any) {
-            clearTimeout(timeout);
-            if (e.name === 'AbortError') {
-              controller.enqueue(
-                encoder.encode(
-                  `data: ${JSON.stringify({ stage: stageKey, error: '阶段超时（90s）' })}\n\n`
-                )
-              );
-            } else {
-              throw e; // 抛给外层处理
+            clear();
+            // 超时：Node fetch 的 abort 会包成 TypeError("fetch failed")，真实原因在 cause
+            const isAbort = e.name === 'AbortError'
+              || e.cause?.name === 'AbortError'
+              || e.cause?.code === 'ABORT_ERR'
+              || /abort/i.test(e.message || '');
+            if (isAbort) {
+              // 超时重试无意义（模型卡住/端点 stalled），直接 fail-fast
+              throw new Error(`[${stageKey}] 阶段超时（120s），模型未在限定时间内响应`);
             }
+            if (attempt < 3 && (e.message?.includes('fetch failed') || e.name === 'TypeError')) {
+              const backoff = 2000 * attempt;
+              console.warn(`[Deep AI Proxy] ${stageKey} 网络错误，${backoff}ms 后重试 ${attempt}/2`);
+              await new Promise(r => setTimeout(r, backoff));
+              return runStage(stageKey, systemPrompt, userPrompt, maxTokens, attempt + 1);
+            }
+            // 已带 [stageKey] 前缀的错误直接抛，否则用 formatNetworkError 翻译网络原因
+            throw e.message?.startsWith(`[${stageKey}]`)
+              ? e
+              : new Error(`[${stageKey}] ${formatNetworkError(e)}`);
           }
 
-          // 阶段完成标记
-          controller.enqueue(
-            encoder.encode(
-              `data: ${JSON.stringify({ stage: stageKey, done: true })}\n\n`
-            )
-          );
+          encodeSSE(encoder, controller, { stage: stageKey, done: true });
           return fullOutput;
+        }
+
+        /** 断点续传：命中缓存（completed[stageKey]）则回放文本跳过 LLM 调用，否则正常执行 runStage */
+        async function runOrReplay(stageKey: string, sys: string, usr: string, maxTokens: number, isDebate = false): Promise<string> {
+          const cached = completed?.[stageKey];
+          if (cached != null) {
+            if (isDebate) {
+              encodeSSE(encoder, controller, { stage: 'debate', role: stageKey, text: cached + '\n\n' });
+            } else {
+              encodeSSE(encoder, controller, { stage: stageKey, text: cached });
+              encodeSSE(encoder, controller, { stage: stageKey, done: true });
+            }
+            console.log(`[Deep AI Proxy] ${stageKey} 命中缓存，跳过 LLM 调用`);
+            return cached;
+          }
+          const text = await runStage(stageKey, sys, usr, maxTokens);
+          if (isDebate) {
+            encodeSSE(encoder, controller, { stage: 'debate', role: stageKey, text: text + '\n\n' });
+          }
+          return text;
         }
 
         try {
           // ===== 阶段一：情报收集 =====
           console.log('[Deep AI Proxy] Stage 1: Analyst Report');
-          const stage1Output = await runStage(
-            'analyst',
-            stage1.systemPrompt,
-            stage1.userPrompt
-          );
+          const stage1Output = await runOrReplay('analyst', stage1.systemPrompt, stage1.userPrompt, 4096);
 
-          if (!stage1Output.trim()) {
-            controller.enqueue(
-              encoder.encode(
-                `data: ${JSON.stringify({ error: '阶段一返回为空，分析终止' })}\n\n`
-              )
-            );
-            controller.enqueue(encoder.encode('data: [DONE]\n\n'));
-            controller.close();
-            return;
-          }
-
-          // ===== 阶段二：多空辩论（Parallel R1 + Sequential R2）=====
-          console.log('[Deep AI Proxy] Stage 2: 3-person debate (Parallel R1 + Sequential R2)');
+          // ===== 阶段二：多空辩论（任一角色失败即终止整次分析）=====
+          console.log('[Deep AI Proxy] Stage 2: 3-person debate');
           let stage2Output = '';
-          try {
-            // 构建辩论基础数据 prompt（不含分析师报告，角色不需要读完整报告）
-            const debateData = [
-              stage2?.userPrompt?.split('以下是一份深度分析师报告')[0]?.trim() || '',
-            ].filter(Boolean).join('\n\n');
+          // 辩论基础数据 prompt（不含分析师报告，角色不需要读完整报告）
+          const debateData = [
+            stage2?.userPrompt?.split('以下是一份深度分析师报告')[0]?.trim() || '',
+          ].filter(Boolean).join('\n\n');
 
-            // ======== Round 1: 三人并行（互不可见）========
-            const [techR1, riskR1, xinjieR1] = await Promise.all([
-              runStage('tech', buildTechR1SystemPrompt(), debateData),
-              runStage('risk', buildRiskR1SystemPrompt(), debateData),
-              runStage('xinjie', buildXinJieR1DebatePrompt(), debateData),
-            ]);
+          // ======== Round 1: 三人串行（一条一条出，避免并发压垮中转站）========
+          const t1 = await runOrReplay('tech', buildTechR1SystemPrompt(), debateData, 2048, true);
+          const r1 = await runOrReplay('risk', buildRiskR1SystemPrompt(), debateData, 2048, true);
+          const x1 = await runOrReplay('xinjie', buildXinJieR1DebatePrompt(), debateData, 2048, true);
+          stage2Output += [t1, r1, x1].join('\n\n');
 
-            // 发送 Round 1 结果
-            for (const [role, text] of [['tech', techR1], ['risk', riskR1], ['xinjie', xinjieR1]] as const) {
-              controller.enqueue(
-                encoder.encode(
-                  `data: ${JSON.stringify({ stage: 'debate', role, text: `【${role === 'tech' ? '看涨观点' : role === 'risk' ? '看跌观点' : '心姐判断'}】\n${text}\n\n` })}\n\n`
-                )
-              );
-            }
-            stage2Output += techR1 + '\n\n' + riskR1 + '\n\n' + xinjieR1;
+          // ======== Round 2: 串行反驳（累计上下文）========
+          encodeSSE(encoder, controller, { stage: 'debate', text: '\n--- 第二轮 ---\n' });
 
-            // ======== Round 2: 串行反驳（累计上下文）========
-            controller.enqueue(
-              encoder.encode(
-                `data: ${JSON.stringify({ stage: 'debate', text: '\n--- 第二轮 ---\n' })}\n\n`
-              )
-            );
+          const techR2Ctx = `前面两人的第一轮发言：\n${r1}\n${x1}\n\n请回应以上两人的观点。`;
+          const techR2 = await runOrReplay('tech_r2', buildTechR2RebuttalPrompt(), techR2Ctx, 2048, true);
 
-            // 技术反驳（看到风控+心姐的 R1）
-            const techR2Ctx = `前面两人的第一轮发言：\n【看跌观点】${riskR1}\n【心姐判断】${xinjieR1}\n\n请针对以上两人的观点进行反驳。`;
-            const techR2 = await runStage('tech_r2', buildTechR2RebuttalPrompt(), techR2Ctx);
-            controller.enqueue(
-              encoder.encode(
-                `data: ${JSON.stringify({ stage: 'debate', role: 'tech_r2', text: `【看涨反驳】\n${techR2}\n\n` })}\n\n`
-              )
-            );
+          const riskR2Ctx = `第一轮发言回顾：\n${t1}\n${x1}\n\n技术分析师的回应：\n${techR2}\n\n请回应以上内容。`;
+          const riskR2 = await runOrReplay('risk_r2', buildRiskR2RebuttalPrompt(), riskR2Ctx, 2048, true);
 
-            // 风控反驳（看到技术+心姐的 R1 + 技术 R2）
-            const riskR2Ctx = `第一轮发言回顾：\n【看涨观点】${techR1}\n【心姐判断】${xinjieR1}\n\n技术分析师的反驳：\n${techR2}\n\n请针对以上内容进行反驳。`;
-            const riskR2 = await runStage('risk_r2', buildRiskR2RebuttalPrompt(), riskR2Ctx);
-            controller.enqueue(
-              encoder.encode(
-                `data: ${JSON.stringify({ stage: 'debate', role: 'risk_r2', text: `【看跌反驳】\n${riskR2}\n\n` })}\n\n`
-              )
-            );
+          const xinjieR2Ctx = `第一轮：\n${t1}\n${r1}\n\n第二轮回应：\n技术分析师："${techR2.slice(0, 200)}"\n风控专家："${riskR2.slice(0, 200)}"\n\n请给出你的最终判断。`;
+          const xinjieR2 = await runOrReplay('xinjie_r2', buildXinJieR2RebuttalPrompt(), xinjieR2Ctx, 2048, true);
 
-            // 心姐反驳（看到全部）
-            const xinjieR2Ctx = `第一轮：\n【看涨观点】${techR1}\n【看跌观点】${riskR1}\n\n第二轮反驳：\n技术分析师："${techR2.slice(0, 200)}"\n风控专家："${riskR2.slice(0, 200)}"\n\n请给出你的最终判断。`;
-            const xinjieR2 = await runStage('xinjie_r2', buildXinJieR2RebuttalPrompt(), xinjieR2Ctx);
-            controller.enqueue(
-              encoder.encode(
-                `data: ${JSON.stringify({ stage: 'debate', role: 'xinjie_r2', text: `【心姐最终判断】\n${xinjieR2}\n\n` })}\n\n`
-              )
-            );
+          const mgrCtx = `第一轮发言：\n技术分析师：${t1.slice(0, 200)}\n风控专家：${r1.slice(0, 200)}\n心姐：${x1.slice(0, 200)}\n\n第二轮反驳：\n技术反驳：${techR2.slice(0, 200)}\n风控反驳：${riskR2.slice(0, 200)}\n心姐最终判断：${xinjieR2.slice(0, 200)}`;
+          const mgrOutput = await runOrReplay('manager', buildManagerPrompt(), mgrCtx, 2048, true);
 
-            // 研究经理
-            const mgrCtx = `第一轮发言：\n技术分析师：${techR1.slice(0, 200)}\n风控专家：${riskR1.slice(0, 200)}\n心姐：${xinjieR1.slice(0, 200)}\n\n第二轮反驳：\n技术反驳：${techR2.slice(0, 200)}\n风控反驳：${riskR2.slice(0, 200)}\n心姐最终判断：${xinjieR2.slice(0, 200)}`;
-            const mgrOutput = await runStage('manager', buildManagerPrompt(), mgrCtx);
-            controller.enqueue(
-              encoder.encode(
-                `data: ${JSON.stringify({ stage: 'debate', role: 'manager', text: `【综合评判】\n${mgrOutput}` })}\n\n`
-              )
-            );
+          stage2Output += '\n--- R2 ---\n' + [techR2, riskR2, xinjieR2, mgrOutput].join('\n\n');
 
-            stage2Output += '\n--- R2 ---\n' + [techR2, riskR2, xinjieR2, mgrOutput].join('\n\n');
-
-            // 卡死检测：R1 vs R2 相似度
-            const r1All = techR1 + riskR1 + xinjieR1;
-            const similarity = jaccardSimilarity(r1All, techR2 + riskR2 + xinjieR2);
-            if (similarity >= STUCK_THRESHOLD) {
-              console.warn(`[Deep AI Proxy] 辩论轮间相似度过高 (${(similarity * 100).toFixed(0)}%)`);
-              controller.enqueue(
-                encoder.encode(
-                  `data: ${JSON.stringify({ stage: 'debate', warning: `辩论出现重复（相似度${(similarity*100).toFixed(0)}%）` })}\n\n`
-                )
-              );
-            }
-          } catch (e: any) {
-            console.error('[Deep AI Proxy] Stage 2 failed:', e.message);
-            controller.enqueue(
-              encoder.encode(
-                `data: ${JSON.stringify({ stage: 'debate', error: '辩论环节失败，继续分析' })}\n\n`
-              )
-            );
-            controller.enqueue(
-              encoder.encode(
-                `data: ${JSON.stringify({ stage: 'debate', done: true })}\n\n`
-              )
-            );
+          // 卡死检测：R1 vs R2 相似度
+          const r1All = t1 + r1 + x1;
+          const similarity = jaccardSimilarity(r1All, techR2 + riskR2 + xinjieR2);
+          if (similarity >= STUCK_THRESHOLD) {
+            console.warn(`[Deep AI Proxy] 辩论轮间相似度过高 (${(similarity * 100).toFixed(0)}%)`);
+            encodeSSE(encoder, controller, { stage: 'debate', warning: `辩论出现重复（相似度${(similarity * 100).toFixed(0)}%）` });
           }
 
           // ===== 阶段三：最终裁决 =====
           console.log('[Deep AI Proxy] Stage 3: Final Verdict');
-          try {
-            // 动态构建 stage3 prompt，注入阶段一和阶段二的输出
-            const s3System = stage3?.systemPrompt || buildFallbackVerdictPrompt();
-            const s3User = [
-              stage3?.userPrompt?.split('## 分析师报告')[0]?.trim() || '',
-              `## 分析师报告\n${stage1Output}`,
-              `## 多空辩论\n${stage2Output || '(辩论环节跳过)'}`,
-              '请基于以上信息，做出最终投资决策。**注意：目标价和止损价必须参考实时行情中的当前价格。**',
-            ].filter(Boolean).join('\n\n');
-            await runStage('verdict', s3System, s3User);
-          } catch (e: any) {
-            console.error('[Deep AI Proxy] Stage 3 failed:', e.message);
-            controller.enqueue(
-              encoder.encode(
-                `data: ${JSON.stringify({ stage: 'verdict', error: '决策环节失败' })}\n\n`
-              )
-            );
-            controller.enqueue(
-              encoder.encode(
-                `data: ${JSON.stringify({ stage: 'verdict', done: true })}\n\n`
-              )
-            );
-          }
+          const s3System = stage3?.systemPrompt || buildVerdictSystemPrompt();
+          const s3User = [
+            stage3?.userPrompt?.split('## 分析师报告')[0]?.trim() || '',
+            `## 分析师报告\n${stage1Output}`,
+            `## 多空辩论\n${stage2Output}`,
+            '请基于以上信息，做出最终投资决策。**注意：目标价和止损价必须参考实时行情中的当前价格。**',
+          ].filter(Boolean).join('\n\n');
+          await runOrReplay('verdict', s3System, s3User, 4096);
         } catch (e: any) {
-          console.error('[Deep AI Proxy] Fatal error:', e.message);
-          controller.enqueue(
-            encoder.encode(
-              `data: ${JSON.stringify({ error: e.message || '分析失败' })}\n\n`
-            )
-          );
+          console.error('[Deep AI Proxy] 分析失败:', e.message);
+          encodeSSE(encoder, controller, { error: `${e.message || '分析失败'}，可点击"继续生成"从断点恢复` });
         } finally {
-          controller.enqueue(encoder.encode('data: [DONE]\n\n'));
-          controller.close();
+          endSSE(encoder, controller);
         }
       },
     });
 
-    return new Response(stream, {
-      headers: {
-        'Content-Type': 'text/event-stream',
-        'Cache-Control': 'no-cache',
-        'Connection': 'keep-alive',
-        'X-Accel-Buffering': 'no',
-      },
-    });
+    return sseResponse(stream);
   } catch (error: any) {
     console.error('[Deep AI Proxy] Exception:', error.message);
-    if (error.name === 'AbortError') {
-      return NextResponse.json(
-        { error: '请求超时，AI 模型响应过慢' },
-        { status: 504 }
-      );
-    }
-    return NextResponse.json(
-      { error: formatNetworkError(error) },
-      { status: 500 }
-    );
+    return llmRouteError(error, '请求超时，AI 模型响应过慢');
   }
-}
-
-
-/** 备用：如果客户端未传入阶段三 prompt */
-function buildFallbackVerdictPrompt(): string {
-  return `你是首席风险管理官。基于分析报告和辩论结果，做出最终投资决策。
-
-## 决策格式（严格遵守）
-
-ACTION:（买入/持有/卖出）
-RISK_LEVEL:（高风险/中风险/低风险）
-CONFIDENCE:（0-100的整数）
-TARGET_LOW:（目标价下限）
-TARGET_HIGH:（目标价上限）
-STOP_LOSS:（止损价）
-POSITION:（建议仓位百分比，如20%）
-
----
-### 决策理由
-（200-300字）
-
-### 操作计划
-（100-200字）
-
-### 风险提示
-（100-150字）`;
 }

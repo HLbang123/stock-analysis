@@ -134,7 +134,7 @@ export function MinuteChart({
       avgSeries.setData(avgData);
     }
 
-    // 预警标记 — v5 中用独立 LineSeries 绘制
+    // 预警标记
     if (alertMarkers.length > 0) {
       const seenTimes = new Set<number>();
       const markerPoints: { time: Time; value: number }[] = [];

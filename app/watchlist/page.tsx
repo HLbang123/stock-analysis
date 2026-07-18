@@ -1,14 +1,15 @@
 'use client';
 
-import React, { useEffect, useState, useRef } from 'react';
+import { useEffect, useState, useRef } from 'react';
 import { useRouter } from 'next/navigation';
 import { useStockStore } from '@/store';
 import { getRealtimeQuote, parseStockCode, searchStocks } from '@/services/stockApi';
-import { isETF } from '@/lib/identify';
+import { isETF, validateStockCode } from '@/lib/identify';
 import { RealtimeQuote } from '@/types';
 import { formatPrice, formatChange, formatVolume, cn } from '@/lib/utils';
-import { Plus, Search, Trash2, TrendingUp, ScanLine, Upload, Camera, X, Check, Loader2 } from 'lucide-react';
+import { Plus, Search, Trash2, TrendingUp, ScanLine, Upload, Camera, X } from 'lucide-react';
 import { toast } from 'sonner';
+import { Button } from '@/components/ui/button';
 
 export default function WatchlistPage() {
   const router = useRouter();
@@ -28,27 +29,6 @@ export default function WatchlistPage() {
   const [isOcrProcessing, setIsOcrProcessing] = useState(false);
   const [ocrStatus, setOcrStatus] = useState<string | null>(null);
   const [ocrResults, setOcrResults] = useState<{ code: string; name: string; added: boolean }[]>([]);
-
-  // A股代码范围验证（含ETF）
-  const isValidAStock = (code: number) => {
-    // 个股范围
-    const stockRanges = [
-      { min: 600000, max: 605999, market: 'sh' },
-      { min: 688000, max: 689999, market: 'sh' },
-      { min: 0, max: 3999, market: 'sz' },
-      { min: 300000, max: 301999, market: 'sz' },
-    ];
-    for (const r of stockRanges) {
-      if (code >= r.min && code <= r.max) {
-        return { market: r.market, pureCode: String(code).padStart(6, '0') };
-      }
-    }
-    // ETF 范围: sh51xxxx, sh588xxx, sz159xxx
-    if (code >= 510000 && code <= 519999) return { market: 'sh', pureCode: String(code).padStart(6, '0') };
-    if (code >= 588000 && code <= 588999) return { market: 'sh', pureCode: String(code).padStart(6, '0') };
-    if (code >= 159000 && code <= 159999) return { market: 'sz', pureCode: String(code).padStart(6, '0') };
-    return null;
-  };
 
   // OCR 识别
   const handleOcrScan = async () => {
@@ -76,8 +56,7 @@ export default function WatchlistPage() {
 
       const validResults: { code: string; name: string; added: boolean }[] = [];
       for (const codeStr of extractedCodes.slice(0, 20)) {
-        const codeNum = parseInt(codeStr);
-        const valid = isValidAStock(codeNum);
+        const valid = validateStockCode(codeStr);
         if (!valid) continue;
         const fullCode = `${valid.market}${valid.pureCode}`;
         try {
@@ -126,7 +105,7 @@ export default function WatchlistPage() {
     refreshQuotes();
   }, [watchlist]);
 
-  // 输入即搜（防抖400ms）
+  // 输入即搜（防抖400ms + 竞态防护）
   useEffect(() => {
     if (debounceRef.current) clearTimeout(debounceRef.current);
 
@@ -137,14 +116,18 @@ export default function WatchlistPage() {
     }
 
     setIsSearching(true);
+    let cancelled = false;
     debounceRef.current = setTimeout(async () => {
       const results = await searchStocks(searchQuery);
-      setSearchResults(results);
-      setIsSearching(false);
-      setHasSearched(true);
+      if (!cancelled) {
+        setSearchResults(results);
+        setIsSearching(false);
+        setHasSearched(true);
+      }
     }, 400);
 
     return () => {
+      cancelled = true;
       if (debounceRef.current) clearTimeout(debounceRef.current);
     };
   }, [searchQuery]);
@@ -257,13 +240,14 @@ export default function WatchlistPage() {
                   <button onClick={() => ocrFileRef.current?.click()} className="flex-1 py-2 border border-gray-200 dark:border-gray-700 rounded-lg text-sm">
                     重新选择
                   </button>
-                  <button
-                    onClick={handleOcrScan}
-                    disabled={isOcrProcessing}
-                    className="flex-1 py-2 bg-blue-600 text-white rounded-lg text-sm font-medium disabled:opacity-50 flex items-center justify-center gap-1"
-                  >
-                    {isOcrProcessing ? <><Loader2 className="w-4 h-4 animate-spin" />识别中...</> : <><Upload className="w-3.5 h-3.5" />开始识别</>}
-                  </button>
+                    <Button
+                      onClick={handleOcrScan}
+                      loading={isOcrProcessing}
+                      className="flex-1"
+                    >
+                      <Upload className="w-3.5 h-3.5" />
+                      {isOcrProcessing ? '识别中...' : '开始识别'}
+                    </Button>
                 </div>
               </div>
             ) : (
@@ -290,13 +274,14 @@ export default function WatchlistPage() {
                       <span className="text-sm font-medium">{r.name}</span>
                       <span className="text-xs text-gray-500 ml-2">{r.code}</span>
                     </div>
-                    <button
+                    <Button
                       onClick={() => handleOcrAdd(r.code, r.name)}
+                      variant={r.added ? "secondary" : "primary"}
+                      size="sm"
                       disabled={r.added}
-                      className={`px-3 py-1 rounded text-xs font-medium ${r.added ? 'bg-gray-100 text-gray-400' : 'bg-blue-600 text-white hover:bg-blue-700'}`}
                     >
                       {r.added ? '已添加' : '加入自选'}
-                    </button>
+                    </Button>
                   </div>
                 ))}
               </div>

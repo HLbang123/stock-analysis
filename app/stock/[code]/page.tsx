@@ -1,6 +1,6 @@
 'use client';
 
-import React, { useEffect, useState, useMemo } from 'react';
+import { useEffect, useState, useMemo } from 'react';
 import { useParams } from 'next/navigation';
 import { useStockStore } from '@/store';
 import { getRealtimeQuote, getKLineSina, getMinuteData } from '@/services/stockApi';
@@ -8,16 +8,21 @@ import { parseCode } from '@/lib/identify';
 import { ALERT_RULES, checkAllRules } from '@/services/alertRules';
 import { RealtimeQuote, KLineData, RuleCheckResult } from '@/types';
 import { formatPrice, formatChange, formatVolume, cn, getAlertLevelColor } from '@/lib/utils';
+import { buildUpdatedKLines } from '@/lib/stock-helpers';
 import { ArrowLeft, RefreshCw, TrendingUp } from 'lucide-react';
 import Link from 'next/link';
 import { KLineChart } from '@/components/KLineChart';
 import { MinuteChart } from '@/components/MinuteChart';
+import { Button } from '@/components/ui/button';
+import { Card } from '@/components/ui/card';
+import { Badge } from '@/components/ui/badge';
+import { Spinner } from '@/components/ui/spinner';
 
 export default function StockDetailPage() {
   const params = useParams();
   const code = params.code as string;
 
-  const { watchlist, addToWatchlist, removeFromWatchlist, isInWatchlist, alerts } = useStockStore();
+  const { watchlist, addToWatchlist, removeFromWatchlist, alerts } = useStockStore();
 
   const [quote, setQuote] = useState<RealtimeQuote | null>(null);
   const [kLines, setKLines] = useState<KLineData[]>([]);
@@ -58,37 +63,8 @@ export default function StockDetailPage() {
 
       // 构建实时K线并检查规则
       if (kLineData.length >= 5) {
-        const todayStr = new Date().toISOString().split('T')[0];
-        const todayKLine = {
-          date: todayStr,
-          open: quoteData.open,
-          high: quoteData.high,
-          low: quoteData.low,
-          close: quoteData.price,
-          volume: quoteData.volume,
-        };
-
-        // K线API有时已包含今天数据，需要先移除再用实时数据替换
-        const historicalKLines = kLineData.filter(k => k.date !== todayStr);
-        const updatedKLines = [...historicalKLines, todayKLine];
+        const updatedKLines = buildUpdatedKLines(quoteData, kLineData);
         const results = checkAllRules(updatedKLines, quoteData, ALERT_RULES.filter(r => r.isEnabled));
-
-        // DEBUG: 打印关键数据用于排查预警问题
-        const lastK = kLineData[kLineData.length - 1];
-        const today = updatedKLines[updatedKLines.length - 1];
-        const prev = updatedKLines[updatedKLines.length - 2];
-        const changePct = ((today.close - prev.close) / prev.close) * 100;
-        const ma5 = updatedKLines.slice(-6, -1).reduce((s, k) => s + k.close, 0) / 5;
-        console.log('[DEBUG] 股票:', code);
-        console.log('[DEBUG] K线总数:', kLineData.length, '总数据:', updatedKLines.length);
-        console.log('[DEBUG] 最近K线日期:', lastK?.date, 'close:', lastK?.close, 'volume:', lastK?.volume);
-        console.log('[DEBUG] Quote价格:', quoteData.price, '昨收:', quoteData.preClose, '涨跌%:', quoteData.changePercent);
-        console.log('[DEBUG] todayKLine:', JSON.stringify(todayKLine));
-        console.log('[DEBUG] 涨跌幅(today vs prev):', changePct.toFixed(2) + '%');
-        console.log('[DEBUG] MA5:', ma5.toFixed(2), 'today.close<MA5:', today.close < ma5);
-        console.log('[DEBUG] 量比:', (today.volume / (prev.volume || 1)).toFixed(2));
-        console.log('[DEBUG] 触发规则数:', results.length);
-        results.forEach(r => console.log('[DEBUG] 触发:', r.ruleId, r.message));
 
         setRuleResults(results);
       }
@@ -145,7 +121,7 @@ export default function StockDetailPage() {
   if (isLoading) {
     return (
       <div className="flex items-center justify-center py-20">
-        <RefreshCw className="w-8 h-8 animate-spin text-blue-500" />
+        <Spinner size="lg" />
       </div>
     );
   }
@@ -176,7 +152,8 @@ export default function StockDetailPage() {
             移除自选
           </button>
         ) : (
-          <button
+          <Button
+            size="sm"
             onClick={() => {
               if (quote) {
                 const parsed = parseCode(code);
@@ -188,10 +165,9 @@ export default function StockDetailPage() {
                 });
               }
             }}
-            className="px-4 py-2 text-sm bg-blue-600 text-white rounded-lg hover:bg-blue-700 transition"
           >
             添加自选
-          </button>
+          </Button>
         )}
       </div>
 
@@ -204,7 +180,7 @@ export default function StockDetailPage() {
         <>
           {/* 实时行情卡片 */}
           {quote && (
-            <div className="bg-white dark:bg-gray-900 rounded-xl p-5 shadow-sm mb-4">
+            <Card className="p-5 mb-4">
               <div className="flex items-end justify-between mb-4">
                 <div>
                   <p className={cn(
@@ -255,7 +231,7 @@ export default function StockDetailPage() {
                   </p>
                 </div>
               </div>
-            </div>
+            </Card>
           )}
 
           {/* 图表切换 */}
@@ -286,7 +262,7 @@ export default function StockDetailPage() {
 
           {/* 分时图 */}
           {chartTab === 'minute' && (
-            <div className="bg-white dark:bg-gray-900 rounded-xl p-4 shadow-sm mb-4">
+            <Card className="mb-4">
               {minuteData.length > 0 ? (
                 <MinuteChart
                   data={minuteData}
@@ -303,12 +279,12 @@ export default function StockDetailPage() {
                   </div>
                 </div>
               )}
-            </div>
+            </Card>
           )}
 
           {/* K线图 */}
           {chartTab === 'kline' && (
-            <div className="bg-white dark:bg-gray-900 rounded-xl p-4 shadow-sm mb-4">
+            <Card className="mb-4">
               <KLineChart
                 data={kLines}
                 height={400}
@@ -320,12 +296,12 @@ export default function StockDetailPage() {
                     : 'INFO',
                 }))}
               />
-            </div>
+            </Card>
           )}
 
           {/* 触发规则列表 */}
           {ruleResults.length > 0 && (
-            <div className="bg-white dark:bg-gray-900 rounded-xl p-4 shadow-sm mb-4">
+            <Card className="mb-4">
               <h2 className="font-semibold text-gray-900 dark:text-white mb-3">
                 触发规则 ({ruleResults.length})
               </h2>
@@ -346,14 +322,7 @@ export default function StockDetailPage() {
                         </span>
                         <span className="font-medium">{rule?.name || result.ruleId}</span>
                         {rule && (
-                          <span className={cn(
-                            "text-xs px-1.5 py-0.5 rounded",
-                            rule.level === 'CRITICAL' ? "bg-red-100 text-red-700" :
-                            rule.level === 'WARNING' ? "bg-orange-100 text-orange-700" :
-                            "bg-blue-100 text-blue-700"
-                          )}>
-                            {rule.level}
-                          </span>
+                          <Badge variant={rule.level}>{rule.level}</Badge>
                         )}
                       </div>
                       <p className="text-sm text-gray-600 dark:text-gray-400 ml-7">
@@ -368,12 +337,12 @@ export default function StockDetailPage() {
                   );
                 })}
               </div>
-            </div>
+            </Card>
           )}
 
           {/* 历史预警 */}
           {stockAlerts.length > 0 && (
-            <div className="bg-white dark:bg-gray-900 rounded-xl p-4 shadow-sm">
+            <Card>
               <h2 className="font-semibold text-gray-900 dark:text-white mb-3">
                 历史预警 ({stockAlerts.length})
               </h2>
@@ -395,14 +364,14 @@ export default function StockDetailPage() {
                   </div>
                 ))}
               </div>
-            </div>
+            </Card>
           )}
 
           {/* 无触发规则 */}
           {ruleResults.length === 0 && (
-            <div className="bg-white dark:bg-gray-900 rounded-xl p-8 shadow-sm text-center text-gray-400">
+            <Card className="p-8 text-center text-gray-400">
               <p>未触发任何预警规则</p>
-            </div>
+            </Card>
           )}
         </>
       )}
