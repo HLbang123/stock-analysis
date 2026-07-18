@@ -33,7 +33,7 @@ export function buildAnalystSystemPrompt(isETF?: boolean): string {
     ? `### ETF 专项分析
 （分析跟踪指数的趋势和关键位置、当前市场的风格偏好、板块资金流向、ETF 规模流动性、折溢价水平。100-200字）`
     : `### 基本面评估
-（基于数据推测估值水平、行业地位、盈利能力、成长性。100-200字）`;
+（基于下方「基本面数据」中的 PE/PB/ROE/营收增速等实际指标，分析估值合理性、盈利能力、成长性和财务健康状况。需要引用具体数值。100-200字）`;
 
   const etfNote = isETF
     ? `\n- 此标的为 ETF，不做个股基本面分析，聚焦指数趋势和板块轮动`
@@ -74,18 +74,20 @@ export function buildAnalystUserPrompt(
   indicatorBlock?: string,
   reflectionBlock?: string,
   positionNote?: string,
-  isETF?: boolean
+  isETF?: boolean,
+  tushareBlock?: string
 ): string {
   const indicatorSection = indicatorBlock ? `${indicatorBlock}\n` : '';
   const reflectionSection = reflectionBlock ? `${reflectionBlock}\n` : '';
   const positionSection = positionNote ? `${positionNote}\n` : '';
+  const fundamentalSection = tushareBlock ? `${tushareBlock}\n` : '';
   const etfNote = isETF ? '⚠️ 此为 ETF，请聚焦指数趋势、资金流向和板块轮动，不需要分析个股基本面。\n' : '';
   return `分析股票：${stockName} (${stockCode})
 ${etfNote}${reflectionSection}${positionSection}
 实时行情：
 ${quoteJson}
 
-${indicatorSection}
+${fundamentalSection}${indicatorSection}
 近60日K线（日期 开 高 低 收 量）：
 ${klineSummary}
 

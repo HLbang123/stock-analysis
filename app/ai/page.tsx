@@ -18,6 +18,7 @@ import { isETF } from '@/lib/identify';
 import { getMarketStatus } from '@/lib/identify';
 import { formatPrice, formatChange, cn } from '@/lib/utils';
 import { Brain, Settings, X, Plus, Pencil, Trash2, Check, Loader2, ChevronDown, ChevronRight, Send, Trash } from 'lucide-react';
+import { fetchTushareData, formatTushareForPrompt } from '@/services/tushareData';
 import { toast } from 'sonner';
 
 const PRESET_PLATFORMS: { name: string; baseUrl: string; model: string }[] = [
@@ -491,12 +492,16 @@ export default function AiPage() {
 
     try {
       // 获取数据（K线取60根，比快速分析更多）
-      const [quote, kLines] = await Promise.all([
+      const [quote, kLines, tushareData] = await Promise.all([
         getRealtimeQuote(selectedCode),
         getKLineSina(selectedCode, 240, 120),
+        fetchTushareData(selectedCode).catch(() => null),
       ]);
 
       if (!quote) throw new Error('获取行情失败');
+
+      // 格式化 Tushare 基本面数据
+      const tushareBlock = formatTushareForPrompt(tushareData);
 
       // 运行规则引擎
       const todayKLine = {
@@ -542,7 +547,7 @@ export default function AiPage() {
       const etf = isETF(selectedCode);
       const stage1 = {
         systemPrompt: buildAnalystSystemPrompt(etf),
-        userPrompt: marketStatusNote + buildAnalystUserPrompt(selectedCode, stock.name, quoteJson, klineSummary, engineSummary, indicatorBlock, reflectionBlock, positionNote, etf),
+        userPrompt: marketStatusNote + buildAnalystUserPrompt(selectedCode, stock.name, quoteJson, klineSummary, engineSummary, indicatorBlock, reflectionBlock, positionNote, etf, tushareBlock),
       };
       // Stage 2 和 Stage 3 的 user prompt 由 route 根据前阶段输出动态构建
       const stage2 = {
