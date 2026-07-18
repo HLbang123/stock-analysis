@@ -5,12 +5,12 @@ import { useStockStore } from '@/store';
 import { useAiStore, AiProfile, AiAnalysisRecord } from '@/store/ai-store';
 import { getRealtimeQuote, getKLineSina, getRealtimeQuoteCached, getKLineSinaCached } from '@/services/stockApi';
 import { ALERT_RULES, checkAllRules } from '@/services/alertRules';
-import { buildSystemPrompt, buildUserPrompt } from '@/services/aiPrompt';
+import { buildXinJieQuickSystemPrompt } from '@/services/xinjiePrompt';
+import { buildUserPrompt } from '@/services/aiPrompt';
 import {
   buildAnalystSystemPrompt, buildAnalystUserPrompt,
-  buildDebateRound1SystemPrompt, buildDebateUserPrompt,
   buildVerdictSystemPrompt, buildVerdictUserPrompt,
-  buildReflectionContext,
+  buildReflectionContext, buildDebateDataPrompt,
 } from '@/services/deepAnalysisPrompt';
 import { KLineData, RealtimeQuote } from '@/types';
 import { calculateIndicators, formatIndicatorsForPrompt } from '@/lib/indicators';
@@ -357,7 +357,7 @@ export default function AiPage() {
         ? `注意：该股票占用户总持仓的${stock.positionPercent}%，请在分析中考虑仓位集中度风险。`
         : undefined;
 
-      const systemPrompt = buildSystemPrompt(isETF(selectedCode));
+      const systemPrompt = buildXinJieQuickSystemPrompt(isETF(selectedCode));
       const marketNote = `[市场状态] ${getMarketStatus().note}\n\n`;
       const userPrompt = marketNote + buildUserPrompt(selectedCode, stock.name, quoteJson, klineSummary, engineSummary, indicatorBlock, positionNote);
 
@@ -492,7 +492,7 @@ export default function AiPage() {
     deepAbortRef.current = abortController;
 
     try {
-      // 获取数据（K线取60根，比快速分析更多）
+      // 获取数据（K线取60根，比心姐分析更多）
       const [quote, kLines, tushareData] = await Promise.all([
         getRealtimeQuoteCached(selectedCode),
         getKLineSinaCached(selectedCode, 240, 120),
@@ -550,14 +550,15 @@ export default function AiPage() {
         systemPrompt: buildAnalystSystemPrompt(etf),
         userPrompt: marketStatusNote + buildAnalystUserPrompt(selectedCode, stock.name, quoteJson, klineSummary, engineSummary, indicatorBlock, reflectionBlock, positionNote, etf, tushareBlock),
       };
-      // Stage 2 和 Stage 3 的 user prompt 由 route 根据前阶段输出动态构建
+      // Stage 2 辩论数据（路由自行处理角色分配和调用）
+      const debateDataPrompt = buildDebateDataPrompt(selectedCode, stock.name, quoteJson, indicatorBlock, marketStatusNote);
       const stage2 = {
-        systemPrompt: buildDebateRound1SystemPrompt(),
-        userPrompt: marketStatusNote + buildDebateUserPrompt(selectedCode, stock.name, '', quoteJson, indicatorBlock),
+        systemPrompt: '', // 路由不再使用，自行构建角色 prompt
+        userPrompt: debateDataPrompt,
       };
       const stage3 = {
         systemPrompt: buildVerdictSystemPrompt(),
-        userPrompt: marketStatusNote + buildVerdictUserPrompt(selectedCode, stock.name, '', '', quoteJson, positionNoteVerdict),
+        userPrompt: buildVerdictUserPrompt(selectedCode, stock.name, '', '', quoteJson, positionNoteVerdict),
       };
 
       // SSE 流式调用深度分析
@@ -772,7 +773,7 @@ export default function AiPage() {
           // 如果有最新分析结果，附上
           if (attachAnalysisResult) {
             if (result) {
-              stockContext += `\n\n最新快速分析结论：风险${result.riskLevel}，支撑${result.supportPrice}，压力${result.resistancePrice}\n${result.analysis}`;
+              stockContext += `\n\n最新心姐分析结论：风险${result.riskLevel}，支撑${result.supportPrice}，压力${result.resistancePrice}\n${result.analysis}`;
             }
             if (deepResult?.structured?.action) {
               const ds = deepResult.structured;
@@ -929,7 +930,7 @@ export default function AiPage() {
         </select>
 
         <div className="flex gap-2 mb-1">
-          {/* 快速分析 */}
+          {/* 心姐分析 */}
           <button
             onClick={runAnalysis}
             disabled={!selectedCode || isAnalyzing || isDeepAnalyzing}
@@ -945,7 +946,7 @@ export default function AiPage() {
             ) : isAnalyzing ? (
               <><Loader2 className="w-5 h-5 animate-spin" />连接中...</>
             ) : (
-              <><Brain className="w-5 h-5" />快速分析</>
+              <><Brain className="w-5 h-5" />心姐分析</>
             )}
           </button>
 

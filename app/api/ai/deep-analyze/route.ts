@@ -1,5 +1,11 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { formatAiError, formatNetworkError } from '@/lib/ai-error';
+import {
+  buildTechR1SystemPrompt, buildRiskR1SystemPrompt,
+  buildXinJieR1DebatePrompt, buildXinJieR2RebuttalPrompt,
+  buildTechR2RebuttalPrompt, buildRiskR2RebuttalPrompt,
+  buildManagerPrompt,
+} from '@/services/deepAnalysisPrompt';
 
 /**
  * Jaccard 相似度（bigram 分词）
@@ -199,38 +205,85 @@ export async function POST(request: NextRequest) {
             return;
           }
 
-          // ===== 阶段二：多空辩论（两轮）=====
-          console.log('[Deep AI Proxy] Stage 2: Bull/Bear Debate (2 rounds)');
+          // ===== 阶段二：多空辩论（Parallel R1 + Sequential R2）=====
+          console.log('[Deep AI Proxy] Stage 2: 3-person debate (Parallel R1 + Sequential R2)');
           let stage2Output = '';
           try {
-            // Round 1: 多方初始论点 + 空方初始论点
-            const s2r1System = stage2?.systemPrompt || buildFallbackDebateRound1Prompt();
-            const s2r1User = [
+            // 构建辩论基础数据 prompt（不含分析师报告，角色不需要读完整报告）
+            const debateData = [
               stage2?.userPrompt?.split('以下是一份深度分析师报告')[0]?.trim() || '',
-              `以下是一份深度分析师报告，请基于这份报告进行多空辩论：\n\n${stage1Output}`,
             ].filter(Boolean).join('\n\n');
-            const round1Output = await runStage('debate', s2r1System, s2r1User);
-            stage2Output += round1Output;
 
-            // Round 2: 多方反驳 + 空方反驳 + 研究经理综合评判
+            // ======== Round 1: 三人并行（互不可见）========
+            const [techR1, riskR1, xinjieR1] = await Promise.all([
+              runStage('tech', buildTechR1SystemPrompt(), debateData),
+              runStage('risk', buildRiskR1SystemPrompt(), debateData),
+              runStage('xinjie', buildXinJieR1DebatePrompt(), debateData),
+            ]);
+
+            // 发送 Round 1 结果
+            for (const [role, text] of [['tech', techR1], ['risk', riskR1], ['xinjie', xinjieR1]] as const) {
+              controller.enqueue(
+                encoder.encode(
+                  `data: ${JSON.stringify({ stage: 'debate', role, text: `【${role === 'tech' ? '看涨观点' : role === 'risk' ? '看跌观点' : '心姐判断'}】\n${text}\n\n` })}\n\n`
+                )
+              );
+            }
+            stage2Output += techR1 + '\n\n' + riskR1 + '\n\n' + xinjieR1;
+
+            // ======== Round 2: 串行反驳（累计上下文）========
             controller.enqueue(
               encoder.encode(
-                `data: ${JSON.stringify({ stage: 'debate', text: '\n\n--- 第二轮 ---\n\n' })}\n\n`
+                `data: ${JSON.stringify({ stage: 'debate', text: '\n--- 第二轮 ---\n' })}\n\n`
               )
             );
 
-            const s2r2System = stage2?.systemPrompt || buildFallbackDebateRound2Prompt();
-            const s2r2User = `以下为第一轮多空辩论的完整记录：\n\n${round1Output}\n\n请基于第一轮辩论内容，进行第二轮反驳和综合评判。`;
-            const round2Output = await runStage('debate', s2r2System, s2r2User);
-            stage2Output += '\n\n--- 第二轮 ---\n\n' + round2Output;
+            // 技术反驳（看到风控+心姐的 R1）
+            const techR2Ctx = `前面两人的第一轮发言：\n【看跌观点】${riskR1}\n【心姐判断】${xinjieR1}\n\n请针对以上两人的观点进行反驳。`;
+            const techR2 = await runStage('tech_r2', buildTechR2RebuttalPrompt(), techR2Ctx);
+            controller.enqueue(
+              encoder.encode(
+                `data: ${JSON.stringify({ stage: 'debate', role: 'tech_r2', text: `【看涨反驳】\n${techR2}\n\n` })}\n\n`
+              )
+            );
 
-            // 卡死检测：两轮辩论相似度
-            const similarity = jaccardSimilarity(round1Output, round2Output);
+            // 风控反驳（看到技术+心姐的 R1 + 技术 R2）
+            const riskR2Ctx = `第一轮发言回顾：\n【看涨观点】${techR1}\n【心姐判断】${xinjieR1}\n\n技术分析师的反驳：\n${techR2}\n\n请针对以上内容进行反驳。`;
+            const riskR2 = await runStage('risk_r2', buildRiskR2RebuttalPrompt(), riskR2Ctx);
+            controller.enqueue(
+              encoder.encode(
+                `data: ${JSON.stringify({ stage: 'debate', role: 'risk_r2', text: `【看跌反驳】\n${riskR2}\n\n` })}\n\n`
+              )
+            );
+
+            // 心姐反驳（看到全部）
+            const xinjieR2Ctx = `第一轮：\n【看涨观点】${techR1}\n【看跌观点】${riskR1}\n\n第二轮反驳：\n技术分析师："${techR2.slice(0, 200)}"\n风控专家："${riskR2.slice(0, 200)}"\n\n请给出你的最终判断。`;
+            const xinjieR2 = await runStage('xinjie_r2', buildXinJieR2RebuttalPrompt(), xinjieR2Ctx);
+            controller.enqueue(
+              encoder.encode(
+                `data: ${JSON.stringify({ stage: 'debate', role: 'xinjie_r2', text: `【心姐最终判断】\n${xinjieR2}\n\n` })}\n\n`
+              )
+            );
+
+            // 研究经理
+            const mgrCtx = `第一轮发言：\n技术分析师：${techR1.slice(0, 200)}\n风控专家：${riskR1.slice(0, 200)}\n心姐：${xinjieR1.slice(0, 200)}\n\n第二轮反驳：\n技术反驳：${techR2.slice(0, 200)}\n风控反驳：${riskR2.slice(0, 200)}\n心姐最终判断：${xinjieR2.slice(0, 200)}`;
+            const mgrOutput = await runStage('manager', buildManagerPrompt(), mgrCtx);
+            controller.enqueue(
+              encoder.encode(
+                `data: ${JSON.stringify({ stage: 'debate', role: 'manager', text: `【综合评判】\n${mgrOutput}` })}\n\n`
+              )
+            );
+
+            stage2Output += '\n--- R2 ---\n' + [techR2, riskR2, xinjieR2, mgrOutput].join('\n\n');
+
+            // 卡死检测：R1 vs R2 相似度
+            const r1All = techR1 + riskR1 + xinjieR1;
+            const similarity = jaccardSimilarity(r1All, techR2 + riskR2 + xinjieR2);
             if (similarity >= STUCK_THRESHOLD) {
               console.warn(`[Deep AI Proxy] 辩论轮间相似度过高 (${(similarity * 100).toFixed(0)}%)`);
               controller.enqueue(
                 encoder.encode(
-                  `data: ${JSON.stringify({ stage: 'debate', warning: `辩论出现重复（相似度${(similarity*100).toFixed(0)}%），两轮论点高度雷同` })}\n\n`
+                  `data: ${JSON.stringify({ stage: 'debate', warning: `辩论出现重复（相似度${(similarity*100).toFixed(0)}%）` })}\n\n`
                 )
               );
             }
@@ -310,60 +363,6 @@ export async function POST(request: NextRequest) {
   }
 }
 
-/** 备用：第一轮辩论 prompt（角色人格化版本） */
-function buildFallbackDebateRound1Prompt(): string {
-  return `你现在是投资辩论主持人。请依次扮演以下两个角色，进行第一轮辩论。
-
-## 角色设定
-
-### 技术分析师（看涨立场）
-口头禅风格："K线图清楚地告诉我..."、"量价关系来看..."
-
-### 风险控制专家（看跌立场）
-口头禅风格："作为风控专家，我必须泼一盆冷水..."、"风险点在于..."
-
-## 行为禁令
-- 禁止搜索新数据——你已经有分析师报告和实时行情
-- 禁止中立摇摆——必须明确选一边
-
-## 第一轮
-
-### 技术分析师（看涨论点）
-以"【看涨观点】"开头，150-250字：
-- 引用具体数据（价格、均线、成交量、资金流向等）
-- 用第一人称："我发现"、"我认为"
-
-### 风险控制专家（看跌论点）
-以"【看跌观点】"开头，150-250字：
-- 必须直接针对技术分析师的论点进行质疑
-- 用第一人称："我担心"、"我不同意"
-
-注意：严格遵守角色切换。`;
-}
-
-/** 备用：第二轮辩论 prompt（累计上下文 + 5 级情绪强度） */
-function buildFallbackDebateRound2Prompt(): string {
-  return `你现在是投资辩论主持人。必须引用并回应对方第一轮的具体论点。
-
-## 第二轮
-
-### 技术分析师反驳
-以"【看涨反驳】"开头（100-200字）：
-- 逐条回应风控专家第一轮的质疑
-- 直接称呼对方："风控专家提到...，但事实上..."
-
-### 风险控制专家反驳
-以"【看跌反驳】"开头（100-200字）：
-- 逐条回应技术分析师第一轮的论点
-- 直接称呼对方："技术分析师认为...，但我必须指出..."
-
-### 研究经理综合评判
-以"【综合评判】"开头（100-200字）：
-- 对比双方论点说服力
-- 给出 5 级情绪强度（五选一）：强烈看多 / 温和看多 / 中性 / 温和看空 / 强烈看空
-
-注意：反驳必须真实引用对方论点。`;
-}
 
 /** 备用：如果客户端未传入阶段三 prompt */
 function buildFallbackVerdictPrompt(): string {
