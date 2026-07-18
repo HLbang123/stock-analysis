@@ -3,6 +3,8 @@
  * 从服务端 API 拉取数据，转换为 AI 可读的文本格式
  */
 
+import { getCached, setCache } from '@/lib/cache';
+
 interface DailyBasicItem {
   ts_code: string;
   trade_date: string;
@@ -52,7 +54,53 @@ export interface TushareData {
   dailyBasic: DailyBasicItem[];
   finaIndicator: FinaIndicatorItem[];
   moneyflow: MoneyflowItem[];
+  holderNumber?: HolderNumberItem[];
+  margin?: MarginItem[];
+  hkHold?: HkHoldItem[];
+  forecast?: ForecastItem[];
   errors?: string[];
+}
+
+// ===== 新增数据接口 =====
+
+interface HolderNumberItem {
+  ts_code: string;
+  ann_date: string;
+  end_date: string;
+  holder_num?: number;
+  holder_num_ratio?: number;  // 股东人数环比变化率(%)
+}
+
+interface MarginItem {
+  ts_code: string;
+  trade_date: string;
+  rzye?: number;    // 融资余额（万元）
+  rqye?: number;    // 融券余额（万元）
+  rzmre?: number;   // 融资买入额（万元）
+  rzche?: number;   // 融资偿还额（万元）
+  rqyl?: number;    // 融券余量
+  rqchl?: number;   // 融券偿还量
+}
+
+interface HkHoldItem {
+  ts_code: string;
+  trade_date: string;
+  hold_vol?: number;   // 持股数量
+  hold_ratio?: number; // 持股比例(%)
+}
+
+interface ForecastItem {
+  ts_code: string;
+  ann_date: string;
+  end_date: string;
+  type?: string;           // 预告类型: 预增/预减/扭亏/首亏/...
+  p_change_min?: number;   // 净利润变动幅度下限(%)
+  p_change_max?: number;   // 净利润变动幅度上限(%)
+  net_profit_min?: number; // 预告净利润下限（万元）
+  net_profit_max?: number; // 预告净利润上限（万元）
+  last_parent_net?: number; // 上年同期归母净利润
+  summary?: string;
+  change_reason?: string;
 }
 
 /**
@@ -71,6 +119,24 @@ export async function fetchTushareData(code: string): Promise<TushareData | null
     console.warn('[Tushare] 数据获取失败:', e);
     return null;
   }
+}
+
+/**
+ * 缓存版 fetchTushareData
+ * 基本面数据 TTL=10min，maxAge=60min
+ */
+export async function fetchTushareDataCached(code: string): Promise<TushareData | null> {
+  const key = { code };
+  const cached = getCached<TushareData>('tushare_fundamental', key);
+  if (cached && !cached.isStale) return cached.data;
+
+  const fresh = await fetchTushareData(code);
+  if (fresh) {
+    setCache('tushare_fundamental', fresh, key);
+    return fresh;
+  }
+  if (cached) return cached.data;
+  return null;
 }
 
 /**
@@ -224,14 +290,137 @@ export function formatTushareForPrompt(data: TushareData | null): string {
     sections.push(`### 资金流向\n${flowLines.join('\n')}`);
   }
 
-  // ===== 4. AI 分析提示 =====
-  sections.push(`### 基本面分析提示
-- PE/PB 需要结合行业均值和历史分位判断，不能只看绝对值
-- ROE 持续高于 10% 视为盈利能力良好，低于 5% 需要警惕
-- 营收增速连续两个季度下滑可能是基本面恶化的信号
-- 主力资金连续净流出且股价上涨 → 量价背离，可能是诱多
-- 资产负债率 > 80% 为高杠杆，需关注偿债风险
-- 经营现金流/营收 < 0 → 利润可能只是账面数字`);
+  // ===== 4. 股东人数 =====
+  const hdData = data.holderNumber;
+  if (hdData && hdData.length > 0) {
+    const hdLines: string[] = [];
+    let prevNum: number | undefined;
+    for (const hd of hdData) {
+      const dateStr = hd.end_date
+        ? `${hd.end_date.slice(0, 4)}-${hd.end_date.slice(4, 6)}-${hd.end_date.slice(6, 8)}`
+        : '';
+      const dir = prevNum
+        ? (hd.holder_num! < prevNum ? '↓ 集中' : hd.holder_num! > prevNum ? '↑ 分散' : '→ 持平')
+        : '';
+      const ratioStr = hd.holder_num_ratio !== undefined ? ` (变动${hd.holder_num_ratio > 0 ? '+' : ''}${hd.holder_num_ratio.toFixed(2)}%)` : '';
+      hdLines.push(`- ${dateStr}：${hd.holder_num?.toLocaleString() || '--'} 户${dir}${ratioStr}`);
+      prevNum = hd.holder_num;
+    }
+    // 趋势判断
+    if (hdData.length >= 2) {
+      const latest = hdData[0].holder_num || 0;
+      const oldest = hdData[hdData.length - 1].holder_num || 0;
+      const trend = latest < oldest ? '股东人数持续减少，筹码趋于集中，可能有主力吸筹' :
+        latest > oldest ? '股东人数持续增加，筹码趋于分散，散户化特征' : '股东人数基本持平';
+      hdLines.push(`\n趋势：${trend}`);
+    }
+    sections.push(`### 股东人数（筹码集中度）\n${hdLines.join('\n')}`);
+  }
+
+  // ===== 5. 融资融券 =====
+  const mgData = data.margin;
+  if (mgData && mgData.length > 0) {
+    const mgLines: string[] = [];
+    for (const mg of mgData) {
+      const dateStr = mg.trade_date
+        ? `${mg.trade_date.slice(4, 6)}-${mg.trade_date.slice(6, 8)}`
+        : '';
+      const rzyeYi = (mg.rzye || 0) / 10000;
+      const netBuy = (mg.rzmre || 0) - (mg.rzche || 0);
+      const netStr = netBuy > 0 ? `净买入 ${fmtFlow(netBuy)}` : netBuy < 0 ? `净卖出 ${fmtFlow(Math.abs(netBuy))}` : '';
+      mgLines.push(`- ${dateStr}：融资余额 ${rzyeYi.toFixed(2)}亿${netStr ? '，' + netStr : ''}`);
+    }
+    // 趋势判断
+    const latestRzye = mgData[0].rzye || 0;
+    const oldestRzye = mgData[mgData.length - 1].rzye || 0;
+    const rzTrend = latestRzye > oldestRzye * 1.05 ? '融资余额持续上升，杠杆资金看多情绪浓厚' :
+      latestRzye < oldestRzye * 0.95 ? '融资余额持续下降，杠杆资金在撤退' : '融资余额基本稳定';
+    mgLines.push(`\n趋势：${rzTrend}`);
+    sections.push(`### 融资融券（杠杆资金）\n${mgLines.join('\n')}`);
+  }
+
+  // ===== 6. 北向资金 =====
+  const hkData = data.hkHold;
+  if (hkData && hkData.length > 0) {
+    const hkLines: string[] = [];
+    let prevRatio: number | undefined;
+    for (const hk of hkData) {
+      const dateStr = hk.trade_date
+        ? `${hk.trade_date.slice(4, 6)}-${hk.trade_date.slice(6, 8)}`
+        : '';
+      const dir = prevRatio
+        ? (hk.hold_ratio! > prevRatio ? '↑' : hk.hold_ratio! < prevRatio ? '↓' : '→')
+        : '';
+      hkLines.push(`- ${dateStr}：持股 ${hk.hold_ratio?.toFixed(2) || '--'}%${dir}`);
+      prevRatio = hk.hold_ratio;
+    }
+    if (hkData.length >= 2 && hkData[0].hold_ratio && hkData[hkData.length - 1].hold_ratio) {
+      const trend = hkData[0].hold_ratio > hkData[hkData.length - 1].hold_ratio ? '北向资金持续增持，外资看好' :
+        hkData[0].hold_ratio < hkData[hkData.length - 1].hold_ratio ? '北向资金持续减持，外资态度谨慎' : '';
+      if (trend) hkLines.push(`\n趋势：${trend}`);
+    }
+    sections.push(`### 北向资金持股\n${hkLines.join('\n')}`);
+  }
+
+  // ===== 7. 业绩预告 =====
+  const fcData = data.forecast;
+  if (fcData && fcData.length > 0) {
+    const fc = fcData[0];
+    const dateStr = fc.end_date
+      ? `${fc.end_date.slice(0, 4)}-${fc.end_date.slice(4, 6)}-${fc.end_date.slice(6, 8)}`
+      : '最近';
+    const typeLabel: Record<string, string> = {
+      '预增': '📈 预增', '预减': '📉 预减', '扭亏': '🔄 扭亏', '首亏': '⚠️ 首亏',
+      '续亏': '❌ 续亏', '续盈': '✅ 续盈', '略增': '📈 略增', '略减': '📉 略减',
+    };
+    const label = typeLabel[fc.type || ''] || fc.type || '';
+    const pChange = fc.p_change_min !== undefined
+      ? `净利润变动 ${fc.p_change_min > 0 ? '+' : ''}${fc.p_change_min.toFixed(1)}%${fc.p_change_max !== undefined ? ` ~ ${fc.p_change_max > 0 ? '+' : ''}${fc.p_change_max.toFixed(1)}%` : ''}`
+      : '';
+    const profit = fc.net_profit_min !== undefined
+      ? `预告净利润 ${(fc.net_profit_min / 10000).toFixed(2)}亿${fc.net_profit_max ? ` ~ ${(fc.net_profit_max / 10000).toFixed(2)}亿` : ''}`
+      : '';
+    const fcLines = [
+      `- 报告期：${dateStr}`,
+      `- 预告类型：${label}`,
+    ];
+    if (pChange) fcLines.push(`- ${pChange}`);
+    if (profit) fcLines.push(`- ${profit}`);
+    if (fc.last_parent_net) fcLines.push(`- 去年同期净利润：${(fc.last_parent_net / 10000).toFixed(2)}亿`);
+    if (fc.summary) fcLines.push(`- 摘要：${fc.summary.slice(0, 150)}`);
+    if (fc.change_reason) fcLines.push(`- 变动原因：${fc.change_reason.slice(0, 150)}`);
+    sections.push(`### 业绩预告\n${fcLines.join('\n')}`);
+  }
+
+  // ===== 8. AI 分析提示 =====
+  sections.push(`### 基本面分析提示（请用以下阈值做判断）
+
+估值：
+- PEG = PE_TTM / 净利润增速(%)，< 1 → 低估，1-2 → 合理，> 2 → 高估
+- PB < 1 + ROE > 10% → 可能被低估的破净股（但需排除资产质量差的情况）
+- PB > 5 + ROE < 15% → 估值偏高，需要高成长支撑
+
+盈利质量：
+- ROE > 15% → 优秀，10-15% → 良好，5-10% → 一般，< 5% → 需要警惕
+- 毛利率(银行不适用) > 40% → 强护城河，20-40% → 中等，< 20% → 竞争激烈
+- 经营现金流/营收 < 0 → 利润可能只是账面数字（⚠️ 直接亮红灯）
+- 经营现金流/营收 持续低于净利率 → 应收账款堆积或利润注水
+
+成长性：
+- 营收增速连续两个季度下滑（仍为正但趋势向下）→ 增长放缓，需关注拐点
+- 营收增速转负 + 净利润增速转负 → 基本面恶化，除非有明确反转催化剂
+- 净利润增速 > 营收增速 → 经营杠杆改善，良性增长
+- 净利润增速 < 营收增速 → 成本侵蚀利润，需要分析原因
+
+财务健康：
+- 资产负债率 > 80% → 高杠杆风险，查偿债能力（流动比率 < 1 则双重预警）
+- 流动比率 < 1 → 短期偿债压力，速动比率 < 0.5 → 很危险
+- 资产负债率 < 30% + ROE > 15% → 轻资产高回报，优质公司特征
+
+资金面：
+- 主力连续3日净流入 + 股价横盘 → 可能是吸筹，关注突破
+- 主力连续3日净流出 + 股价上涨 → 量价背离，诱多嫌疑
+- 北向资金连续增持 + 股价低迷 → 外资左侧抄底，长线看好`);
 
   sections.push('---');
   return sections.join('\n');

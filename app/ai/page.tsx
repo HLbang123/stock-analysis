@@ -3,7 +3,7 @@
 import React, { useState, useCallback, useRef, useEffect } from 'react';
 import { useStockStore } from '@/store';
 import { useAiStore, AiProfile, AiAnalysisRecord } from '@/store/ai-store';
-import { getRealtimeQuote, getKLineSina } from '@/services/stockApi';
+import { getRealtimeQuote, getKLineSina, getRealtimeQuoteCached, getKLineSinaCached } from '@/services/stockApi';
 import { ALERT_RULES, checkAllRules } from '@/services/alertRules';
 import { buildSystemPrompt, buildUserPrompt } from '@/services/aiPrompt';
 import {
@@ -252,8 +252,9 @@ export default function AiPage() {
   const parseVerdictContent = useCallback((text: string) => {
     const actionMatch = text.match(/ACTION:(.+)/);
     const riskMatch = text.match(/RISK_LEVEL:(.+)/);
-    const confMatch = text.match(/CONFIDENCE:(.+)/);
-    const confScoreMatch = text.match(/CONFIDENCE_SCORE:\s*([\d.]+)/);
+    const confMatch = text.match(/CONFIDENCE:\s*(\d+)/);
+    const confValue = confMatch ? parseInt(confMatch[1]) : 0;
+    const confScoreValue = confValue / 100;
     const targetLowMatch = text.match(/TARGET_LOW:(.+)/);
     const targetHighMatch = text.match(/TARGET_HIGH:(.+)/);
     const stopMatch = text.match(/STOP_LOSS:(.+)/);
@@ -288,7 +289,7 @@ export default function AiPage() {
       stopLoss: stopMatch?.[1]?.trim() || '--',
       position: posMatch?.[1]?.trim() || '--',
       reasoning, plan, riskNote,
-      confidenceScore: confScoreMatch ? parseFloat(confScoreMatch[1]) : undefined,
+      confidenceScore: confScoreValue,
       keyPoints: keyPointsMatch
         ? keyPointsMatch[1].split('|').map(p => p.trim()).filter(p => p.length > 0)
         : [],
@@ -493,8 +494,8 @@ export default function AiPage() {
     try {
       // 获取数据（K线取60根，比快速分析更多）
       const [quote, kLines, tushareData] = await Promise.all([
-        getRealtimeQuote(selectedCode),
-        getKLineSina(selectedCode, 240, 120),
+        getRealtimeQuoteCached(selectedCode),
+        getKLineSinaCached(selectedCode, 240, 120),
         fetchTushareData(selectedCode).catch(() => null),
       ]);
 

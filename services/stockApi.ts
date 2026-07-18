@@ -1,5 +1,6 @@
 import { RealtimeQuote, KLineData } from '@/types';
 import { detectMarket, parseCode as parseIdent } from '@/lib/identify';
+import { getCached, setCache } from '@/lib/cache';
 
 /**
  * 获取实时行情（通过服务端代理，避免浏览器CORS限制）
@@ -136,4 +137,61 @@ export function parseStockCode(input: string): { market: string; pureCode: strin
     pureCode = trimmed.substring(2);
   }
   return { market, pureCode, fullCode: `${market}${pureCode}` };
+}
+
+// ===== 缓存包装（Phase 3.1）=====
+
+/**
+ * 缓存版 getRealtimeQuote
+ * 行情 TTL=30s，maxAge=3min
+ */
+export async function getRealtimeQuoteCached(code: string): Promise<RealtimeQuote | null> {
+  const key = { code };
+  const cached = getCached<RealtimeQuote>('quote', key);
+  if (cached && !cached.isStale) return cached.data;
+
+  const fresh = await getRealtimeQuote(code);
+  if (fresh) {
+    setCache('quote', fresh, key);
+    return fresh;
+  }
+  // 降级到过期缓存
+  if (cached) return cached.data;
+  return null;
+}
+
+/**
+ * 缓存版 getKLineSina
+ * 日K TTL=5min，maxAge=15min
+ */
+export async function getKLineSinaCached(symbol: string, scale: number = 240, dataLen: number = 120): Promise<KLineData[]> {
+  const key = { code: symbol, scale, dataLen };
+  const cached = getCached<KLineData[]>('kline_daily', key);
+  if (cached && !cached.isStale) return cached.data;
+
+  const fresh = await getKLineSina(symbol, scale, dataLen);
+  if (fresh.length > 0) {
+    setCache('kline_daily', fresh, key);
+    return fresh;
+  }
+  if (cached) return cached.data;
+  return [];
+}
+
+/**
+ * 缓存版 getMinuteData
+ * 分时 TTL=2min，maxAge=10min
+ */
+export async function getMinuteDataCached(code: string): Promise<{ time: string; price: number; volume: number; avgPrice: number }[]> {
+  const key = { code };
+  const cached = getCached<{ time: string; price: number; volume: number; avgPrice: number }[]>('minute_data', key);
+  if (cached && !cached.isStale) return cached.data;
+
+  const fresh = await getMinuteData(code);
+  if (fresh.length > 0) {
+    setCache('minute_data', fresh, key);
+    return fresh;
+  }
+  if (cached) return cached.data;
+  return [];
 }

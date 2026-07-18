@@ -2,6 +2,31 @@ import { NextRequest, NextResponse } from 'next/server';
 import { formatAiError, formatNetworkError } from '@/lib/ai-error';
 
 /**
+ * Jaccard 相似度（bigram 分词）
+ * 用于检测辩论轮间的卡死（输出高度重复）
+ */
+function jaccardSimilarity(a: string, b: string): number {
+  const bigrams = (s: string) => {
+    const set = new Set<string>();
+    for (let i = 0; i < s.length - 1; i++) {
+      set.add(s.slice(i, i + 2));
+    }
+    return set;
+  };
+  const sa = bigrams(a);
+  const sb = bigrams(b);
+  if (sa.size === 0 && sb.size === 0) return 1;
+  let intersection = 0;
+  for (const gram of sa) {
+    if (sb.has(gram)) intersection++;
+  }
+  return intersection / (sa.size + sb.size - intersection);
+}
+
+/** 卡死检测阈值：相似度 > 0.7 视为卡死 */
+const STUCK_THRESHOLD = 0.7;
+
+/**
  * 深度分析代理 — 三阶段 SSE 流式编排
  * 阶段一：情报收集 → 阶段二：多空辩论 → 阶段三：最终裁决
  * 每个阶段独立调用 LLM，流式输出到客户端
@@ -80,6 +105,9 @@ export async function POST(request: NextRequest) {
             const reader = llmResponse.body!.getReader();
             const decoder = new TextDecoder();
             let buffer = '';
+            let lastDelta = '';
+            let repeatCount = 0;
+            let stuckWarning = false;
 
             while (true) {
               const { done, value } = await reader.read();
@@ -100,6 +128,23 @@ export async function POST(request: NextRequest) {
                   const parsed = JSON.parse(data);
                   const delta = parsed.choices?.[0]?.delta?.content;
                   if (delta) {
+                    // 卡死检测：连续相同输出
+                    if (delta === lastDelta) {
+                      repeatCount++;
+                    } else {
+                      repeatCount = 0;
+                      lastDelta = delta;
+                    }
+                    if (repeatCount >= 3 && !stuckWarning) {
+                      stuckWarning = true;
+                      console.warn(`[Deep AI Proxy] ${stageKey} 检测到卡死（连续重复输出）`);
+                      controller.enqueue(
+                        encoder.encode(
+                          `data: ${JSON.stringify({ stage: stageKey, warning: '检测到输出重复，可能陷入循环' })}\n\n`
+                        )
+                      );
+                    }
+
                     fullOutput += delta;
                     controller.enqueue(
                       encoder.encode(
@@ -173,10 +218,22 @@ export async function POST(request: NextRequest) {
                 `data: ${JSON.stringify({ stage: 'debate', text: '\n\n--- 第二轮 ---\n\n' })}\n\n`
               )
             );
-            const s2r2System = buildFallbackDebateRound2Prompt();
+
+            const s2r2System = stage2?.systemPrompt || buildFallbackDebateRound2Prompt();
             const s2r2User = `以下为第一轮多空辩论的完整记录：\n\n${round1Output}\n\n请基于第一轮辩论内容，进行第二轮反驳和综合评判。`;
             const round2Output = await runStage('debate', s2r2System, s2r2User);
             stage2Output += '\n\n--- 第二轮 ---\n\n' + round2Output;
+
+            // 卡死检测：两轮辩论相似度
+            const similarity = jaccardSimilarity(round1Output, round2Output);
+            if (similarity >= STUCK_THRESHOLD) {
+              console.warn(`[Deep AI Proxy] 辩论轮间相似度过高 (${(similarity * 100).toFixed(0)}%)`);
+              controller.enqueue(
+                encoder.encode(
+                  `data: ${JSON.stringify({ stage: 'debate', warning: `辩论出现重复（相似度${(similarity*100).toFixed(0)}%），两轮论点高度雷同` })}\n\n`
+                )
+              );
+            }
           } catch (e: any) {
             console.error('[Deep AI Proxy] Stage 2 failed:', e.message);
             controller.enqueue(
@@ -253,50 +310,59 @@ export async function POST(request: NextRequest) {
   }
 }
 
-/** 备用：第一轮辩论 prompt */
+/** 备用：第一轮辩论 prompt（角色人格化版本） */
 function buildFallbackDebateRound1Prompt(): string {
-  return `你是投资辩论主持人。请依次扮演多方研究员和空方研究员，进行第一轮辩论。
+  return `你现在是投资辩论主持人。请依次扮演以下两个角色，进行第一轮辩论。
+
+## 角色设定
+
+### 技术分析师（看涨立场）
+口头禅风格："K线图清楚地告诉我..."、"量价关系来看..."
+
+### 风险控制专家（看跌立场）
+口头禅风格："作为风控专家，我必须泼一盆冷水..."、"风险点在于..."
+
+## 行为禁令
+- 禁止搜索新数据——你已经有分析师报告和实时行情
+- 禁止中立摇摆——必须明确选一边
 
 ## 第一轮
 
-### 多方研究员（看涨论点）
-以"【多方观点】"开头，列出3-5个看涨理由：
-- 每个理由必须有具体数据支撑
-- 200-300字
+### 技术分析师（看涨论点）
+以"【看涨观点】"开头，150-250字：
+- 引用具体数据（价格、均线、成交量、资金流向等）
+- 用第一人称："我发现"、"我认为"
 
-### 空方研究员（看跌论点）
-以"【空方观点】"开头，列出3-5个看跌理由：
-- 直接针对多方提出的论点进行质疑
-- 200-300字
+### 风险控制专家（看跌论点）
+以"【看跌观点】"开头，150-250字：
+- 必须直接针对技术分析师的论点进行质疑
+- 用第一人称："我担心"、"我不同意"
 
 注意：严格遵守角色切换。`;
 }
 
-/** 备用：第二轮辩论 prompt */
+/** 备用：第二轮辩论 prompt（累计上下文 + 5 级情绪强度） */
 function buildFallbackDebateRound2Prompt(): string {
-  return `你是投资辩论主持人。基于第一轮双方的初始论点，现在进入第二轮深度辩论。
+  return `你现在是投资辩论主持人。必须引用并回应对方第一轮的具体论点。
 
 ## 第二轮
 
-### 多方反驳
-以"【多方反驳】"开头：
-- 针对空方第一轮的每个质疑进行反驳
-- 补充新的看涨证据
-- 150-250字
+### 技术分析师反驳
+以"【看涨反驳】"开头（100-200字）：
+- 逐条回应风控专家第一轮的质疑
+- 直接称呼对方："风控专家提到...，但事实上..."
 
-### 空方反驳
-以"【空方反驳】"开头：
-- 针对多方第一轮的每个论点进行质疑
-- 补充新的看跌证据
-- 150-250字
+### 风险控制专家反驳
+以"【看跌反驳】"开头（100-200字）：
+- 逐条回应技术分析师第一轮的论点
+- 直接称呼对方："技术分析师认为...，但我必须指出..."
 
 ### 研究经理综合评判
-以"【综合评判】"开头：
-- 客观权衡双方两轮论点的说服力
-- 给出偏向性判断：偏多 / 偏空 / 中性
-- 150-250字
+以"【综合评判】"开头（100-200字）：
+- 对比双方论点说服力
+- 给出 5 级情绪强度（五选一）：强烈看多 / 温和看多 / 中性 / 温和看空 / 强烈看空
 
-注意：严格遵守角色切换。`;
+注意：反驳必须真实引用对方论点。`;
 }
 
 /** 备用：如果客户端未传入阶段三 prompt */
