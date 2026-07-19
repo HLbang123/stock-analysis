@@ -1,0 +1,22 @@
+services:
+  db:
+    image: postgres:15
+    container_name: stock_pg
+    restart: unless-stopped
+    environment:
+      POSTGRES_DB: stock_analysis
+      POSTGRES_USER: quant_user
+      POSTGRES_PASSWORD: ${DB_PASSWORD:-stock_quant_2024}
+    ports:
+      - "127.0.0.1:5432:5432"
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+      - ./database/init.sql:/docker-entrypoint-initdb.d/init.sql
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U quant_user -d stock_analysis"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+volumes:
+  pgdata:

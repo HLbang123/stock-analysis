@@ -1,0 +1,60 @@
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+}
+
+model Stock {
+  tsCode   String  @id @map("ts_code") @db.VarChar(12)
+  name     String  @db.VarChar(40)
+  market   String  @db.VarChar(2)
+  industry String? @db.VarChar(40)
+  listDate String? @map("list_date") @db.VarChar(8)
+  isActive Boolean @default(true) @map("is_active")
+
+  dailyBars DailyBar[]
+  rpsScores RpsScore[]
+
+  @@map("stocks")
+}
+
+model DailyBar {
+  tsCode    String @db.VarChar(12)
+  tradeDate String @db.VarChar(8)
+  open      Float?
+  high      Float?
+  low       Float?
+  close     Float?
+  preClose  Float? @map("pre_close")
+  changePct Float? @map("change_pct")
+  vol       Float?
+  amount    Float?
+
+  stock Stock @relation(fields: [tsCode], references: [tsCode])
+
+  @@id([tsCode, tradeDate])
+  @@index([tradeDate])
+  @@map("daily_bars")
+}
+
+model RpsScore {
+  tsCode   String @db.VarChar(12)
+  calcDate String @db.VarChar(8)
+  rps20    Float? @map("rps_20")
+  rps60    Float? @map("rps_60")
+  rps120   Float? @map("rps_120")
+  rps250   Float? @map("rps_250")
+  ret20    Float? @map("ret_20")
+  ret60    Float? @map("ret_60")
+  ret120   Float? @map("ret_120")
+  ret250   Float? @map("ret_250")
+
+  stock Stock @relation(fields: [tsCode], references: [tsCode])
+
+  @@id([tsCode, calcDate])
+  @@index([calcDate])
+  @@index([calcDate, rps250(sort: Desc)])
+  @@map("rps_scores")
+}

@@ -321,6 +321,8 @@ export function formatTushareForPrompt(data: TushareData | null): string {
     const growthLines: string[] = [];
     if (latestFin.or_yoy !== undefined) growthLines.push(`营收同比 ${latestFin.or_yoy > 0 ? '+' : ''}${latestFin.or_yoy.toFixed(2)}%`);
     if (latestFin.tr_yoy !== undefined) growthLines.push(`净利润同比 ${latestFin.tr_yoy > 0 ? '+' : ''}${latestFin.tr_yoy.toFixed(2)}%`);
+	    if (latestFin.basic_eps_yoy !== undefined) growthLines.push(`EPS同比 ${latestFin.basic_eps_yoy > 0 ? '+' : ''}${latestFin.basic_eps_yoy.toFixed(2)}%`);
+	    if (latestFin.op_yoy !== undefined) growthLines.push(`营业利润同比 ${latestFin.op_yoy > 0 ? '+' : ''}${latestFin.op_yoy.toFixed(2)}%`);
     if (growthLines.length > 0) {
       finLines.push(`- 成长性：${growthLines.join('，')}`);
     }

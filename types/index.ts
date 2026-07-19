@@ -99,7 +99,11 @@ export interface IndicatorResult {
   macd: { dif: number; dea: number; histogram: number };
   rsi6: number;
   rsi12: number;
+  rsi14: number;
   rsi24: number;
+  bias6: number;
+  bias12: number;
+  bias24: number;
   bollinger: { upper: number; mid: number; lower: number; position: number };
   volMa5: number;
   volMa20: number;

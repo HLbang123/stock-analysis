@@ -63,6 +63,11 @@ export function calculateIndicators(kLines: KLineData[]): IndicatorResult {
   const ma20Arr = calculateMA(closes, 20);
   const ma60Arr = calculateMA(closes, 60);
 
+  // 乖离率专用均线
+  const ma6Arr = calculateMA(closes, 6);
+  const ma12Arr = calculateMA(closes, 12);
+  const ma24Arr = calculateMA(closes, 24);
+
   // --- MACD ---
   const ema12 = calculateEMA(closes, 12);
   const ema26 = calculateEMA(closes, 26);
@@ -135,7 +140,11 @@ export function calculateIndicators(kLines: KLineData[]): IndicatorResult {
     },
     rsi6: calcRSI(6),
     rsi12: calcRSI(12),
+    rsi14: calcRSI(14),
     rsi24: calcRSI(24),
+    bias6: ma6Arr[last] && !isNaN(ma6Arr[last]) ? ((lastClose - ma6Arr[last]) / ma6Arr[last]) * 100 : NaN,
+    bias12: ma12Arr[last] && !isNaN(ma12Arr[last]) ? ((lastClose - ma12Arr[last]) / ma12Arr[last]) * 100 : NaN,
+    bias24: ma24Arr[last] && !isNaN(ma24Arr[last]) ? ((lastClose - ma24Arr[last]) / ma24Arr[last]) * 100 : NaN,
     bollinger: calcBollinger(),
     volMa5: calcVolMA(5),
     volMa20: calcVolMA(20),
@@ -176,7 +185,11 @@ export function formatIndicatorsForPrompt(result: IndicatorResult): string {
 | MACD 柱 | ${fmt(macdHist)} | ${!isNaN(macdHist!) ? (macdHist! > 0 ? '正值=多头动能' : '负值=空头动能') : ''} |
 | RSI(6) | ${fmt(result.rsi6)} | >80超买区，<20超卖区 |
 | RSI(12) | ${fmt(result.rsi12)} | |
+| RSI(14) | ${fmt(result.rsi14)} | >70超买区，<30超卖区 |
 | RSI(24) | ${fmt(result.rsi24)} | |
+| BIAS(6) | ${result.bias6 > 0 ? '+' : ''}${fmt(result.bias6)}% | 6日乖离率，>5%超买，<-5%超卖 |
+| BIAS(12) | ${result.bias12 > 0 ? '+' : ''}${fmt(result.bias12)}% | 12日乖离率 |
+| BIAS(24) | ${result.bias24 > 0 ? '+' : ''}${fmt(result.bias24)}% | 24日乖离率，>10%极度超买 |
 | 布林上轨 | ${fmt(result.bollinger?.upper)} | 价格接近上轨=超买 |
 | 布林中轨 | ${fmt(result.bollinger?.mid)} | 20日均线 |
 | 布林下轨 | ${fmt(result.bollinger?.lower)} | 价格接近下轨=超卖 |
