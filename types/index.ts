@@ -43,12 +43,14 @@ export enum AlertLevel {
 
 // 预警类别
 export enum AlertCategory {
-  VOLUME = 'VOLUME',         // 成交量相关
-  PRICE = 'PRICE',           // 价格/涨幅相关
-  PATTERN = 'PATTERN',       // 形态相关
-  MOVING_AVG = 'MOVING_AVG', // 均线相关
-  SENTIMENT = 'SENTIMENT',   // 情绪指标
-  OPPORTUNITY = 'OPPORTUNITY' // 机会信号
+  VOLUME = 'VOLUME',           // 成交量相关
+  PRICE = 'PRICE',             // 价格/涨幅相关
+  PATTERN = 'PATTERN',         // 形态相关
+  MOVING_AVG = 'MOVING_AVG',   // 均线相关
+  SENTIMENT = 'SENTIMENT',     // 情绪指标
+  OPPORTUNITY = 'OPPORTUNITY', // 机会信号
+  RSI = 'RSI',                 // RSI指标相关
+  FUNDAMENTAL = 'FUNDAMENTAL'  // 基本面/选股
 }
 
 // 预警规则
