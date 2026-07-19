@@ -4,12 +4,13 @@ export interface Sector {
   id: string;
   name: string;
   icon: string;
+  rpsIndustry?: string;  // RPS 扫描时对应的申万行业筛选词
   stocks: { code: string; name: string }[];
 }
 
 export const SECTORS: Sector[] = [
   {
-    id: 'chips', name: '芯片/半导体', icon: '💾',
+    id: 'chips', name: '芯片/半导体', icon: '💾', rpsIndustry: '半导体',
     stocks: [
       { code: 'sh688981', name: '中芯国际' }, { code: 'sz002049', name: '紫光国微' },
       { code: 'sh603986', name: '兆易创新' }, { code: 'sh600584', name: '长电科技' },
@@ -53,7 +54,7 @@ export const SECTORS: Sector[] = [
     ],
   },
   {
-    id: 'ai', name: 'AI/人工智能', icon: '🤖',
+    id: 'ai', name: 'AI/人工智能', icon: '🤖', rpsIndustry: '软件服务',
     stocks: [
       { code: 'sz300308', name: '中际旭创' }, { code: 'sz300502', name: '新易盛' },
       { code: 'sz300394', name: '天孚通信' }, { code: 'sh603019', name: '中科曙光' },
@@ -94,7 +95,7 @@ export const SECTORS: Sector[] = [
     ],
   },
   {
-    id: 'new_energy', name: '新能源/电池', icon: '🔋',
+    id: 'new_energy', name: '新能源/电池', icon: '🔋', rpsIndustry: '电气设备',
     stocks: [
       { code: 'sz300750', name: '宁德时代' }, { code: 'sz002594', name: '比亚迪' },
       { code: 'sh601012', name: '隆基绿能' }, { code: 'sz300274', name: '阳光电源' },
@@ -136,7 +137,7 @@ export const SECTORS: Sector[] = [
     ],
   },
   {
-    id: 'liquor', name: '白酒/食品', icon: '🍶',
+    id: 'liquor', name: '白酒/食品', icon: '🍶', rpsIndustry: '食品',
     stocks: [
       { code: 'sh600519', name: '贵州茅台' }, { code: 'sz000858', name: '五粮液' },
       { code: 'sz000568', name: '泸州老窖' }, { code: 'sz002304', name: '洋河股份' },
@@ -176,7 +177,7 @@ export const SECTORS: Sector[] = [
     ],
   },
   {
-    id: 'pharma', name: '医药/医疗', icon: '💊',
+    id: 'pharma', name: '医药/医疗', icon: '💊', rpsIndustry: '医疗保健',
     stocks: [
       { code: 'sh600276', name: '恒瑞医药' }, { code: 'sz300760', name: '迈瑞医疗' },
       { code: 'sz300122', name: '智飞生物' }, { code: 'sz000661', name: '长春高新' },
@@ -217,7 +218,7 @@ export const SECTORS: Sector[] = [
     ],
   },
   {
-    id: 'finance', name: '金融/券商', icon: '🏦',
+    id: 'finance', name: '金融/券商', icon: '🏦', rpsIndustry: '证券',
     stocks: [
       { code: 'sh601318', name: '中国平安' }, { code: 'sz300059', name: '东方财富' },
       { code: 'sh600036', name: '招商银行' }, { code: 'sh601166', name: '兴业银行' },
@@ -259,7 +260,7 @@ export const SECTORS: Sector[] = [
     ],
   },
   {
-    id: 'auto', name: '汽车/智驾', icon: '🚗',
+    id: 'auto', name: '汽车/智驾', icon: '🚗', rpsIndustry: '汽车配件',
     stocks: [
       { code: 'sh601127', name: '赛力斯' }, { code: 'sh600104', name: '上汽集团' },
       { code: 'sz000625', name: '长安汽车' }, { code: 'sh601238', name: '广汽集团' },
@@ -299,7 +300,7 @@ export const SECTORS: Sector[] = [
     ],
   },
   {
-    id: 'consumer', name: '消费/家电', icon: '🛒',
+    id: 'consumer', name: '消费/家电', icon: '🛒', rpsIndustry: '家用电器',
     stocks: [
       { code: 'sz000333', name: '美的集团' }, { code: 'sz000651', name: '格力电器' },
       { code: 'sh600690', name: '海尔智家' }, { code: 'sz002415', name: '海康威视' },
@@ -336,7 +337,7 @@ export const SECTORS: Sector[] = [
     ],
   },
   {
-    id: 'military', name: '军工/航天', icon: '🛡️',
+    id: 'military', name: '军工/航天', icon: '🛡️', rpsIndustry: '航空',
     stocks: [
       { code: 'sh600893', name: '航发动力' }, { code: 'sh600760', name: '中航沈飞' },
       { code: 'sh600862', name: '中航高科' }, { code: 'sz300034', name: '钢研高纳' },
@@ -375,7 +376,7 @@ export const SECTORS: Sector[] = [
     ],
   },
   {
-    id: 'metal', name: '有色/化工', icon: '⛏️',
+    id: 'metal', name: '有色/化工', icon: '⛏️', rpsIndustry: '小金属',
     stocks: [
       { code: 'sh601899', name: '紫金矿业' }, { code: 'sz002460', name: '赣锋锂业' },
       { code: 'sh600111', name: '北方稀土' }, { code: 'sz000831', name: '中国稀土' },
@@ -415,7 +416,7 @@ export const SECTORS: Sector[] = [
     ],
   },
   {
-    id: 'power', name: '电力/公共事业', icon: '⚡',
+    id: 'power', name: '电力/公共事业', icon: '⚡', rpsIndustry: '火力发电',
     stocks: [
       { code: 'sh600900', name: '长江电力' }, { code: 'sh601985', name: '中国核电' },
       { code: 'sh600905', name: '三峡能源' }, { code: 'sh600011', name: '华能国际' },
@@ -455,7 +456,7 @@ export const SECTORS: Sector[] = [
     ],
   },
   {
-    id: 'internet', name: '互联网/传媒', icon: '📱',
+    id: 'internet', name: '互联网/传媒', icon: '📱', rpsIndustry: '互联网',
     stocks: [
       { code: 'sz300418', name: '昆仑万维' }, { code: 'sz002602', name: '世纪华通' },
       { code: 'sz002624', name: '完美世界' }, { code: 'sz002558', name: '巨人网络' },
