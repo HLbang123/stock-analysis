@@ -61,6 +61,7 @@ export function calculateIndicators(kLines: KLineData[]): IndicatorResult {
   const ma5Arr = calculateMA(closes, 5);
   const ma10Arr = calculateMA(closes, 10);
   const ma20Arr = calculateMA(closes, 20);
+  const ma55Arr = calculateMA(closes, 55);
   const ma60Arr = calculateMA(closes, 60);
 
   // 乖离率专用均线
@@ -130,6 +131,7 @@ export function calculateIndicators(kLines: KLineData[]): IndicatorResult {
     ma5: ma5Arr[last],
     ma10: ma10Arr[last],
     ma20: ma20Arr[last],
+    ma55: ma55Arr[last],
     ma60: ma60Arr[last],
     macd: {
       dif: dif[last],
@@ -179,6 +181,7 @@ export function formatIndicatorsForPrompt(result: IndicatorResult): string {
 | MA5 | ${fmt(result.ma5)} | 短期趋势，当前价${result.lastClose > result.ma5 ? '高于' : '低于'}MA5${result.lastClose > result.ma5 ? '偏多' : '偏空'} |
 | MA10 | ${fmt(result.ma10)} | 短期趋势线 |
 | MA20 | ${fmt(result.ma20)} | 中期趋势线 |
+| MA55 | ${fmt(result.ma55)} | 大势分界（R029用，多头/非多头区域） |
 | MA60 | ${fmt(result.ma60)} | 长期趋势线（牛熊分界） |
 | MACD DIF | ${fmt(macdDIF)} | ${!isNaN(macdDIF) && !isNaN(macdDEA) ? (macdDIF! > macdDEA! ? 'DIF在DEA上方，多头' : 'DIF在DEA下方，空头') : ''} |
 | MACD DEA | ${fmt(macdDEA)} | |

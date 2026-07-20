@@ -9,6 +9,7 @@ import { AlertRecord } from '@/types';
 import { formatTime, cn, getAlertLevelColor } from '@/lib/utils';
 import { buildUpdatedKLines } from '@/lib/stock-helpers';
 import { AlertTriangle, RefreshCw, Trash2 } from 'lucide-react';
+import { UpdateLog } from '@/components/UpdateLog';
 
 export default function HomePage() {
   const router = useRouter();
@@ -150,7 +151,10 @@ export default function HomePage() {
     <div>
       {/* Header */}
       <div className="flex items-center justify-between mb-4">
-        <h1 className="text-xl font-bold text-gray-900 dark:text-white">预警</h1>
+        <div className="flex items-center gap-1">
+          <UpdateLog />
+          <h1 className="text-xl font-bold text-gray-900 dark:text-white">预警</h1>
+        </div>
         <div className="flex items-center gap-2">
             {alerts.length > 0 && (
               <button

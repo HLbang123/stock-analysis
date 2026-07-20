@@ -83,10 +83,10 @@ interface HolderNumberItem {
 interface MarginItem {
   ts_code: string;
   trade_date: string;
-  rzye?: number;    // 融资余额（万元）
-  rqye?: number;    // 融券余额（万元）
-  rzmre?: number;   // 融资买入额（万元）
-  rzche?: number;   // 融资偿还额（万元）
+  rzye?: number;    // 融资余额（元）
+  rqye?: number;    // 融券余额（元）
+  rzmre?: number;   // 融资买入额（元）
+  rzche?: number;   // 融资偿还额（元）
   rqyl?: number;    // 融券余量
   rqchl?: number;   // 融券偿还量
 }
@@ -107,7 +107,7 @@ interface ForecastItem {
   p_change_max?: number;   // 净利润变动幅度上限(%)
   net_profit_min?: number; // 预告净利润下限（万元）
   net_profit_max?: number; // 预告净利润上限（万元）
-  last_parent_net?: number; // 上年同期归母净利润
+  last_parent_net?: number; // 上年同期归母净利润（万元）
   summary?: string;
   change_reason?: string;
 }
@@ -242,6 +242,17 @@ function fmtFlow(wan: number | undefined): string {
 }
 
 /**
+ * 格式化以「元」为单位的金额（元 → 亿/万自适应，避免小值变 0.00亿）
+ */
+function fmtYuan(yuan: number | undefined): string {
+  if (!yuan) return '0';
+  const abs = Math.abs(yuan);
+  if (abs >= 1e8) return `${(yuan / 1e8).toFixed(2)}亿`;
+  if (abs >= 1e4) return `${(yuan / 1e4).toFixed(0)}万`;
+  return `${yuan.toFixed(0)}`;
+}
+
+/**
  * 将 Tushare 数据转换为 AI prompt 可读的文本
  * 这是关键函数 — 输出格式直接影响 AI 分析质量
  */
@@ -262,13 +273,13 @@ export function formatTushareForPrompt(data: TushareData | null): string {
     const valuationLines: string[] = [];
     valuationLines.push(`截止 ${dateStr}：`);
 
-    if (latestBasic.pe_ttm !== undefined) valuationLines.push(`- 市盈率(PE-TTM)：${latestBasic.pe_ttm.toFixed(2)}`);
-    if (latestBasic.pb !== undefined) valuationLines.push(`- 市净率(PB)：${latestBasic.pb.toFixed(2)}`);
-    if (latestBasic.ps_ttm !== undefined) valuationLines.push(`- 市销率(PS-TTM)：${latestBasic.ps_ttm.toFixed(2)}`);
+    if (latestBasic.pe_ttm != null) valuationLines.push(`- 市盈率(PE-TTM)：${latestBasic.pe_ttm.toFixed(2)}`);
+    if (latestBasic.pb != null) valuationLines.push(`- 市净率(PB)：${latestBasic.pb.toFixed(2)}`);
+    if (latestBasic.ps_ttm != null) valuationLines.push(`- 市销率(PS-TTM)：${latestBasic.ps_ttm.toFixed(2)}`);
     valuationLines.push(`- 总市值：${fmtMv(latestBasic.total_mv)}`);
     valuationLines.push(`- 流通市值：${fmtMv(latestBasic.circ_mv)}`);
-    if (latestBasic.turnover_rate !== undefined) valuationLines.push(`- 换手率：${latestBasic.turnover_rate.toFixed(2)}%`);
-    if (latestBasic.volume_ratio !== undefined) valuationLines.push(`- 量比：${latestBasic.volume_ratio.toFixed(2)}`);
+    if (latestBasic.turnover_rate != null) valuationLines.push(`- 换手率：${latestBasic.turnover_rate.toFixed(2)}%`);
+    if (latestBasic.volume_ratio != null) valuationLines.push(`- 量比：${latestBasic.volume_ratio.toFixed(2)}`);
 
     sections.push(`### 估值与市值\n${valuationLines.join('\n')}`);
   }
@@ -284,12 +295,12 @@ export function formatTushareForPrompt(data: TushareData | null): string {
     for (const idx of idxData) {
       const name = IDX_NAMES[idx.ts_code] || idx.ts_code;
       const parts: string[] = [name];
-      if (idx.pct_chg !== undefined) {
+      if (idx.pct_chg != null) {
         parts.push(`${idx.pct_chg > 0 ? '+' : ''}${idx.pct_chg.toFixed(2)}%`);
       }
-      if (idx.pe_ttm !== undefined) parts.push(`PE ${idx.pe_ttm.toFixed(1)}`);
-      if (idx.pb !== undefined) parts.push(`PB ${idx.pb.toFixed(2)}`);
-      if (idx.turnover_rate !== undefined) parts.push(`换手 ${idx.turnover_rate.toFixed(2)}%`);
+      if (idx.pe_ttm != null) parts.push(`PE ${idx.pe_ttm.toFixed(1)}`);
+      if (idx.pb != null) parts.push(`PB ${idx.pb.toFixed(2)}`);
+      if (idx.turnover_rate != null) parts.push(`换手 ${idx.turnover_rate.toFixed(2)}%`);
       idxLines.push(`- ${parts.join('，')}`);
     }
     sections.push(`### 大盘环境\n${idxLines.join('\n')}`);
@@ -309,35 +320,35 @@ export function formatTushareForPrompt(data: TushareData | null): string {
 
     // 盈利能力
     const profitLines: string[] = [];
-    if (latestFin.roe !== undefined) profitLines.push(`ROE ${latestFin.roe.toFixed(2)}%`);
-    if (latestFin.roa !== undefined) profitLines.push(`ROA ${latestFin.roa.toFixed(2)}%`);
-    if (latestFin.grossprofit_margin !== undefined) profitLines.push(`毛利率 ${latestFin.grossprofit_margin.toFixed(2)}%`);
-    if (latestFin.netprofit_margin !== undefined) profitLines.push(`净利率 ${latestFin.netprofit_margin.toFixed(2)}%`);
+    if (latestFin.roe != null) profitLines.push(`ROE ${latestFin.roe.toFixed(2)}%`);
+    if (latestFin.roa != null) profitLines.push(`ROA ${latestFin.roa.toFixed(2)}%`);
+    if (latestFin.grossprofit_margin != null) profitLines.push(`毛利率 ${latestFin.grossprofit_margin.toFixed(2)}%`);
+    if (latestFin.netprofit_margin != null) profitLines.push(`净利率 ${latestFin.netprofit_margin.toFixed(2)}%`);
     if (profitLines.length > 0) {
       finLines.push(`- 盈利能力：${profitLines.join('，')}`);
     }
 
     // 成长性
     const growthLines: string[] = [];
-    if (latestFin.or_yoy !== undefined) growthLines.push(`营收同比 ${latestFin.or_yoy > 0 ? '+' : ''}${latestFin.or_yoy.toFixed(2)}%`);
-    if (latestFin.tr_yoy !== undefined) growthLines.push(`净利润同比 ${latestFin.tr_yoy > 0 ? '+' : ''}${latestFin.tr_yoy.toFixed(2)}%`);
-	    if (latestFin.basic_eps_yoy !== undefined) growthLines.push(`EPS同比 ${latestFin.basic_eps_yoy > 0 ? '+' : ''}${latestFin.basic_eps_yoy.toFixed(2)}%`);
-	    if (latestFin.op_yoy !== undefined) growthLines.push(`营业利润同比 ${latestFin.op_yoy > 0 ? '+' : ''}${latestFin.op_yoy.toFixed(2)}%`);
+    if (latestFin.or_yoy != null) growthLines.push(`营收同比 ${latestFin.or_yoy > 0 ? '+' : ''}${latestFin.or_yoy.toFixed(2)}%`);
+    if (latestFin.tr_yoy != null) growthLines.push(`净利润同比 ${latestFin.tr_yoy > 0 ? '+' : ''}${latestFin.tr_yoy.toFixed(2)}%`);
+	    if (latestFin.basic_eps_yoy != null) growthLines.push(`EPS同比 ${latestFin.basic_eps_yoy > 0 ? '+' : ''}${latestFin.basic_eps_yoy.toFixed(2)}%`);
+	    if (latestFin.op_yoy != null) growthLines.push(`营业利润同比 ${latestFin.op_yoy > 0 ? '+' : ''}${latestFin.op_yoy.toFixed(2)}%`);
     if (growthLines.length > 0) {
       finLines.push(`- 成长性：${growthLines.join('，')}`);
     }
 
     // 财务健康
     const healthLines: string[] = [];
-    if (latestFin.debt_to_assets !== undefined) healthLines.push(`资产负债率 ${latestFin.debt_to_assets.toFixed(2)}%`);
-    if (latestFin.current_ratio !== undefined) healthLines.push(`流动比率 ${latestFin.current_ratio.toFixed(2)}`);
-    if (latestFin.quick_ratio !== undefined) healthLines.push(`速动比率 ${latestFin.quick_ratio.toFixed(2)}`);
+    if (latestFin.debt_to_assets != null) healthLines.push(`资产负债率 ${latestFin.debt_to_assets.toFixed(2)}%`);
+    if (latestFin.current_ratio != null) healthLines.push(`流动比率 ${latestFin.current_ratio.toFixed(2)}`);
+    if (latestFin.quick_ratio != null) healthLines.push(`速动比率 ${latestFin.quick_ratio.toFixed(2)}`);
     if (healthLines.length > 0) {
       finLines.push(`- 财务健康：${healthLines.join('，')}`);
     }
 
     // 现金流质量
-    if (latestFin.ocf_to_or !== undefined) {
+    if (latestFin.ocf_to_or != null) {
       finLines.push(`- 经营现金流/营收：${latestFin.ocf_to_or.toFixed(4)} (${latestFin.ocf_to_or < 0 ? '现金流为负⚠️' : latestFin.ocf_to_or < 0.05 ? '偏低' : '正常'})`);
     }
 
@@ -348,11 +359,11 @@ export function formatTushareForPrompt(data: TushareData | null): string {
         ? `${prevFin.end_date.slice(0, 4)}-${prevFin.end_date.slice(4, 6)}-${prevFin.end_date.slice(6, 8)}`
         : '上期';
       changes.push(`\n与上期（${prevDate}）对比：`);
-      if (latestFin.roe !== undefined && prevFin.roe !== undefined) {
-        changes.push(`- ROE：${latestFin.roe.toFixed(2)}% → ${prevFin.roe.toFixed(2)}%（${latestFin.roe > prevFin.roe ? '↑' : '↓'}）`);
+      if (latestFin.roe != null && prevFin.roe != null) {
+        changes.push(`- ROE：${prevFin.roe.toFixed(2)}% → ${latestFin.roe.toFixed(2)}%（${latestFin.roe > prevFin.roe ? '↑' : '↓'}）`);
       }
-      if (latestFin.or_yoy !== undefined && prevFin.or_yoy !== undefined) {
-        changes.push(`- 营收增速：${latestFin.or_yoy > 0 ? '+' : ''}${latestFin.or_yoy.toFixed(2)}% → ${prevFin.or_yoy > 0 ? '+' : ''}${prevFin.or_yoy.toFixed(2)}%`);
+      if (latestFin.or_yoy != null && prevFin.or_yoy != null) {
+        changes.push(`- 营收增速：${prevFin.or_yoy > 0 ? '+' : ''}${prevFin.or_yoy.toFixed(2)}% → ${latestFin.or_yoy > 0 ? '+' : ''}${latestFin.or_yoy.toFixed(2)}%（${latestFin.or_yoy > prevFin.or_yoy ? '↑' : '↓'}）`);
       }
       if (changes.length > 1) finLines.push(changes.join('\n'));
     }
@@ -383,6 +394,7 @@ export function formatTushareForPrompt(data: TushareData | null): string {
 
     const totalDir = totalNetMf > 0 ? '累计净流入' : '累计净流出';
     flowLines.push(`\n近${mfData.length}日${totalDir}：${fmtFlow(Math.abs(totalNetMf))}`);
+    flowLines.push(`（注：资金流向为盘后数据，最新仅至上述最近交易日，非当日实时）`);
 
     sections.push(`### 资金流向\n${flowLines.join('\n')}`);
   }
@@ -399,8 +411,12 @@ export function formatTushareForPrompt(data: TushareData | null): string {
       const dir = prevNum
         ? (hd.holder_num! < prevNum ? '↓ 集中' : hd.holder_num! > prevNum ? '↑ 分散' : '→ 持平')
         : '';
-      const ratioStr = hd.holder_num_ratio !== undefined ? ` (变动${hd.holder_num_ratio > 0 ? '+' : ''}${hd.holder_num_ratio.toFixed(2)}%)` : '';
-      hdLines.push(`- ${dateStr}：${hd.holder_num?.toLocaleString() || '--'} 户${dir}${ratioStr}`);
+      const ratioStr = hd.holder_num_ratio != null ? ` (变动${hd.holder_num_ratio > 0 ? '+' : ''}${hd.holder_num_ratio.toFixed(2)}%)` : '';
+      // 股东人数用「万户」中文单位，避免 toLocaleString 的千分位逗号与日期短横被风控剥掉后拼成 11 位手机号
+      const holderNumStr = hd.holder_num != null
+        ? (hd.holder_num >= 10000 ? `${(hd.holder_num / 10000).toFixed(2)}万` : `${hd.holder_num}`)
+        : '--';
+      hdLines.push(`- ${dateStr}：股东人数 ${holderNumStr} 户${dir}${ratioStr}`);
       prevNum = hd.holder_num;
     }
     // 趋势判断
@@ -422,11 +438,10 @@ export function formatTushareForPrompt(data: TushareData | null): string {
       const dateStr = mg.trade_date
         ? `${mg.trade_date.slice(4, 6)}-${mg.trade_date.slice(6, 8)}`
         : '';
-      // margin 字段单位为「元」：rzye/1e8 → 亿；netBuy 先 /1e4 转万元 再交给 fmtFlow（fmtFlow 按万元计）
-      const rzyeYi = (mg.rzye || 0) / 1e8;
+      // margin 字段单位为「元」：rzye 用 fmtYuan 自适应（亿/万）；netBuy 先 /1e4 转万元 再交 fmtFlow
       const netBuy = ((mg.rzmre || 0) - (mg.rzche || 0)) / 1e4;
       const netStr = netBuy > 0 ? `净买入 ${fmtFlow(netBuy)}` : netBuy < 0 ? `净卖出 ${fmtFlow(Math.abs(netBuy))}` : '';
-      mgLines.push(`- ${dateStr}：融资余额 ${rzyeYi.toFixed(2)}亿${netStr ? '，' + netStr : ''}`);
+      mgLines.push(`- ${dateStr}：融资余额 ${fmtYuan(mg.rzye || 0)}${netStr ? '，' + netStr : ''}`);
     }
     // 趋势判断
     const latestRzye = mgData[0].rzye || 0;
@@ -490,11 +505,13 @@ export function formatTushareForPrompt(data: TushareData | null): string {
       '续亏': '❌ 续亏', '续盈': '✅ 续盈', '略增': '📈 略增', '略减': '📉 略减',
     };
     const label = typeLabel[fc.type || ''] || fc.type || '';
-    const pChange = fc.p_change_min !== undefined
-      ? `净利润变动 ${fc.p_change_min > 0 ? '+' : ''}${fc.p_change_min.toFixed(1)}%${fc.p_change_max !== undefined ? ` ~ ${fc.p_change_max > 0 ? '+' : ''}${fc.p_change_max.toFixed(1)}%` : ''}`
+    const pChange = fc.p_change_min != null
+      ? `净利润变动 ${fc.p_change_min > 0 ? '+' : ''}${fc.p_change_min.toFixed(1)}%${fc.p_change_max != null ? ` ~ ${fc.p_change_max > 0 ? '+' : ''}${fc.p_change_max.toFixed(1)}%` : ''}`
       : '';
-    const profit = fc.net_profit_min !== undefined
-      ? `预告净利润 ${(fc.net_profit_min / 10000).toFixed(2)}亿${fc.net_profit_max ? ` ~ ${(fc.net_profit_max / 10000).toFixed(2)}亿` : ''}`
+    const npMin = fc.net_profit_min ?? 0;
+    const npMax = fc.net_profit_max ?? 0;
+    const profit = npMin > 0
+      ? `预告净利润 ${fmtFlow(npMin)}${npMax > 0 ? ` ~ ${fmtFlow(npMax)}` : ''}`
       : '';
     const fcLines = [
       `- 报告期：${dateStr}`,
@@ -502,43 +519,11 @@ export function formatTushareForPrompt(data: TushareData | null): string {
     ];
     if (pChange) fcLines.push(`- ${pChange}`);
     if (profit) fcLines.push(`- ${profit}`);
-    if (fc.last_parent_net) fcLines.push(`- 去年同期净利润：${(fc.last_parent_net / 10000).toFixed(2)}亿`);
+    const lastNet = fc.last_parent_net ?? 0;
+    if (lastNet > 0) fcLines.push(`- 去年同期净利润：${fmtFlow(lastNet)}`);
     if (fc.summary) fcLines.push(`- 摘要：${fc.summary.slice(0, 150)}`);
     if (fc.change_reason) fcLines.push(`- 变动原因：${fc.change_reason.slice(0, 150)}`);
     sections.push(`### 业绩预告\n${fcLines.join('\n')}`);
-  }
-
-  // ===== 8. AI 分析提示（仅当有实际数据时才追加） =====
-  const hasData = (data.dailyBasic?.length || 0) > 0 || (data.finaIndicator?.length || 0) > 0;
-  if (hasData) {
-    sections.push(`### 基本面分析提示（请用以下阈值做判断）
-
-估值：
-- PEG = PE_TTM / 净利润增速(%)，< 1 → 低估，1-2 → 合理，> 2 → 高估
-- PB < 1 + ROE > 10% → 可能被低估的破净股（但需排除资产质量差的情况）
-- PB > 5 + ROE < 15% → 估值偏高，需要高成长支撑
-
-盈利质量：
-- ROE > 15% → 优秀，10-15% → 良好，5-10% → 一般，< 5% → 需要警惕
-- 毛利率(银行不适用) > 40% → 强护城河，20-40% → 中等，< 20% → 竞争激烈
-- 经营现金流/营收 < 0 → 利润可能只是账面数字（⚠️ 直接亮红灯）
-- 经营现金流/营收 持续低于净利率 → 应收账款堆积或利润注水
-
-成长性：
-- 营收增速连续两个季度下滑（仍为正但趋势向下）→ 增长放缓，需关注拐点
-- 营收增速转负 + 净利润增速转负 → 基本面恶化，除非有明确反转催化剂
-- 净利润增速 > 营收增速 → 经营杠杆改善，良性增长
-- 净利润增速 < 营收增速 → 成本侵蚀利润，需要分析原因
-
-财务健康：
-- 资产负债率 > 80% → 高杠杆风险，查偿债能力（流动比率 < 1 则双重预警）
-- 流动比率 < 1 → 短期偿债压力，速动比率 < 0.5 → 很危险
-- 资产负债率 < 30% + ROE > 15% → 轻资产高回报，优质公司特征
-
-资金面：
-- 主力连续3日净流入 + 股价横盘 → 可能是吸筹，关注突破
-- 主力连续3日净流出 + 股价上涨 → 量价背离，诱多嫌疑
-- 北向资金连续增持 + 股价低迷 → 外资左侧抄底，长线看好`);
   }
 
   sections.push('---');
@@ -554,7 +539,7 @@ export function formatTopListForChat(data: TushareData | null): string {
   const net = tl.net_amount || 0;
   const dir = net > 0 ? '净买入' : '净卖出';
   const parts = [`龙虎榜：${dir} ${fmtFlow(Math.abs(net))}`];
-  if (tl.net_rate !== undefined) parts.push(`占比 ${tl.net_rate.toFixed(1)}%`);
+  if (tl.net_rate != null) parts.push(`占比 ${tl.net_rate.toFixed(1)}%`);
   if (tl.reason) parts.push(tl.reason);
   return parts.join(' | ');
 }

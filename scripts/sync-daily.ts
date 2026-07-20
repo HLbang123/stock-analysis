@@ -11,6 +11,11 @@
 import { callTushare, toRecords } from "../lib/tushare";
 import { prisma } from "../lib/db";
 
+/** 格式化成本地日期串 YYYYMMDD（不用 toISOString，避免 UTC+8 时区把日期往前推一天） */
+function fmtDate(d: Date): string {
+  return `${d.getFullYear()}${String(d.getMonth() + 1).padStart(2, "0")}${String(d.getDate()).padStart(2, "0")}`;
+}
+
 interface DailyItem {
   ts_code: string;
   trade_date: string;
@@ -70,8 +75,8 @@ async function main() {
     // 首次：拉取近 300 个交易日
     const d = new Date();
     d.setDate(d.getDate() - 450); // 300个交易日 ≈ 450个日历日
-    const startStr = d.toISOString().slice(0, 10).replace(/-/g, "");
-    const endStr = today.toISOString().slice(0, 10).replace(/-/g, "");
+    const startStr = fmtDate(d);
+    const endStr = fmtDate(today);
     console.log(`[sync-daily] 首次初始化：按交易日批量拉取 ${startStr} ~ ${endStr}`);
 
     // 生成所有日期
@@ -82,7 +87,7 @@ async function main() {
     );
     const cursor = new Date(startDate);
     while (cursor <= today) {
-      dates.push(cursor.toISOString().slice(0, 10).replace(/-/g, ""));
+      dates.push(fmtDate(cursor));
       cursor.setDate(cursor.getDate() + 1);
     }
   } else {
@@ -95,7 +100,7 @@ async function main() {
     lastDate.setDate(lastDate.getDate() + 1);
 
     for (let d = new Date(lastDate); d <= today; d.setDate(d.getDate() + 1)) {
-      dates.push(d.toISOString().slice(0, 10).replace(/-/g, ""));
+      dates.push(fmtDate(d));
     }
     console.log(`[sync-daily] 增量同步：${dates.length} 个交易日`);
   }

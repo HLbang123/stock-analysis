@@ -95,6 +95,7 @@ export interface IndicatorResult {
   ma5: number;
   ma10: number;
   ma20: number;
+  ma55: number;
   ma60: number;
   macd: { dif: number; dea: number; histogram: number };
   rsi6: number;

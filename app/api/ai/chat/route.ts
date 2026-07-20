@@ -1,6 +1,6 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { formatAiError } from '@/lib/ai-error';
-import { buildChatUrl, buildLLMHeaders, createTimeoutSignal, llmRouteError, sseResponse, defuseLongDigitRuns } from '@/lib/llm-client';
+import { buildChatUrl, buildLLMHeaders, createTimeoutSignal, llmRouteError, sseResponse } from '@/lib/llm-client';
 import { readLlmDeltas, encodeSSE, endSSE } from '@/lib/llm-stream';
 
 const CHAT_SYSTEM_PROMPT = `你是A股投资分析助手。你可以：
@@ -53,7 +53,7 @@ export async function POST(request: NextRequest) {
         headers,
         body: JSON.stringify({
           model,
-          messages: allMessages.map(m => ({ role: m.role, content: defuseLongDigitRuns(m.content) })),
+          messages: allMessages.map(m => ({ role: m.role, content: m.content })),
           temperature: 0.7,
           max_tokens: 4096,
           stream: true,

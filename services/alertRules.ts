@@ -131,6 +131,40 @@ function getBoxRange(kLines: KLineData[], period: number): { high: number; low: 
   return { high, low, range };
 }
 
+/**
+ * 快线下穿慢线是否在最近 within 根内发生，且当前仍处于快线<慢线状态。
+ * 用于检测均线死叉（含扫描隔日补检的容错窗口）。
+ */
+function crossedBelowWithin(maFast: number[], maSlow: number[], idx: number, within: number): boolean {
+  if (maFast[idx] >= maSlow[idx]) return false;
+  for (let i = idx; i > idx - within && i >= 1; i--) {
+    if (maFast[i - 1] >= maSlow[i - 1] && maFast[i] < maSlow[i]) return true;
+  }
+  return false;
+}
+
+/**
+ * 快线上穿慢线是否在最近 within 根内发生，且当前仍处于快线>慢线状态。用于检测金叉。
+ */
+function crossedAboveWithin(maFast: number[], maSlow: number[], idx: number, within: number): boolean {
+  if (maFast[idx] <= maSlow[idx]) return false;
+  for (let i = idx; i > idx - within && i >= 1; i--) {
+    if (maFast[i - 1] <= maSlow[i - 1] && maFast[i] > maSlow[i]) return true;
+  }
+  return false;
+}
+
+/**
+ * 价格下穿某均线是否在最近 within 根内发生，且当前仍处于价格<均线状态。
+ */
+function priceCrossedBelowWithin(kLines: KLineData[], ma: number[], idx: number, within: number): boolean {
+  if (kLines[idx].close >= ma[idx]) return false;
+  for (let i = idx; i > idx - within && i >= 1; i--) {
+    if (kLines[i - 1].close >= ma[i - 1] && kLines[i].close < ma[i]) return true;
+  }
+  return false;
+}
+
 // ==================== 规则检查器 ====================
 
 /**
@@ -853,6 +887,98 @@ function checkFundamentalFilter(kLines: KLineData[], quote: RealtimeQuote | null
   return { triggered: false };
 }
 
+// ==================== 三重滤网简化版（5/13 金死叉 + 55 日线定大势） ====================
+
+/**
+ * R027: 5/13 死叉 — MA5 下穿 MA13，只有卖点没有买点；同步处于 55 日线下方则升级为下跌中继
+ * 来源：三重滤网简化版 | 避坑：横盘震荡时频繁金叉死叉，需结合量能/MACD 过滤
+ */
+function checkMa5Cross13Death(kLines: KLineData[], quote: RealtimeQuote | null, rule: AlertRule): RuleCheckResult {
+  if (kLines.length < 14) return { triggered: false };
+  const idx = kLines.length - 1;
+  const ma5 = calculateMA(kLines, 5);
+  const ma13 = calculateMA(kLines, 13);
+  // 最近 2 根内出现死叉且当前仍为死叉状态（容错扫描隔日补检）
+  if (!crossedBelowWithin(ma5, ma13, idx, 2)) return { triggered: false };
+
+  // 是否同时跌破 55 日线（下跌中继风险升级）
+  let belowMa55 = false;
+  let ma55 = 0;
+  if (kLines.length >= 55) {
+    ma55 = calculateMA(kLines, 55)[idx];
+    belowMa55 = ma55 > 0 && kLines[idx].close < ma55;
+  }
+
+  const prefix = belowMa55 ? '🔴' : '⚠️';
+  return {
+    triggered: true,
+    ruleId: 'R027',
+    message: `${prefix} 5日死叉13日：MA5 ${ma5[idx].toFixed(2)} < MA13 ${ma13[idx].toFixed(2)}，只有卖点没有买点${belowMa55 ? `（同步跌破55日线 ${ma55.toFixed(2)}，下跌中继风险，规避）` : ''}`,
+    extraData: JSON.stringify({ ma5: ma5[idx], ma13: ma13[idx], belowMa55 }),
+    barIndex: idx
+  };
+}
+
+/**
+ * R028: 5/13 金叉 — MA5 上穿 MA13，可考虑买点；放量 + 站上 55 日线才视为有效信号，
+ *        缩量则提示横盘震荡中的假信号（需 MACD 确认）
+ * 来源：三重滤网简化版
+ */
+function checkMa5Cross13Golden(kLines: KLineData[], quote: RealtimeQuote | null, rule: AlertRule): RuleCheckResult {
+  if (kLines.length < 14) return { triggered: false };
+  const idx = kLines.length - 1;
+  const ma5 = calculateMA(kLines, 5);
+  const ma13 = calculateMA(kLines, 13);
+  if (!crossedAboveWithin(ma5, ma13, idx, 2)) return { triggered: false };
+
+  const today = kLines[idx];
+  const avg5 = calculateAvgVolume(kLines.slice(0, -1), 5);
+  const volConfirmed = avg5 > 0 && today.volume > avg5 * 1.2;
+
+  // 是否站上 55 日线（多头区域更可靠）
+  let aboveMa55 = true; // 数据不足时不以此降级
+  if (kLines.length >= 55) {
+    const ma55 = calculateMA(kLines, 55)[idx];
+    aboveMa55 = ma55 > 0 && today.close > ma55;
+  }
+
+  let message: string;
+  if (volConfirmed && aboveMa55) {
+    message = `🟢 5日金叉13日：MA5 ${ma5[idx].toFixed(2)} > MA13 ${ma13[idx].toFixed(2)}，放量确认 + 站上55日线，可考虑买点`;
+  } else if (volConfirmed) {
+    message = `🟢 5日金叉13日：MA5 ${ma5[idx].toFixed(2)} > MA13 ${ma13[idx].toFixed(2)}，放量确认，可考虑买点（尚未站上55日线，谨慎）`;
+  } else {
+    message = `ℹ️ 5日金叉13日：MA5 ${ma5[idx].toFixed(2)} > MA13 ${ma13[idx].toFixed(2)}，但缩量，横盘震荡中可能是假信号，需MACD确认`;
+  }
+  return {
+    triggered: true,
+    ruleId: 'R028',
+    message,
+    extraData: JSON.stringify({ ma5: ma5[idx], ma13: ma13[idx], volConfirmed, aboveMa55 }),
+    barIndex: idx
+  };
+}
+
+/**
+ * R029: 跌破 55 日线 — 收盘下穿 MA55，进入非多头区域，55 日线定大势，不是当下好的选择
+ * 来源：三重滤网简化版
+ */
+function checkBreakMa55(kLines: KLineData[], quote: RealtimeQuote | null, rule: AlertRule): RuleCheckResult {
+  if (kLines.length < 56) return { triggered: false };
+  const idx = kLines.length - 1;
+  const ma55 = calculateMA(kLines, 55);
+  if (!priceCrossedBelowWithin(kLines, ma55, idx, 2)) return { triggered: false };
+
+  const today = kLines[idx];
+  return {
+    triggered: true,
+    ruleId: 'R029',
+    message: `⚠️ 跌破55日线：收盘 ${today.close} < MA55 ${ma55[idx].toFixed(2)}，进入非多头区域，不是当下好的选择（55日线定大势）`,
+    extraData: JSON.stringify({ close: today.close, ma55: ma55[idx] }),
+    barIndex: idx
+  };
+}
+
 // ==================== 预警规则配置 ====================
 
 export const ALERT_RULES: AlertRule[] = [
@@ -1091,6 +1217,34 @@ export const ALERT_RULES: AlertRule[] = [
     level: 'WARNING' as any,
     suggestion: '基本面不达标，不符合心姐业绩支撑原则',
     isEnabled: true
+  },
+  // ==================== 三重滤网简化版（5/13 金死叉 + 55 日线定大势） ====================
+  {
+    id: 'R027',
+    name: '5/13死叉',
+    description: 'MA5下穿MA13只有卖点没有买点；同步跌破55日线则下跌中继（三重滤网简化版）',
+    category: 'MOVING_AVG' as any,
+    level: 'WARNING' as any,
+    suggestion: '死叉区域不抢反弹，仅考虑卖点；跌破55日线则规避',
+    isEnabled: true
+  },
+  {
+    id: 'R028',
+    name: '5/13金叉',
+    description: 'MA5上穿MA13，放量+站上55日线才视为有效买点；缩量可能是假信号（三重滤网简化版）',
+    category: 'OPPORTUNITY' as any,
+    level: 'INFO' as any,
+    suggestion: '金叉可考虑买点，缩量或未站上55日线时结合MACD确认',
+    isEnabled: true
+  },
+  {
+    id: 'R029',
+    name: '跌破55日线',
+    description: '收盘跌破MA55进入非多头区域，55日线定大势（三重滤网简化版）',
+    category: 'MOVING_AVG' as any,
+    level: 'WARNING' as any,
+    suggestion: '非多头区域不轻易做多，等待重新站上55日线',
+    isEnabled: true
   }
 ];
 
@@ -1133,6 +1287,9 @@ export function checkAllRules(
       case 'R024': result = checkPricePosition(kLines, quote, rule); break;
       case 'R025': result = checkCapitalStatus(kLines, quote, rule); break;
       case 'R026': result = checkFundamentalFilter(kLines, quote, rule); break;
+      case 'R027': result = checkMa5Cross13Death(kLines, quote, rule); break;
+      case 'R028': result = checkMa5Cross13Golden(kLines, quote, rule); break;
+      case 'R029': result = checkBreakMa55(kLines, quote, rule); break;
       default: result = { triggered: false };
     }
 
@@ -1175,6 +1332,9 @@ const RULE_RELIABILITY: Record<string, { level: string; role: string }> = {
   R024: { level: 'A', role: '心姐' },
   R025: { level: 'A', role: '心姐' },
   R026: { level: 'A', role: '心姐' },
+  R027: { level: 'B', role: '技术分析师' },
+  R028: { level: 'B', role: '技术分析师' },
+  R029: { level: 'B', role: '技术分析师' },
 };
 
 /**

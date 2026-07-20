@@ -786,7 +786,7 @@ export default function AiPage() {
                     "bg-blue-50 text-blue-700"
                   )}>
                     <span className="font-medium">{rule.rule_name}</span>
-                    {rule.detail && <span className="ml-2 opacity-75">— {rule.detail}</span>}
+                    {rule.detail && rule.detail !== rule.rule_name && <span className="ml-2 opacity-75">— {rule.detail}</span>}
                   </div>
                 ))}
               </div>

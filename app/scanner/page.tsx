@@ -3,6 +3,7 @@
 import React, { useState, useRef, useCallback, useEffect } from 'react';
 import { useRouter } from 'next/navigation';
 import { useStockStore } from '@/store';
+import { useScannerStore, ScanResult } from '@/store/scanner-store';
 import { getRealtimeQuote, getKLineSina } from '@/services/stockApi';
 import { ALERT_RULES, checkAllRules } from '@/services/alertRules';
 import { SECTORS } from '@/lib/sectors';
@@ -12,28 +13,8 @@ import { Card } from '@/components/ui/card';
 import { Search, TrendingUp, Filter, Loader2, Zap, ChevronDown, ChevronUp, Plus, BarChart3, ExternalLink, Info } from 'lucide-react';
 import { toast } from 'sonner';
 
-interface ScanResult {
-  code: string;
-  name: string;
-  quote: any;
-  alerts: any[];
-  alertCount: number;
-  isNew?: boolean;
-}
-
-interface RpsItem {
-  tsCode: string;
-  name: string;
-  industry: string;
-  rps: number;
-  ret: number;
-  latestClose: number;
-  latestChange: number;
-  latestVol: number;
-}
-
 const SCAN_RULES = ALERT_RULES.filter(r =>
-  ['R001', 'R003', 'R006', 'R011', 'R012', 'R013', 'R014', 'R015', 'R016', 'R017'].includes(r.id)
+  ['R001', 'R003', 'R006', 'R011', 'R012', 'R013', 'R014', 'R015', 'R016', 'R017', 'R027', 'R028', 'R029'].includes(r.id)
 );
 
 const RPS_PERIODS = [
@@ -43,42 +24,30 @@ const RPS_PERIODS = [
   { value: 250, label: '250日' },
 ];
 
-type ScanMode = 'rules' | 'rps';
-
 export default function ScannerPage() {
   const router = useRouter();
   const { addToWatchlist, isInWatchlist } = useStockStore();
+  const {
+    mode, setMode,
+    selectedSectors, setSelectedSectors,
+    perSectorCount, setPerSectorCount,
+    scanResults, setScanResults,
+    scanHistory, setScanHistory,
+    scanTime, setScanTime,
+    rpsPeriod, setRpsPeriod,
+    rpsMin, setRpsMin,
+    rpsIndustry, setRpsIndustry,
+    rpsResults, setRpsResults,
+    clearScanResults,
+  } = useScannerStore();
 
-  // localStorage 读写
-  const getStored = (key: string, fallback: string) => {
-    if (typeof window === 'undefined') return fallback;
-    return localStorage.getItem(`scanner_${key}`) || fallback;
-  };
-  const setStored = (key: string, val: string) => {
-    if (typeof window !== 'undefined') localStorage.setItem(`scanner_${key}`, val);
-  };
-
-  // 通用
-  const [mode, setMode] = useState<ScanMode>('rps');
-  const [selectedSectors, setSelectedSectors] = useState<Set<string>>(new Set());
+  // 仅本组件内的瞬态 UI 状态（不持久化）
   const [showSectors, setShowSectors] = useState(true);
   const [showRpsIntro, setShowRpsIntro] = useState(false);
-
-  // 规则扫描状态
-  const [perSectorCount, setPerSectorCount] = useState(3);
   const [isScanning, setIsScanning] = useState(false);
   const [scanProgress, setScanProgress] = useState({ current: 0, total: 0 });
-  const [scanResults, setScanResults] = useState<ScanResult[]>([]);
-  const [scanHistory, setScanHistory] = useState<ScanResult[]>([]);
-  const [scanTime, setScanTime] = useState<string>('');
   const abortRef = useRef(false);
-
-  // RPS 扫描状态（localStorage 持久化）
-  const [rpsPeriod, setRpsPeriod] = useState(() => parseInt(getStored('period', '250')));
-  const [rpsMin, setRpsMin] = useState(() => parseInt(getStored('min', '87')));
-  const [rpsIndustry, setRpsIndustry] = useState(() => getStored('industry', ''));
   const [rpsLoading, setRpsLoading] = useState(false);
-  const [rpsResults, setRpsResults] = useState<RpsItem[]>([]);
 
   // 板块 RPS 强度
   const [sectorRps, setSectorRps] = useState<Map<string, number>>(new Map());
@@ -99,41 +68,28 @@ export default function ScannerPage() {
 
   // 同步选中的板块到 RPS industry
   useEffect(() => {
-    if (selectedSectors.size === 1) {
-      const sector = SECTORS.find(s => selectedSectors.has(s.id));
+    if (selectedSectors.length === 1) {
+      const sector = SECTORS.find(s => selectedSectors.includes(s.id));
       if (sector?.rpsIndustry && sector.rpsIndustry !== rpsIndustry) {
         setRpsIndustry(sector.rpsIndustry);
       }
     }
-  }, [selectedSectors]);
-
-  // RPS 配置持久化
-  useEffect(() => { setStored('period', String(rpsPeriod)); }, [rpsPeriod]);
-  useEffect(() => { setStored('min', String(rpsMin)); }, [rpsMin]);
-  useEffect(() => { setStored('industry', rpsIndustry); }, [rpsIndustry]);
+  }, [selectedSectors, rpsIndustry, setRpsIndustry]);
 
   // 点击板块图块
   const toggleSector = (id: string, rpsIndustry?: string) => {
     if (mode === 'rps') {
       // RPS 模式：单选行业筛选
       setRpsIndustry(prev => prev === rpsIndustry ? '' : (rpsIndustry || ''));
-      setSelectedSectors(prev => {
-        const next = new Set<string>();
-        if (!prev.has(id)) next.add(id);
-        return next;
-      });
+      setSelectedSectors(prev => prev.includes(id) ? [] : [id]);
     } else {
       // 规则扫描模式：多选板块
-      setSelectedSectors(prev => {
-        const next = new Set(prev);
-        next.has(id) ? next.delete(id) : next.add(id);
-        return next;
-      });
+      setSelectedSectors(prev => prev.includes(id) ? prev.filter(x => x !== id) : [...prev, id]);
     }
   };
 
   const selectAllSectors = () => {
-    setSelectedSectors(prev => prev.size === SECTORS.length ? new Set() : new Set(SECTORS.map(s => s.id)));
+    setSelectedSectors(prev => prev.length === SECTORS.length ? [] : SECTORS.map(s => s.id));
     if (mode === 'rps') setRpsIndustry('');
   };
 
@@ -167,7 +123,7 @@ export default function ScannerPage() {
     const stocks = new Map<string, { code: string; name: string }>();
     const scanned = new Set(scanHistory.map(r => r.code));
     for (const sector of SECTORS) {
-      if (selectedSectors.has(sector.id)) {
+      if (selectedSectors.includes(sector.id)) {
         const candidates = scanMode === 'continue' ? sector.stocks.filter(s => !scanned.has(s.code)) : sector.stocks;
         for (const s of candidates.slice(0, perSectorCount)) {
           if (!stocks.has(s.code)) stocks.set(s.code, s);
@@ -178,7 +134,7 @@ export default function ScannerPage() {
   };
 
   const doScan = async (scanMode: 'fresh' | 'continue') => {
-    if (selectedSectors.size === 0) { toast.error('请先选择板块'); return; }
+    if (selectedSectors.length === 0) { toast.error('请先选择板块'); return; }
     const scanList = buildScanList(scanMode);
     if (scanList.length === 0) { toast.error(scanMode === 'continue' ? '没有更多股票可扫描' : '请先选择板块'); return; }
     abortRef.current = false;
@@ -216,7 +172,7 @@ export default function ScannerPage() {
   };
 
   const quickScanHot = () => {
-    setSelectedSectors(new Set(SECTORS.slice(0, 6).map(s => s.id)));
+    setSelectedSectors(SECTORS.slice(0, 6).map(s => s.id));
     setPerSectorCount(3);
     setTimeout(() => doScan('fresh'), 100);
   };
@@ -249,7 +205,7 @@ export default function ScannerPage() {
 
       {/* 模式切换 */}
       <div className="flex gap-2 mb-4">
-        <button onClick={() => { setMode('rps'); setSelectedSectors(new Set()); setRpsIndustry(''); }}
+        <button onClick={() => { setMode('rps'); setSelectedSectors([]); setRpsIndustry(''); }}
           className={cn("px-4 py-2 rounded-lg text-sm font-medium transition",
             mode === 'rps' ? "bg-blue-600 text-white" : "bg-gray-100 dark:bg-gray-800 text-gray-600 dark:text-gray-400")}>
           <BarChart3 className="w-4 h-4 inline mr-1" />RPS 排名
@@ -267,7 +223,7 @@ export default function ScannerPage() {
           <div className="flex items-center gap-2">
             <Filter className="w-5 h-5 text-blue-600" />
             <span className="font-medium">
-              {mode === 'rps' ? '选择行业' : '选择板块'}（{selectedSectors.size > 0 ? `${selectedSectors.size}/${SECTORS.length}` : '未选'}）
+              {mode === 'rps' ? '选择行业' : '选择板块'}（{selectedSectors.length > 0 ? `${selectedSectors.length}/${SECTORS.length}` : '未选'}）
             </span>
             {mode === 'rps' && rpsIndustry && <span className="text-sm text-blue-600">当前：{rpsIndustry}</span>}
           </div>
@@ -276,7 +232,7 @@ export default function ScannerPage() {
         {showSectors && (
           <div className="px-4 pb-4">
             <button onClick={selectAllSectors} className="text-sm text-blue-600 mb-3">
-              {selectedSectors.size === SECTORS.length ? '取消全选' : '全选'}
+              {selectedSectors.length === SECTORS.length ? '取消全选' : '全选'}
             </button>
             <div className="grid grid-cols-2 sm:grid-cols-3 md:grid-cols-4 gap-2">
               {SECTORS.map(s => {
@@ -284,7 +240,7 @@ export default function ScannerPage() {
                 return (
                 <button key={s.id} onClick={() => toggleSector(s.id, s.rpsIndustry)}
                   className={cn("px-3 py-2.5 rounded-lg text-sm text-left transition border-2 relative",
-                    selectedSectors.has(s.id) ? "border-blue-500 bg-blue-50 dark:bg-blue-950" : "border-gray-200 dark:border-gray-700 hover:border-gray-300")}>
+                    selectedSectors.includes(s.id) ? "border-blue-500 bg-blue-50 dark:bg-blue-950" : "border-gray-200 dark:border-gray-700 hover:border-gray-300")}>
                   <span className="mr-1.5">{s.icon}</span>{s.name}
                   <span className="text-xs text-gray-400 ml-1">({s.stocks.length})</span>
                   {rpsScore !== null && (
@@ -480,7 +436,7 @@ export default function ScannerPage() {
                   </h3>
                   {scanTime && <p className="text-xs text-gray-400 mt-0.5">{scanTime} 完成</p>}
                 </div>
-                <button onClick={() => { setScanResults([]); setScanHistory([]); setScanTime(''); }}
+                <button onClick={clearScanResults}
                   className="px-3 py-1.5 text-xs text-gray-500 hover:text-red-500 hover:bg-red-50 rounded-lg transition">全部清除</button>
               </div>
               {scanResults.map(r => (

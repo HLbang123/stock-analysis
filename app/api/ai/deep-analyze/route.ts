@@ -1,6 +1,6 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { formatAiError, formatNetworkError } from '@/lib/ai-error';
-import { buildChatUrl, buildLLMHeaders, createTimeoutSignal, llmRouteError, sseResponse, defuseLongDigitRuns } from '@/lib/llm-client';
+import { buildChatUrl, buildLLMHeaders, createTimeoutSignal, llmRouteError, sseResponse } from '@/lib/llm-client';
 import { readLlmDeltas, encodeSSE, endSSE } from '@/lib/llm-stream';
 import {
   buildTechR1SystemPrompt, buildRiskR1SystemPrompt,
@@ -69,8 +69,8 @@ export async function POST(request: NextRequest) {
               body: JSON.stringify({
                 model,
                 messages: [
-                  { role: 'system', content: defuseLongDigitRuns(systemPrompt) },
-                  { role: 'user', content: defuseLongDigitRuns(userPrompt) },
+                  { role: 'system', content: systemPrompt },
+                  { role: 'user', content: userPrompt },
                 ],
                 temperature: 0.3,
                 max_tokens: maxTokens,

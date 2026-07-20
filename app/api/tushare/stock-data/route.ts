@@ -68,7 +68,7 @@ export async function GET(request: NextRequest) {
       ? callTushare(
           "top_list",
           { trade_date: latestDate, ts_code: tsCode },
-          "trade_date,ts_code,name,close,pct_change,turnover_rate,amount,l_sell,l_buy,l_amount,net_amount,net_rate,amount_rate,float_values,reason"
+          "trade_date,ts_code,name,close,pct_change,turnover_rate,amount,l_sell,l_buy,l_amount,net_amount,net_rate,amount_rate,reason"
         )
       : Promise.reject(new Error("无最新交易日，跳过龙虎榜")),
     latestDate

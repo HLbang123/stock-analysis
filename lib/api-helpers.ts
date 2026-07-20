@@ -36,13 +36,15 @@ export function buildQuoteResponse(args: {
   amount: number;
 }) {
   const { symbol, name, price, preClose, open, high, low, volume, amount } = args;
+  const change = price - preClose;
+  const round2 = (n: number) => Math.round(n * 100) / 100;
   return {
     code: symbol,
     name: name || symbol,
     price,
     preClose,
-    change: price - preClose,
-    changePercent: ((price - preClose) / preClose) * 100,
+    change: round2(change),
+    changePercent: preClose !== 0 ? round2((change / preClose) * 100) : 0,
     high,
     low,
     open,
