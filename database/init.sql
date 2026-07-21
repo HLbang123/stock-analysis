@@ -45,3 +45,66 @@ CREATE TABLE IF NOT EXISTS rps_scores (
 
 CREATE INDEX IF NOT EXISTS idx_rps_calc_date ON rps_scores("calcDate");
 CREATE INDEX IF NOT EXISTS idx_rps_250 ON rps_scores("calcDate", rps_250 DESC);
+
+-- ===== 大盘页预计算表（snake_case 列名，raw SQL 裸用） =====
+
+-- 市场宽度 + 占比（一行/交易日）
+CREATE TABLE IF NOT EXISTS market_breadth (
+    trade_date        VARCHAR(8) PRIMARY KEY,
+    advance           INTEGER,
+    decline           INTEGER,
+    flat              INTEGER,
+    limit_up          INTEGER,
+    limit_down        INTEGER,
+    new_high20        INTEGER,
+    new_low20         INTEGER,
+    above_ma55_count  INTEGER,
+    above_ma55_ratio  DOUBLE PRECISION,
+    strong_rps_count  INTEGER,
+    strong_rps_ratio  DOUBLE PRECISION
+);
+
+-- 指数估值历史（6 大指数 × 多日）
+CREATE TABLE IF NOT EXISTS index_valuation (
+    ts_code       VARCHAR(12) NOT NULL,
+    trade_date    VARCHAR(8)  NOT NULL,
+    pe            DOUBLE PRECISION,
+    pe_ttm        DOUBLE PRECISION,
+    pb            DOUBLE PRECISION,
+    turnover_rate DOUBLE PRECISION,
+    PRIMARY KEY (ts_code, trade_date)
+);
+CREATE INDEX IF NOT EXISTS idx_index_val_date ON index_valuation(trade_date);
+
+-- 北向资金（一行/交易日）
+CREATE TABLE IF NOT EXISTS northbound_flow (
+    trade_date   VARCHAR(8) PRIMARY KEY,
+    north_money  DOUBLE PRECISION,
+    hgt          DOUBLE PRECISION,
+    sgt          DOUBLE PRECISION,
+    north_total  DOUBLE PRECISION
+);
+
+-- 融资融券市场总量（一行/交易所/日）
+CREATE TABLE IF NOT EXISTS margin_total (
+    trade_date VARCHAR(8)  NOT NULL,
+    exchange   VARCHAR(5)  NOT NULL,
+    rzye       DOUBLE PRECISION,
+    rqye       DOUBLE PRECISION,
+    rzmre      DOUBLE PRECISION,
+    rzche      DOUBLE PRECISION,
+    rzrqye     DOUBLE PRECISION,
+    PRIMARY KEY (trade_date, exchange)
+);
+CREATE INDEX IF NOT EXISTS idx_margin_total_date ON margin_total(trade_date);
+
+-- 个股基本面（ROE 等）
+CREATE TABLE IF NOT EXISTS stock_fundamentals (
+    ts_code            VARCHAR(12) PRIMARY KEY,
+    roe                DOUBLE PRECISION,
+    roa                DOUBLE PRECISION,
+    grossprofit_margin DOUBLE PRECISION,
+    or_yoy             DOUBLE PRECISION,
+    tr_yoy             DOUBLE PRECISION,
+    period             VARCHAR(8)
+);

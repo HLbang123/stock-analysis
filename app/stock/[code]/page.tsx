@@ -9,10 +9,11 @@ import { ALERT_RULES, checkAllRules } from '@/services/alertRules';
 import { RealtimeQuote, KLineData, RuleCheckResult } from '@/types';
 import { formatPrice, formatChange, formatVolume, cn, getAlertLevelColor } from '@/lib/utils';
 import { buildUpdatedKLines } from '@/lib/stock-helpers';
-import { ArrowLeft, RefreshCw, TrendingUp } from 'lucide-react';
+import { ArrowLeft, RefreshCw, TrendingUp, Loader2 } from 'lucide-react';
 import Link from 'next/link';
 import { KLineChart } from '@/components/KLineChart';
 import { MinuteChart } from '@/components/MinuteChart';
+import { EChart } from '@/components/market/EChart';
 import { Button } from '@/components/ui/button';
 import { Card } from '@/components/ui/card';
 import { Badge } from '@/components/ui/badge';
@@ -31,6 +32,9 @@ export default function StockDetailPage() {
   const [isLoading, setIsLoading] = useState(true);
   const [chartTab, setChartTab] = useState<'kline' | 'minute'>('minute');
   const [error, setError] = useState<string | null>(null);
+  const [rpsData, setRpsData] = useState<any>(null);
+  const [fundData, setFundData] = useState<any>(null);
+  const [fundLoading, setFundLoading] = useState(false);
 
   const stock = watchlist.find(s => s.code === code);
   const stockName = quote?.name || stock?.name || code;
@@ -81,6 +85,28 @@ export default function StockDetailPage() {
       loadData();
     }
   }, [code]);
+
+  // 拉 RPS + 基本面（主数据加载后异步）
+  useEffect(() => {
+    if (!code) return;
+    fetch(`/api/stock/rps?code=${code}`).then(r => r.ok ? r.json() : null).then(d => d && !d.error && setRpsData(d)).catch(() => {});
+    setFundLoading(true);
+    fetch(`/api/tushare/stock-data?code=${code}`).then(r => r.json()).then(d => { if (d.success) setFundData(d.data); }).catch(() => {}).finally(() => setFundLoading(false));
+  }, [code]);
+
+  // 趋势状态（MA5/13/55 从 K 线 + 当前价算）
+  const trendStatus = useMemo(() => {
+    if (kLines.length < 55 || !quote) return null;
+    const closes = [...kLines.map(k => k.close), quote.price];
+    const ma = (p: number) => closes.slice(-p).reduce((a: number, b: number) => a + b, 0) / p;
+    const ma5 = ma(5), ma13 = ma(13), ma55 = ma(55);
+    const price = closes[closes.length - 1];
+    return {
+      aboveMa55: price > ma55,
+      goldenCross: ma5 > ma13,
+      ma55: ma55.toFixed(2),
+    };
+  }, [kLines, quote]);
 
   // 预警标记到K线索引的映射
   const kLineMarkers = useMemo(() => {
@@ -234,6 +260,40 @@ export default function StockDetailPage() {
             </Card>
           )}
 
+          {/* RPS + 趋势状态 */}
+          <div className="flex flex-wrap items-center gap-2 mb-4">
+            {rpsData && (
+              <>
+                {[
+                  { label: 'RPS20', val: rpsData.rps20, ret: rpsData.ret20 },
+                  { label: 'RPS60', val: rpsData.rps60, ret: rpsData.ret60 },
+                  { label: 'RPS120', val: rpsData.rps120, ret: rpsData.ret120 },
+                  { label: 'RPS250', val: rpsData.rps250, ret: rpsData.ret250 },
+                ].map(r => r.val != null && (
+                  <span key={r.label} className={cn(
+                    "px-2 py-1 rounded-lg text-xs font-mono font-semibold",
+                    r.val >= 95 ? "bg-red-100 text-red-700" :
+                    r.val >= 87 ? "bg-orange-100 text-orange-700" :
+                    "bg-blue-100 text-blue-700"
+                  )} title={`${r.label} 涨幅 ${r.ret?.toFixed(1)}%`}>
+                    {r.label} {r.val.toFixed(1)}
+                  </span>
+                ))}
+                <span className="text-xs text-gray-400">({rpsData.calcDate})</span>
+              </>
+            )}
+            {trendStatus && (
+              <>
+                <span className={cn("px-2 py-1 rounded-lg text-xs font-medium", trendStatus.aboveMa55 ? "bg-red-50 text-red-600" : "bg-green-50 text-green-600")}>
+                  {trendStatus.aboveMa55 ? 'MA55上方 ✓' : 'MA55下方 ⚠'} ({trendStatus.ma55})
+                </span>
+                <span className={cn("px-2 py-1 rounded-lg text-xs font-medium", trendStatus.goldenCross ? "bg-red-50 text-red-600" : "bg-green-50 text-green-600")}>
+                  5/13{trendStatus.goldenCross ? '金叉 ✓' : '死叉 ⚠'}
+                </span>
+              </>
+            )}
+          </div>
+
           {/* 图表切换 */}
           <div className="flex gap-2 mb-4">
             <button
@@ -296,6 +356,45 @@ export default function StockDetailPage() {
                     : 'INFO',
                 }))}
               />
+            </Card>
+          )}
+
+          {/* 基本面速览 + 资金流向 */}
+          {fundLoading && (
+            <Card className="p-4 mb-4 flex items-center gap-2 text-gray-400">
+              <Loader2 className="w-4 h-4 animate-spin" /> 加载基本面数据...
+            </Card>
+          )}
+          {!fundLoading && fundData && (fundData.dailyBasic?.length > 0 || fundData.finaIndicator?.length > 0) && (
+            <Card className="p-4 mb-4">
+              <h2 className="font-semibold text-sm mb-3">基本面速览</h2>
+              {fundData.dailyBasic?.[0] && (
+                <div className="grid grid-cols-3 sm:grid-cols-4 gap-3 text-xs mb-3">
+                  {fundData.dailyBasic[0].pe_ttm != null && <Metric label="PE-TTM" value={fundData.dailyBasic[0].pe_ttm.toFixed(1)} />}
+                  {fundData.dailyBasic[0].pb != null && <Metric label="PB" value={fundData.dailyBasic[0].pb.toFixed(2)} />}
+                  {fundData.dailyBasic[0].total_mv != null && <Metric label="总市值" value={`${(fundData.dailyBasic[0].total_mv / 10000).toFixed(1)}亿`} />}
+                  {fundData.dailyBasic[0].turnover_rate != null && <Metric label="换手率" value={`${fundData.dailyBasic[0].turnover_rate.toFixed(2)}%`} />}
+                  {fundData.finaIndicator?.[0]?.roe != null && <Metric label="ROE" value={`${fundData.finaIndicator[0].roe.toFixed(2)}%`} />}
+                  {fundData.finaIndicator?.[0]?.grossprofit_margin != null && <Metric label="毛利率" value={`${fundData.finaIndicator[0].grossprofit_margin.toFixed(1)}%`} />}
+                  {fundData.finaIndicator?.[0]?.or_yoy != null && <Metric label="营收同比" value={`${fundData.finaIndicator[0].or_yoy > 0 ? '+' : ''}${fundData.finaIndicator[0].or_yoy.toFixed(1)}%`} />}
+                  {fundData.finaIndicator?.[0]?.tr_yoy != null && <Metric label="净利同比" value={`${fundData.finaIndicator[0].tr_yoy > 0 ? '+' : ''}${fundData.finaIndicator[0].tr_yoy.toFixed(1)}%`} />}
+                </div>
+              )}
+              {/* 资金流向 mini 图 */}
+              {fundData.moneyflow?.length > 0 && (
+                <div>
+                  <p className="text-xs text-gray-500 mb-1">主力资金近{fundData.moneyflow.length}日（亿元）</p>
+                  <div className="h-32">
+                    <EChart option={{
+                      tooltip: { trigger: 'axis', valueFormatter: (v: any) => `${(Number(v) / 10000).toFixed(2)}亿` },
+                      grid: { left: 35, right: 10, top: 5, bottom: 20 },
+                      xAxis: { type: 'category', data: fundData.moneyflow.slice().reverse().map((m: any) => m.trade_date?.slice(4, 6) + '-' + m.trade_date?.slice(6, 8)), axisLabel: { fontSize: 9 } },
+                      yAxis: { type: 'value', axisLabel: { fontSize: 9, formatter: (v: number) => (v / 10000).toFixed(0) } },
+                      series: [{ type: 'bar', data: fundData.moneyflow.slice().reverse().map((m: any) => m.net_mf_amount), itemStyle: { color: (p: any) => (p.value >= 0 ? '#ef4444' : '#22c55e') } }],
+                    }} />
+                  </div>
+                </div>
+              )}
             </Card>
           )}
 
@@ -375,6 +474,15 @@ export default function StockDetailPage() {
           )}
         </>
       )}
+    </div>
+  );
+}
+
+function Metric({ label, value }: { label: string; value: string }) {
+  return (
+    <div>
+      <p className="text-gray-400">{label}</p>
+      <p className="font-medium text-gray-700 dark:text-gray-300">{value}</p>
     </div>
   );
 }

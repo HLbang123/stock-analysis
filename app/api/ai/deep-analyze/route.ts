@@ -33,7 +33,7 @@ const STUCK_THRESHOLD = 0.7;
 export async function POST(request: NextRequest) {
   try {
     const body = await request.json();
-    const { stage1, stage2, stage3, baseUrl, apiKey, model, completed } = body;
+    const { stage1, stage2, stage3, baseUrl, apiKey, model, completed, userView, userViewReason } = body;
 
     if (!baseUrl || !model) {
       return NextResponse.json(
@@ -180,8 +180,10 @@ export async function POST(request: NextRequest) {
           console.log('[Deep AI Proxy] Stage 2: 3-person debate');
           let stage2Output = '';
           // 辩论基础数据 prompt（不含分析师报告，角色不需要读完整报告）
+          const userViewNote = userView ? `\n\n[用户观点] 用户当前${userView}。理由：${userViewReason || '未说明'}。\n各角色在论证时可参考用户观点，但不要迎合——用数据验证或反驳用户的看法。` : '';
           const debateData = [
             stage2?.userPrompt?.split('以下是一份深度分析师报告')[0]?.trim() || '',
+            userViewNote,
           ].filter(Boolean).join('\n\n');
 
           // ======== Round 1: 三人串行（一条一条出，避免并发压垮中转站）========
@@ -218,10 +220,12 @@ export async function POST(request: NextRequest) {
           // ===== 阶段三：最终裁决 =====
           console.log('[Deep AI Proxy] Stage 3: Final Verdict');
           const s3System = stage3?.systemPrompt || buildVerdictSystemPrompt();
+          const userViewVerdict = userView ? `\n\n[用户观点] 用户当前${userView}，理由：${userViewReason || '未说明'}。请在决策理由中评价用户观点是否成立（用数据说话，不要迎合用户）。` : '';
           const s3User = [
             stage3?.userPrompt?.split('## 分析师报告')[0]?.trim() || '',
             `## 分析师报告\n${stage1Output}`,
             `## 多空辩论\n${stage2Output}`,
+            userViewVerdict,
             '请基于以上信息，做出最终投资决策。**注意：目标价和止损价必须参考实时行情中的当前价格。**',
           ].filter(Boolean).join('\n\n');
           await runOrReplay('verdict', s3System, s3User, 4096);

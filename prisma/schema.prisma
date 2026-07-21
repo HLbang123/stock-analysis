@@ -58,3 +58,76 @@ model RpsScore {
   @@index([calcDate, rps250(sort: Desc)])
   @@map("rps_scores")
 }
+
+// ===== 大盘页预计算表（均 snake_case 列名，raw SQL 裸用） =====
+
+/// 市场宽度 + 占比（一行/交易日），由 compute-market-breadth 算
+model MarketBreadth {
+  tradeDate      String  @id @db.VarChar(8) @map("trade_date")
+  advance        Int?
+  decline        Int?
+  flat           Int?
+  limitUp        Int?    @map("limit_up")
+  limitDown      Int?    @map("limit_down")
+  newHigh20      Int?    @map("new_high20")
+  newLow20       Int?    @map("new_low20")
+  aboveMa55Count Int?    @map("above_ma55_count")
+  aboveMa55Ratio Float?  @map("above_ma55_ratio")
+  strongRpsCount Int?    @map("strong_rps_count")
+  strongRpsRatio Float?  @map("strong_rps_ratio")
+
+  @@map("market_breadth")
+}
+
+/// 指数估值历史（6 大指数 × 多日），由 sync-index-valuation 拉
+model IndexValuation {
+  tsCode       String @db.VarChar(12) @map("ts_code")
+  tradeDate    String @db.VarChar(8)  @map("trade_date")
+  pe           Float?
+  peTtm        Float? @map("pe_ttm")
+  pb           Float?
+  turnoverRate Float? @map("turnover_rate")
+
+  @@id([tsCode, tradeDate])
+  @@index([tradeDate])
+  @@map("index_valuation")
+}
+
+/// 北向资金（一行/交易日），由 sync-hsgt 拉
+model NorthboundFlow {
+  tradeDate  String @id @db.VarChar(8) @map("trade_date")
+  northMoney Float? @map("north_money") // 当日净流入(万元)
+  hgt        Float? // 沪股通
+  sgt        Float? // 深股通
+  northTotal Float? @map("north_total") // 累计余额(万元)
+
+  @@map("northbound_flow")
+}
+
+/// 融资融券市场总量（一行/交易所/日），由 sync-margin 拉
+model MarginTotal {
+  tradeDate String @db.VarChar(8) @map("trade_date")
+  exchange  String @db.VarChar(5) // SSE / SZSE
+  rzye      Float? // 融资余额(元)
+  rqye      Float? // 融券余额(元)
+  rzmre     Float? // 融资买入额(元)
+  rzche     Float? // 融资偿还额(元)
+  rzrqye    Float? // 融资融券余额(元)
+
+  @@id([tradeDate, exchange])
+  @@index([tradeDate])
+  @@map("margin_total")
+}
+
+/// 个股基本面（ROE 等，由 sync-fundamentals 同步）
+model StockFundamental {
+  tsCode            String  @id @db.VarChar(12) @map("ts_code")
+  roe               Float?
+  roa               Float?
+  grossprofitMargin Float?  @map("grossprofit_margin")
+  orYoy             Float?  @map("or_yoy")
+  trYoy             Float?  @map("tr_yoy")
+  period            String? @db.VarChar(8)
+
+  @@map("stock_fundamentals")
+}

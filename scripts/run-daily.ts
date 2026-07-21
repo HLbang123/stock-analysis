@@ -1,6 +1,6 @@
 /**
  * 每日数据更新调度器
- * 按顺序执行：日线同步 → RPS 计算 → 概念板块刷新
+ * 按顺序执行：日线同步 → RPS 计算 → 大盘宽度 → 指数估值 → 北向资金 → 融资融券
  *
  * 用于 crontab：0 16 * * 1-5 cd /app && npx tsx scripts/run-daily.ts
  */
@@ -10,6 +10,11 @@ import { execSync } from "child_process";
 const STEPS = [
   { name: "日线同步", cmd: "npx tsx scripts/sync-daily.ts" },
   { name: "RPS 计算", cmd: "npx tsx scripts/compute-rps.ts" },
+  { name: "大盘宽度", cmd: "npx tsx scripts/compute-market-breadth.ts" },
+  { name: "指数估值", cmd: "npx tsx scripts/sync-index-valuation.ts" },
+  { name: "北向资金", cmd: "npx tsx scripts/sync-hsgt.ts" },
+  { name: "融资融券", cmd: "npx tsx scripts/sync-margin.ts" },
+  // 基本面(ROE)不进每日——fina_indicator 必须逐只查，5000只≈30分钟，季度才变，手动跑
 ];
 
 // 周一额外更新股票列表（上市/退市变动）

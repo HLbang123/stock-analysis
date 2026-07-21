@@ -4,10 +4,11 @@ import Link from "next/link";
 import { usePathname } from "next/navigation";
 import { cn } from "@/lib/utils";
 import { ROUTES } from "@/lib/constants";
-import { AlertTriangle, Star, Search, Brain } from "lucide-react";
+import { AlertTriangle, Star, Search, Brain, LineChart } from "lucide-react";
 
 const tabs = [
   { href: ROUTES.home, label: "预警", icon: AlertTriangle },
+  { href: ROUTES.market, label: "大盘", icon: LineChart },
   { href: ROUTES.watchlist, label: "自选", icon: Star },
   { href: ROUTES.ai, label: "AI分析", icon: Brain },
   { href: ROUTES.scanner, label: "筛选", icon: Search },
@@ -27,7 +28,7 @@ export function BottomNav() {
               key={tab.href}
               href={tab.href}
               className={cn(
-                "flex flex-col items-center gap-1 px-3 py-2 text-xs font-medium transition-colors",
+                "flex flex-col items-center gap-1 px-2 py-2 text-xs font-medium transition-colors",
                 isActive
                   ? "text-blue-600 dark:text-blue-400"
                   : "text-gray-500 dark:text-gray-400"

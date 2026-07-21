@@ -44,6 +44,7 @@ export const SCANNER_CONCURRENCY = 5;
 // App routes
 export const ROUTES = {
   home: "/",
+  market: "/market",
   watchlist: "/watchlist",
   ai: "/ai",
   scanner: "/scanner",

@@ -887,11 +887,11 @@ function checkFundamentalFilter(kLines: KLineData[], quote: RealtimeQuote | null
   return { triggered: false };
 }
 
-// ==================== 三重滤网简化版（5/13 金死叉 + 55 日线定大势） ====================
+// ==================== 斐波那契数列均线规则（5/13 金死叉 + 55 日线定大势） ====================
 
 /**
  * R027: 5/13 死叉 — MA5 下穿 MA13，只有卖点没有买点；同步处于 55 日线下方则升级为下跌中继
- * 来源：三重滤网简化版 | 避坑：横盘震荡时频繁金叉死叉，需结合量能/MACD 过滤
+ * 来源：斐波那契数列均线规则 | 避坑：横盘震荡时频繁金叉死叉，需结合量能/MACD 过滤
  */
 function checkMa5Cross13Death(kLines: KLineData[], quote: RealtimeQuote | null, rule: AlertRule): RuleCheckResult {
   if (kLines.length < 14) return { triggered: false };
@@ -922,7 +922,7 @@ function checkMa5Cross13Death(kLines: KLineData[], quote: RealtimeQuote | null, 
 /**
  * R028: 5/13 金叉 — MA5 上穿 MA13，可考虑买点；放量 + 站上 55 日线才视为有效信号，
  *        缩量则提示横盘震荡中的假信号（需 MACD 确认）
- * 来源：三重滤网简化版
+ * 来源：斐波那契数列均线规则
  */
 function checkMa5Cross13Golden(kLines: KLineData[], quote: RealtimeQuote | null, rule: AlertRule): RuleCheckResult {
   if (kLines.length < 14) return { triggered: false };
@@ -961,7 +961,7 @@ function checkMa5Cross13Golden(kLines: KLineData[], quote: RealtimeQuote | null,
 
 /**
  * R029: 跌破 55 日线 — 收盘下穿 MA55，进入非多头区域，55 日线定大势，不是当下好的选择
- * 来源：三重滤网简化版
+ * 来源：斐波那契数列均线规则
  */
 function checkBreakMa55(kLines: KLineData[], quote: RealtimeQuote | null, rule: AlertRule): RuleCheckResult {
   if (kLines.length < 56) return { triggered: false };
@@ -1218,11 +1218,11 @@ export const ALERT_RULES: AlertRule[] = [
     suggestion: '基本面不达标，不符合心姐业绩支撑原则',
     isEnabled: true
   },
-  // ==================== 三重滤网简化版（5/13 金死叉 + 55 日线定大势） ====================
+  // ==================== 斐波那契数列均线规则（5/13 金死叉 + 55 日线定大势） ====================
   {
     id: 'R027',
     name: '5/13死叉',
-    description: 'MA5下穿MA13只有卖点没有买点；同步跌破55日线则下跌中继（三重滤网简化版）',
+    description: 'MA5下穿MA13只有卖点没有买点；同步跌破55日线则下跌中继（斐波那契数列均线规则）',
     category: 'MOVING_AVG' as any,
     level: 'WARNING' as any,
     suggestion: '死叉区域不抢反弹，仅考虑卖点；跌破55日线则规避',
@@ -1231,7 +1231,7 @@ export const ALERT_RULES: AlertRule[] = [
   {
     id: 'R028',
     name: '5/13金叉',
-    description: 'MA5上穿MA13，放量+站上55日线才视为有效买点；缩量可能是假信号（三重滤网简化版）',
+    description: 'MA5上穿MA13，放量+站上55日线才视为有效买点；缩量可能是假信号（斐波那契数列均线规则）',
     category: 'OPPORTUNITY' as any,
     level: 'INFO' as any,
     suggestion: '金叉可考虑买点，缩量或未站上55日线时结合MACD确认',
@@ -1240,7 +1240,7 @@ export const ALERT_RULES: AlertRule[] = [
   {
     id: 'R029',
     name: '跌破55日线',
-    description: '收盘跌破MA55进入非多头区域，55日线定大势（三重滤网简化版）',
+    description: '收盘跌破MA55进入非多头区域，55日线定大势（斐波那契数列均线规则）',
     category: 'MOVING_AVG' as any,
     level: 'WARNING' as any,
     suggestion: '非多头区域不轻易做多，等待重新站上55日线',

@@ -74,6 +74,9 @@ export default function AiPage() {
   const deepAbortRef = useRef<AbortController | null>(null);
   // 断点续传：记录已完成阶段的输出文本 { analyst, tech, risk, ... }
   const [deepCompleted, setDeepCompleted] = useState<Record<string, string>>({});
+  // 用户看法（加入辩论，降低权重，防AI迎合）
+  const [userView, setUserView] = useState<string>('');
+  const [userViewReason, setUserViewReason] = useState<string>('');
 
   const currentProfile = profiles.find(p => p.id === currentProfileId);
 
@@ -99,6 +102,8 @@ export default function AiPage() {
     // 按 --- 分割头部和正文
     const bodySplit = text.split(/^---[\r\n]+/m);
     let body = bodySplit.length > 1 ? bodySplit.slice(1).join('---\n') : text;
+    // 去掉结构化头字段（已在上方卡片展示，不重复出现在正文里）
+    body = body.replace(/^(RISK|SUPPORT|RESISTANCE|RULES):.*$/gm, '').replace(/\n{3,}/g, '\n\n').trim();
 
     let analysis = body;
     let suggestion = '';
@@ -144,6 +149,8 @@ export default function AiPage() {
 
     const bodySplit = text.split(/^---[\r\n]+/m);
     let body = bodySplit.length > 1 ? bodySplit.slice(1).join('---\n') : text;
+    // 去掉结构化头字段（已在上方卡片展示，不重复出现在决策理由里）
+    body = body.replace(/^(ACTION|RISK_LEVEL|CONFIDENCE(_SCORE)?|TARGET_LOW|TARGET_HIGH|STOP_LOSS|POSITION|KEY_POINTS):.*$/gm, '').replace(/\n{3,}/g, '\n\n').trim();
 
     let reasoning = body, plan = '', riskNote = '';
     const planIdx = body.indexOf('### 操作计划');
@@ -213,7 +220,7 @@ export default function AiPage() {
       const engineResults = checkAllRules(updatedKLines, quote, ALERT_RULES.filter(r => r.isEnabled));
       const engineSummary = engineResults.length > 0
         ? engineResults.map(r => `${r.ruleId}:${r.message}`).join('; ')
-        : '无触发规则';
+        : '未触发任何破位/死叉/急跌等风险信号，技术面健康';
 
       // 构建Prompt
       const quoteJson = JSON.stringify(quote, null, 2);
@@ -368,7 +375,7 @@ export default function AiPage() {
 
     try {
       // 获取数据（K线取60根，比心姐分析更多）
-      const [quote, kLines, tushareData] = await Promise.all([
+      const [quote, kLines, tushareData, rpsRes] = await Promise.all([
         getRealtimeQuoteCached(selectedCode),
         getKLineSinaCached(selectedCode, 240, 120),
         fetchTushareData(selectedCode).catch(async () => {
@@ -376,6 +383,7 @@ export default function AiPage() {
           await new Promise(r => setTimeout(r, 2000));
           return fetchTushareData(selectedCode).catch(() => null);
         }),
+        fetch(`/api/stock/rps?code=${selectedCode}`).then(r => r.ok ? r.json() : null).catch(() => null),
       ]);
 
       if (!quote) throw new Error('获取行情失败');
@@ -397,7 +405,7 @@ export default function AiPage() {
       const engineResults = checkAllRules(updatedKLines, quote, ALERT_RULES.filter(r => r.isEnabled));
       const engineSummary = engineResults.length > 0
         ? engineResults.map(r => `${r.ruleId}:${r.message}`).join('; ')
-        : '无触发规则';
+        : '未触发任何破位/死叉/急跌等风险信号，技术面健康';
 
       const quoteJson = JSON.stringify(quote, null, 2);
       const klineSummary = kLines.slice(-60).map(k =>
@@ -425,10 +433,11 @@ export default function AiPage() {
 
       // 构建三阶段 prompts
       const marketStatusNote = `[市场状态] ${await fetchMarketStatusNote()}\n\n`;
+      const rpsNote = rpsRes && !rpsRes.error ? `[RPS强度] 20日:${rpsRes.rps20?.toFixed(1)} 60日:${rpsRes.rps60?.toFixed(1)} 120日:${rpsRes.rps120?.toFixed(1)} 250日:${rpsRes.rps250?.toFixed(1)}（${rpsRes.rps250 >= 95 ? '全市场前5%极强' : rpsRes.rps250 >= 87 ? '强势' : '中等偏弱'}）\n\n` : '';
       const etf = isETF(selectedCode);
       const stage1 = {
         systemPrompt: buildAnalystSystemPrompt(etf),
-        userPrompt: marketStatusNote + buildAnalystUserPrompt(selectedCode, stock.name, quoteJson, klineSummary, engineSummary, indicatorBlock, reflectionBlock, positionNote, etf, tushareBlock, getIndustry(selectedCode)),
+        userPrompt: marketStatusNote + rpsNote + buildAnalystUserPrompt(selectedCode, stock.name, quoteJson, klineSummary, engineSummary, indicatorBlock, reflectionBlock, positionNote, etf, tushareBlock, getIndustry(selectedCode)),
       };
       // Stage 2 辩论数据（路由自行处理角色分配和调用）
       const debateDataPrompt = buildDebateDataPrompt(selectedCode, stock.name, quoteJson, indicatorBlock, marketStatusNote);
@@ -454,6 +463,8 @@ export default function AiPage() {
           apiKey: currentProfile.apiKey,
           model: currentProfile.model,
           completed: resumeCompleted,
+          userView: userView || undefined,
+          userViewReason: userViewReason || undefined,
         }),
         signal: abortController.signal,
       });
@@ -714,6 +725,25 @@ export default function AiPage() {
         <p className="text-xs text-amber-600 dark:text-amber-400 mb-1">
           ⚠️ 深度分析耗时约1-3分钟，消耗较多Token，请耐心等待
         </p>
+
+        {/* 用户看法（加入辩论，AI会验证但不迎合） */}
+        <div className="flex flex-wrap items-center gap-2 mb-1 text-xs">
+          <span className="text-gray-500">你的看法（可选）：</span>
+          {['看空', '中性', '看多'].map(v => (
+            <button key={v} onClick={() => setUserView(prev => prev === v ? '' : v)}
+              className={cn("px-2.5 py-1 rounded-lg font-medium transition",
+                userView === v
+                  ? v === '看多' ? "bg-red-100 text-red-700" : v === '看空' ? "bg-green-100 text-green-700" : "bg-gray-200 text-gray-700"
+                  : "bg-gray-100 dark:bg-gray-800 text-gray-500 hover:bg-gray-200")}>
+              {v}
+            </button>
+          ))}
+          {userView && (
+            <input type="text" value={userViewReason} onChange={e => setUserViewReason(e.target.value)}
+              placeholder="理由（可选，如：业绩超预期、板块龙头）"
+              className="flex-1 min-w-[150px] px-2 py-1 border border-gray-200 dark:border-gray-700 rounded-lg bg-white dark:bg-gray-800 text-xs" />
+          )}
+        </div>
 
         {(isAnalyzing || isDeepAnalyzing) && (
           <button

@@ -1,52 +1,50 @@
 import { create } from 'zustand';
 import { persist } from 'zustand/middleware';
 
-export type ScanMode = 'rules' | 'rps';
-
-export interface ScanResult {
-  code: string;
-  name: string;
-  quote: any;
-  alerts: any[];
-  alertCount: number;
-  isNew?: boolean;
-}
-
 export interface RpsItem {
   tsCode: string;
   name: string;
-  industry: string;
-  rps: number;
-  ret: number;
-  latestClose: number;
-  latestChange: number;
-  latestVol: number;
+  industry: string | null;
+  rps: number | null;
+  ret: number | null;
+  latestClose: number | null;
+  latestChange: number | null;
+  latestVol: number | null;
+  ma5: number | null;
+  ma13: number | null;
+  ma55: number | null;
+  gcFresh: boolean;
+  gcState: boolean;
+  ma55Up: boolean;
 }
 
 interface ScannerState {
   // 持久化字段（切走再切回保留上次的选择与结果）
-  mode: ScanMode;
   selectedSectors: string[];
-  perSectorCount: number;
-  scanResults: ScanResult[];
-  scanHistory: ScanResult[];
-  scanTime: string;
   rpsPeriod: number;
   rpsMin: number;
   rpsIndustry: string;
   rpsResults: RpsItem[];
+  // 三个过滤器（AND 组合）
+  filterRps: boolean;
+  goldenCross: boolean;
+  gcDays: number;
+  ma55Up: boolean;
+  filterRoe: boolean;
+  minRoe: number;
 
-  setMode: (mode: ScanMode) => void;
   setSelectedSectors: (updater: string[] | ((prev: string[]) => string[])) => void;
-  setPerSectorCount: (n: number) => void;
-  setScanResults: (updater: ScanResult[] | ((prev: ScanResult[]) => ScanResult[])) => void;
-  setScanHistory: (updater: ScanResult[] | ((prev: ScanResult[]) => ScanResult[])) => void;
-  setScanTime: (t: string) => void;
   setRpsPeriod: (n: number) => void;
   setRpsMin: (n: number) => void;
   setRpsIndustry: (updater: string | ((prev: string) => string)) => void;
   setRpsResults: (updater: RpsItem[] | ((prev: RpsItem[]) => RpsItem[])) => void;
-  clearScanResults: () => void;
+  setFilterRps: (v: boolean) => void;
+  setGoldenCross: (v: boolean) => void;
+  setGcDays: (n: number) => void;
+  setMa55Up: (v: boolean) => void;
+  setFilterRoe: (v: boolean) => void;
+  setMinRoe: (n: number) => void;
+  clearResults: () => void;
 }
 
 const resolve = <T,>(updater: T | ((prev: T) => T), prev: T): T =>
@@ -55,44 +53,58 @@ const resolve = <T,>(updater: T | ((prev: T) => T), prev: T): T =>
 export const useScannerStore = create<ScannerState>()(
   persist(
     (set) => ({
-      mode: 'rps',
       selectedSectors: [],
-      perSectorCount: 3,
-      scanResults: [],
-      scanHistory: [],
-      scanTime: '',
       rpsPeriod: 250,
       rpsMin: 87,
       rpsIndustry: '',
       rpsResults: [],
+      filterRps: true,
+      goldenCross: false,
+      gcDays: 5,
+      ma55Up: false,
+      filterRoe: false,
+      minRoe: 15,
 
-      setMode: (mode) => set({ mode }),
       setSelectedSectors: (updater) => set((s) => ({ selectedSectors: resolve(updater, s.selectedSectors) })),
-      setPerSectorCount: (perSectorCount) => set({ perSectorCount }),
-      setScanResults: (updater) => set((s) => ({ scanResults: resolve(updater, s.scanResults) })),
-      setScanHistory: (updater) => set((s) => ({ scanHistory: resolve(updater, s.scanHistory) })),
-      setScanTime: (scanTime) => set({ scanTime }),
       setRpsPeriod: (rpsPeriod) => set({ rpsPeriod }),
       setRpsMin: (rpsMin) => set({ rpsMin }),
       setRpsIndustry: (updater) => set((s) => ({ rpsIndustry: resolve(updater, s.rpsIndustry) })),
       setRpsResults: (updater) => set((s) => ({ rpsResults: resolve(updater, s.rpsResults) })),
-      clearScanResults: () => set({ scanResults: [], scanHistory: [], scanTime: '' }),
+      setFilterRps: (filterRps) => set({ filterRps }),
+      setGoldenCross: (goldenCross) => set({ goldenCross }),
+      setGcDays: (gcDays) => set({ gcDays }),
+      setMa55Up: (ma55Up) => set({ ma55Up }),
+      setFilterRoe: (filterRoe) => set({ filterRoe }),
+      setMinRoe: (minRoe) => set({ minRoe }),
+      clearResults: () => set({ rpsResults: [] }),
     }),
     {
       name: 'scanner-store',
-      version: 1,
+      version: 2,
       partialize: (s) => ({
-        mode: s.mode,
         selectedSectors: s.selectedSectors,
-        perSectorCount: s.perSectorCount,
-        scanResults: s.scanResults,
-        scanHistory: s.scanHistory,
-        scanTime: s.scanTime,
         rpsPeriod: s.rpsPeriod,
         rpsMin: s.rpsMin,
         rpsIndustry: s.rpsIndustry,
         rpsResults: s.rpsResults,
+        filterRps: s.filterRps,
+        goldenCross: s.goldenCross,
+        gcDays: s.gcDays,
+        ma55Up: s.ma55Up,
+        filterRoe: s.filterRoe,
+        minRoe: s.minRoe,
       }),
+      // v1→v2：丢弃已删除的 rules 模式字段
+      migrate: (persisted: unknown) => {
+        const p = persisted as Record<string, unknown> | undefined;
+        if (!p) return p as any;
+        delete (p as any).mode;
+        delete (p as any).perSectorCount;
+        delete (p as any).scanResults;
+        delete (p as any).scanHistory;
+        delete (p as any).scanTime;
+        return p as any;
+      },
     }
   )
 );
