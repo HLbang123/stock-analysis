@@ -57,6 +57,12 @@ export async function POST(request: NextRequest) {
     const encoder = new TextEncoder();
     const stream = new ReadableStream({
       async start(controller) {
+        // 心跳：SSE 注释行（: 开头），客户端自动忽略，CF 视作数据流动重置空闲计时。
+        // 覆盖每个阶段 fetch 发出到首 token 之间的空隙，以及阶段切换间隙。
+        const heartbeat = setInterval(() => {
+          try { controller.enqueue(encoder.encode(': keepalive\n\n')); } catch { /* 流已关闭 */ }
+        }, 15000);
+
         /** 执行一个阶段的 LLM 调用，流式输出到客户端，返回完整输出文本。任何失败最终都抛出（带 [stage] 前缀） */
         async function runStage(stageKey: string, systemPrompt: string, userPrompt: string, maxTokens = 4096, attempt = 1): Promise<string> {
           let fullOutput = '';
@@ -233,6 +239,7 @@ export async function POST(request: NextRequest) {
           console.error('[Deep AI Proxy] 分析失败:', e.message);
           encodeSSE(encoder, controller, { error: `${e.message || '分析失败'}，可点击"继续生成"从断点恢复` });
         } finally {
+          clearInterval(heartbeat);
           endSSE(encoder, controller);
         }
       },

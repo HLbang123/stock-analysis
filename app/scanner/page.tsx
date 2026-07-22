@@ -4,7 +4,6 @@ import { useState, useCallback, useEffect } from 'react';
 import { useRouter } from 'next/navigation';
 import { useStockStore } from '@/store';
 import { useScannerStore } from '@/store/scanner-store';
-import { SECTORS } from '@/lib/sectors';
 import { cn } from '@/lib/utils';
 import { Card } from '@/components/ui/card';
 import { Filter, Loader2, ChevronDown, ChevronUp, Plus, BarChart3, Info } from 'lucide-react';
@@ -42,37 +41,22 @@ export default function ScannerPage() {
   const [loading, setLoading] = useState(false);
   const [hasQueried, setHasQueried] = useState(false);
 
-  // 板块 RPS 强度 + 真实股票数（industry → {ratio, total}）
-  const [sectorData, setSectorData] = useState<Map<string, { ratio: number; total: number }>>(new Map());
+  // 动态行业列表（从 DB 拉，替代硬编码 SECTORS）
+  const [industries, setIndustries] = useState<{ name: string; count: number }[]>([]);
 
   useEffect(() => {
-    fetch(`/api/rps/sectors?period=${rpsPeriod}&min=${rpsMin}`)
-      .then(r => r.json())
-      .then(d => {
-        if (d.sectors) {
-          const m = new Map<string, { ratio: number; total: number }>();
-          for (const s of d.sectors) m.set(s.industry, { ratio: s.ratio, total: s.total });
-          setSectorData(m);
-        }
-      })
-      .catch(() => {});
-  }, [rpsPeriod, rpsMin]);
+    fetch('/api/industries').then(r => r.json()).then(d => { if (d.industries) setIndustries(d.industries); }).catch(() => {});
+  }, []);
 
   // 同步选中的板块到 RPS industry
   useEffect(() => {
     if (selectedSectors.length === 1) {
-      const sector = SECTORS.find(s => selectedSectors.includes(s.id));
-      if (sector?.rpsIndustry && sector.rpsIndustry !== rpsIndustry) {
-        setRpsIndustry(sector.rpsIndustry);
+      const industry = selectedSectors[0];
+      if (industry !== rpsIndustry) {
+        setRpsIndustry(industry);
       }
     }
   }, [selectedSectors, rpsIndustry, setRpsIndustry]);
-
-  // 板块单选（点选替换、再点取消→空=全市场）
-  const toggleSector = (id: string, rpsIndustry?: string) => {
-    setRpsIndustry(prev => prev === rpsIndustry ? '' : (rpsIndustry || ''));
-    setSelectedSectors(prev => prev.includes(id) ? [] : [id]);
-  };
 
   const clearSectors = () => {
     setSelectedSectors([]);
@@ -84,23 +68,25 @@ export default function ScannerPage() {
     setLoading(true);
     setHasQueried(true);
     try {
-      const params = new URLSearchParams({ period: String(rpsPeriod), limit: '50' });
-      params.set('filterRps', String(filterRps));
-      if (filterRps) params.set('minRps', String(rpsMin));
-      if (rpsIndustry) params.set('industry', rpsIndustry);
-      if (goldenCross) { params.set('goldenCross', 'true'); params.set('gcDays', String(gcDays)); }
-      if (ma55Up) params.set('ma55Up', 'true');
-      if (filterRoe) { params.set('filterRoe', 'true'); params.set('minRoe', String(minRoe)); }
+      const st = useScannerStore.getState();
+      const params = new URLSearchParams({ period: String(st.rpsPeriod), limit: '50' });
+      params.set('filterRps', String(st.filterRps));
+      if (st.filterRps) params.set('minRps', String(st.rpsMin));
+      if (st.rpsIndustry) params.set('industry', st.rpsIndustry);
+      if (st.goldenCross) { params.set('goldenCross', 'true'); params.set('gcDays', String(st.gcDays)); }
+      if (st.ma55Up) params.set('ma55Up', 'true');
+      if (st.filterRoe) { params.set('filterRoe', 'true'); params.set('minRoe', String(st.minRoe)); }
       const res = await fetch(`/api/scan?${params}`);
       const data = await res.json();
-      if (data.error) { toast.error(data.error); setRpsResults([]); }
-      else if (data.items) setRpsResults(data.items);
+      if (data.error) { toast.error(data.error); st.setRpsResults([]); }
+      else if (data.items) st.setRpsResults(data.items);
+      else st.setRpsResults([]);
     } catch {
       toast.error('查询失败');
     } finally {
       setLoading(false);
     }
-  }, [rpsPeriod, rpsMin, rpsIndustry, filterRps, goldenCross, gcDays, ma55Up, setRpsResults]);
+  }, []);
 
   // Tushare ts_code → 应用格式 (301377.SZ → sz301377)
   const toAppCode = (tsCode: string) => {
@@ -122,8 +108,8 @@ export default function ScannerPage() {
   // 当前查询条件描述
   const condParts: string[] = [];
   if (filterRps) condParts.push(`RPS(${rpsPeriod})≥${rpsMin}`);
-  if (goldenCross) condParts.push(gcDays === 0 ? '5/13金叉(当前)' : `5/13金叉(近${gcDays}日)`);
-  if (ma55Up) condParts.push('55日线朝上');
+  if (goldenCross) condParts.push(gcDays === 0 ? '5/13即将金叉' : `5/13金叉(近${gcDays}日)`);
+  if (ma55Up) condParts.push('股价在55日线上方');
   if (filterRoe) condParts.push(`ROE≥${minRoe}%`);
   const condText = condParts.length > 0 ? condParts.join(' · ') : '无过滤（全市场 top RPS）';
 
@@ -141,7 +127,7 @@ export default function ScannerPage() {
           <div className="mt-2 text-gray-600 dark:text-gray-400 space-y-1 leading-relaxed">
             <p><strong>RPS</strong>：近 N 日涨幅在全市场的百分位排名，≥87 为强势股。5/13/55 是斐波那契数列均线。</p>
             <p>• <strong>5/13金叉</strong>：MA5 上穿 MA13，短期动能转多；选「近 N 日」抓新鲜金叉，「不限」= 当前 MA5&gt;MA13</p>
-            <p>• <strong>55日线朝上</strong>：MA55 近 5 日不下降（走平或上行），中期趋势非空头</p>
+            <p>• <strong>股价在55日线上方</strong>：当前价格高于55日均线，处于多头区域</p>
             <p>• 三个条件 AND 组合，可自由勾选；不选板块=全市场</p>
           </div>
         )}
@@ -153,9 +139,8 @@ export default function ScannerPage() {
           <div className="flex items-center gap-2">
             <Filter className="w-5 h-5 text-blue-600" />
             <span className="font-medium">
-              板块（{selectedSectors.length > 0 ? `${selectedSectors.length}/${SECTORS.length}` : '全市场'}）
+              行业（{rpsIndustry ? rpsIndustry : '全市场'}）
             </span>
-            {rpsIndustry && <span className="text-sm text-blue-600">当前：{rpsIndustry}</span>}
           </div>
           {showSectors ? <ChevronUp className="w-4 h-4 text-gray-400" /> : <ChevronDown className="w-4 h-4 text-gray-400" />}
         </button>
@@ -163,23 +148,17 @@ export default function ScannerPage() {
           <div className="px-4 pb-4">
             <button onClick={clearSectors} className="text-sm text-blue-600 mb-3">清空（全市场）</button>
             <div className="grid grid-cols-2 sm:grid-cols-3 md:grid-cols-4 gap-2">
-              {SECTORS.map(s => {
-                const sd = s.rpsIndustry ? (sectorData.get(s.rpsIndustry) ?? null) : null;
-                return (
-                <button key={s.id} onClick={() => toggleSector(s.id, s.rpsIndustry)}
-                  className={cn("px-3 py-2.5 rounded-lg text-sm text-left transition border-2 relative",
-                    selectedSectors.includes(s.id) ? "border-blue-500 bg-blue-50 dark:bg-blue-950" : "border-gray-200 dark:border-gray-700 hover:border-gray-300")}>
-                  <span className="mr-1.5">{s.icon}</span>{s.name}
-                  <span className="text-xs text-gray-400 ml-1">({sd ? sd.total : s.stocks.length})</span>
-                  {sd && (
-                    <span className={cn("absolute top-1.5 right-2 text-xs font-mono font-bold",
-                      sd.ratio >= 50 ? "text-red-600" : sd.ratio >= 25 ? "text-orange-500" : "text-gray-400")}>
-                      {sd.ratio}
-                    </span>
-                  )}
+              {industries.map((ind) => (
+                <button key={ind.name} onClick={() => {
+                  setRpsIndustry(prev => prev === ind.name ? '' : ind.name);
+                  setSelectedSectors(prev => prev.includes(ind.name) ? [] : [ind.name]);
+                }}
+                  className={cn("px-3 py-2.5 rounded-lg text-sm text-left transition border-2",
+                    rpsIndustry === ind.name ? "border-blue-500 bg-blue-50 dark:bg-blue-950" : "border-gray-200 dark:border-gray-700 hover:border-gray-300")}>
+                  {ind.name}
+                  <span className="text-xs text-gray-400 ml-1">({ind.count})</span>
                 </button>
-                );
-              })}
+              ))}
             </div>
           </div>
         )}
@@ -225,6 +204,11 @@ export default function ScannerPage() {
               <>
                 <span className="text-sm text-gray-500">近</span>
                 <div className="flex gap-1">
+                  <button onClick={() => setGcDays(0)}
+                    className={cn("px-3 py-1.5 rounded-lg text-sm transition",
+                      gcDays === 0 ? "bg-blue-600 text-white" : "bg-gray-100 dark:bg-gray-700 text-gray-600 dark:text-gray-400 hover:bg-gray-200")}>
+                    即将金叉
+                  </button>
                   {GC_PRESETS.map(d => (
                     <button key={d} onClick={() => setGcDays(d)}
                       className={cn("px-3 py-1.5 rounded-lg text-sm transition",
@@ -232,11 +216,6 @@ export default function ScannerPage() {
                       {d}日
                     </button>
                   ))}
-                  <button onClick={() => setGcDays(0)}
-                    className={cn("px-3 py-1.5 rounded-lg text-sm transition",
-                      gcDays === 0 ? "bg-blue-600 text-white" : "bg-gray-100 dark:bg-gray-700 text-gray-600 dark:text-gray-400 hover:bg-gray-200")}>
-                    不限
-                  </button>
                 </div>
                 <span className="text-sm text-gray-500">或自定义</span>
                 <input type="number" min={1} value={gcDays > 0 ? gcDays : ''} placeholder="N"
@@ -247,11 +226,11 @@ export default function ScannerPage() {
             )}
           </div>
 
-          {/* 55日线朝上 */}
+          {/* 股价在55日线上方 */}
           <div className="flex flex-wrap items-center gap-3">
             <label className="flex items-center gap-2 text-sm font-medium cursor-pointer">
               <input type="checkbox" checked={ma55Up} onChange={e => setMa55Up(e.target.checked)} className="w-4 h-4 rounded accent-blue-600" />
-              55日线朝上（近5日不下降）
+              股价在55日线上方
             </label>
           </div>
 
@@ -349,7 +328,7 @@ export default function ScannerPage() {
           {hasQueried ? (
             <>
               <p className="text-lg">没有符合条件的股票</p>
-              <p className="text-sm mt-2">试试放宽条件：调低 RPS 阈值、增大金叉天数、或不勾 55日线朝上</p>
+              <p className="text-sm mt-2">试试放宽条件：调低 RPS 阈值、增大金叉天数、或不勾 55日线</p>
             </>
           ) : (
             <>

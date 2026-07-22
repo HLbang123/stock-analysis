@@ -4,7 +4,7 @@ import { useEffect, useState, useMemo } from 'react';
 import { useParams } from 'next/navigation';
 import { useStockStore } from '@/store';
 import { getRealtimeQuote, getKLineSina, getMinuteData } from '@/services/stockApi';
-import { parseCode } from '@/lib/identify';
+import { isETF, parseCode } from '@/lib/identify';
 import { ALERT_RULES, checkAllRules } from '@/services/alertRules';
 import { RealtimeQuote, KLineData, RuleCheckResult } from '@/types';
 import { formatPrice, formatChange, formatVolume, cn, getAlertLevelColor } from '@/lib/utils';
@@ -35,6 +35,8 @@ export default function StockDetailPage() {
   const [rpsData, setRpsData] = useState<any>(null);
   const [fundData, setFundData] = useState<any>(null);
   const [fundLoading, setFundLoading] = useState(false);
+  const [anomaly, setAnomaly] = useState<any>(null);
+  const [fundInfo, setFundInfo] = useState<any>(null);
 
   const stock = watchlist.find(s => s.code === code);
   const stockName = quote?.name || stock?.name || code;
@@ -86,12 +88,22 @@ export default function StockDetailPage() {
     }
   }, [code]);
 
-  // 拉 RPS + 基本面（主数据加载后异步）
+  // 拉 RPS + 基本面 + 异动原因（主数据加载后异步）
   useEffect(() => {
     if (!code) return;
     fetch(`/api/stock/rps?code=${code}`).then(r => r.ok ? r.json() : null).then(d => d && !d.error && setRpsData(d)).catch(() => {});
     setFundLoading(true);
     fetch(`/api/tushare/stock-data?code=${code}`).then(r => r.json()).then(d => { if (d.success) setFundData(d.data); }).catch(() => {}).finally(() => setFundLoading(false));
+    // 异动原因：code 格式 sz002463 → 002463.SZ
+    const m = code.match(/^([a-z]+)(\d+)$/i);
+    if (m) {
+      const thscode = `${m[2]}.${m[1].toUpperCase()}`;
+      fetch(`/api/fuyao/anomaly?code=${thscode}`).then(r => r.ok ? r.json() : null).then(d => { if (d?.item?.length > 0) setAnomaly(d.item[0]); }).catch(() => {});
+      // ETF 时拉基金持仓
+      if (isETF(code)) {
+        fetch(`/api/fuyao/fund?code=${thscode}`).then(r => r.ok ? r.json() : null).then(d => { if (d?.holdings?.length > 0) setFundInfo(d); }).catch(() => {});
+      }
+    }
   }, [code]);
 
   // 趋势状态（MA5/13/55 从 K 线 + 当前价算）
@@ -124,17 +136,17 @@ export default function StockDetailPage() {
     return ruleResults.map((result, i) => {
       let index = minuteData.length - 1; // 默认最后一点
       const ruleId = result.ruleId || '';
-      if (['R003', 'R014', 'R006', 'R002'].includes(ruleId)) {
+      if (['R02', 'R07', 'R09'].includes(ruleId)) {
         // 见顶形态 → 最高价位置
         let maxIdx = 0; let maxPrice = 0;
         minuteData.forEach((p, idx) => { if (p.price > maxPrice) { maxPrice = p.price; maxIdx = idx; } });
         index = maxIdx;
-      } else if (['R010', 'R015', 'R011'].includes(ruleId)) {
-        // 见底形态 → 最低价位置
+      } else if (['R06', 'R11', 'R12', 'R13', 'R14', 'R15'].includes(ruleId)) {
+        // 见底/企稳形态 → 最低价位置
         let minIdx = 0; let minPrice = Infinity;
         minuteData.forEach((p, idx) => { if (p.price < minPrice) { minPrice = p.price; minIdx = idx; } });
         index = minIdx;
-      } else if (ruleId === 'R001') {
+      } else if (ruleId === 'R01') {
         // 量能 → 最大量位置
         let maxIdx = 0; let maxVol = 0;
         minuteData.forEach((p, idx) => { if (p.volume > maxVol) { maxVol = p.volume; maxIdx = idx; } });
@@ -294,6 +306,27 @@ export default function StockDetailPage() {
             )}
           </div>
 
+          {/* 异动原因（当天有异动才显示） */}
+          {anomaly && (
+            <Card className="p-4 mb-4 border-l-4 border-amber-400">
+              <div className="flex items-center gap-2 mb-2">
+                <span className="text-sm font-semibold">🔥 今日异动</span>
+                <span className={cn("text-xs px-1.5 py-0.5 rounded font-medium",
+                  anomaly.tag_name === '涨停' ? "bg-red-100 text-red-700" :
+                  anomaly.tag_name === '跌停' ? "bg-green-100 text-green-700" :
+                  "bg-amber-100 text-amber-700")}>
+                  {anomaly.tag_name}
+                </span>
+                {anomaly.keyword_list?.map((kw: string, i: number) => (
+                  <span key={i} className="text-xs bg-gray-100 dark:bg-gray-800 text-gray-500 px-1.5 py-0.5 rounded">{kw}</span>
+                ))}
+              </div>
+              <p className="text-sm text-gray-600 dark:text-gray-400 whitespace-pre-wrap leading-relaxed">
+                {anomaly.analysis_content}
+              </p>
+            </Card>
+          )}
+
           {/* 图表切换 */}
           <div className="flex gap-2 mb-4">
             <button
@@ -395,6 +428,28 @@ export default function StockDetailPage() {
                   </div>
                 </div>
               )}
+            </Card>
+          )}
+
+          {/* ETF 基金持仓（仅 ETF 显示） */}
+          {fundInfo && (
+            <Card className="p-4 mb-4">
+              <div className="flex items-center justify-between mb-3">
+                <h2 className="font-semibold text-sm">基金持仓（前{fundInfo.holdings.length}大重仓股）</h2>
+                {fundInfo.profile?.fund_name && <span className="text-xs text-gray-400">{fundInfo.profile.fund_name}</span>}
+              </div>
+              <div className="grid grid-cols-2 sm:grid-cols-5 gap-2">
+                {fundInfo.holdings.map((h: any, i: number) => (
+                  <div key={h.thscode} className="p-2 rounded-lg bg-gray-50 dark:bg-gray-800">
+                    <div className="flex items-center justify-between">
+                      <span className="text-xs text-gray-400">#{i + 1}</span>
+                      <span className="text-xs font-medium text-blue-600">{h.hold_ratio.toFixed(2)}%</span>
+                    </div>
+                    <p className="text-sm font-medium mt-0.5 truncate">{h.stock_name}</p>
+                    <p className="text-xs text-gray-400">{h.ticker}</p>
+                  </div>
+                ))}
+              </div>
             </Card>
           )}
 

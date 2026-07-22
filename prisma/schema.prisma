@@ -131,3 +131,46 @@ model StockFundamental {
 
   @@map("stock_fundamentals")
 }
+
+/// 个股资金流向（按 trade_date 同步，用于板块聚合）
+model StockMoneyflow {
+  tsCode       String @db.VarChar(12) @map("ts_code")
+  tradeDate    String @db.VarChar(8)  @map("trade_date")
+  netMfAmount  Float? @map("net_mf_amount")  // 主力净流入(万元)
+  buyElgAmount Float? @map("buy_elg_amount") // 超大单净流入(万元)
+  buyLgAmount  Float? @map("buy_lg_amount")  // 大单净流入(万元)
+
+  @@id([tsCode, tradeDate])
+  @@index([tradeDate])
+  @@map("stock_moneyflow")
+}
+
+/// 申万行业指数日线
+model SwIndexDaily {
+  tsCode    String @db.VarChar(12) @map("ts_code")
+  tradeDate String @db.VarChar(8)  @map("trade_date")
+  close     Float?
+  pctChg    Float? @map("pct_chg")
+  vol       Float?
+  amount    Float?
+
+  @@id([tsCode, tradeDate])
+  @@index([tradeDate])
+  @@map("sw_index_daily")
+}
+
+/// 申万行业成分股
+model SwIndexMember {
+  tsCode      String @db.VarChar(20) @map("ts_code")  // 行业指数代码
+  name        String? @db.VarChar(40)                 // 行业名称
+  code        String? @db.VarChar(20)                 // 行业代码
+  memberCode  String @db.VarChar(12) @map("member_code") // 成分股代码
+  memberName  String? @db.VarChar(40) @map("member_name")
+  weight      Float?
+  level       String? @db.VarChar(5)  // L1/L2/L3
+  src         String? @db.VarChar(10)
+
+  @@id([tsCode, memberCode, level])
+  @@index([memberCode])
+  @@map("sw_index_member")
+}

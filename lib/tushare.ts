@@ -257,3 +257,37 @@ export function toRecords<T extends Record<string, any>>(
     return record as T;
   });
 }
+
+// ===== 涨跌停 + 申万行业（6000积分接口） =====
+
+/** 涨跌停统计 limit_list_d */
+export async function getLimitListD(tradeDate: string, limitType?: string) {
+  const params: Record<string, any> = { trade_date: tradeDate };
+  if (limitType) params.limit_type = limitType; // U涨停 D跌停 Z炸板
+  const res = await callTushare<any>("limit_list_d", params,
+    "trade_date,ts_code,name,close,pct_chg,amp,fc_ratio,fl_ratio,fd_amount,first_time,last_time,open_times,up_stat,limit_times,limit");
+  return toRecords<any>(res);
+}
+
+/** 每日涨跌停价 stk_limit */
+export async function getStkLimit(tradeDate: string) {
+  const res = await callTushare<any>("stk_limit", { trade_date: tradeDate },
+    "trade_date,ts_code,pre_close,up_limit,down_limit");
+  return toRecords<any>(res);
+}
+
+/** 申万行业指数日线 sw_daily */
+export async function getSwDaily(tradeDate: string) {
+  const res = await callTushare<any>("sw_daily", { trade_date: tradeDate },
+    "ts_code,trade_date,close,pct_chg,vol,amount");
+  return toRecords<any>(res);
+}
+
+/** 申万行业成分股 index_member_all */
+export async function getIndexMemberAll(level?: string) {
+  const params: Record<string, any> = { src: "SW2021" };
+  if (level) params.level = level; // L1/L2/L3
+  const res = await callTushare<any>("index_member_all", params,
+    "ts_code,name,code,member_code,member_name,weight,level,src");
+  return toRecords<any>(res);
+}

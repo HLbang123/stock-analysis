@@ -108,3 +108,40 @@ CREATE TABLE IF NOT EXISTS stock_fundamentals (
     tr_yoy             DOUBLE PRECISION,
     period             VARCHAR(8)
 );
+
+-- 个股资金流向（按 trade_date 同步，用于板块聚合）
+CREATE TABLE IF NOT EXISTS stock_moneyflow (
+    ts_code        VARCHAR(12) NOT NULL,
+    trade_date     VARCHAR(8)  NOT NULL,
+    net_mf_amount  DOUBLE PRECISION,
+    buy_elg_amount DOUBLE PRECISION,
+    buy_lg_amount  DOUBLE PRECISION,
+    PRIMARY KEY (ts_code, trade_date)
+);
+CREATE INDEX IF NOT EXISTS idx_moneyflow_date ON stock_moneyflow(trade_date);
+
+-- 申万行业指数日线
+CREATE TABLE IF NOT EXISTS sw_index_daily (
+    ts_code VARCHAR(12) NOT NULL,
+    trade_date VARCHAR(8) NOT NULL,
+    close DOUBLE PRECISION,
+    pct_chg DOUBLE PRECISION,
+    vol DOUBLE PRECISION,
+    amount DOUBLE PRECISION,
+    PRIMARY KEY (ts_code, trade_date)
+);
+CREATE INDEX IF NOT EXISTS idx_sw_daily_date ON sw_index_daily(trade_date);
+
+-- 申万行业成分股
+CREATE TABLE IF NOT EXISTS sw_index_member (
+    ts_code VARCHAR(20) NOT NULL,
+    name VARCHAR(40),
+    code VARCHAR(20),
+    member_code VARCHAR(12) NOT NULL,
+    member_name VARCHAR(40),
+    weight DOUBLE PRECISION,
+    level VARCHAR(5),
+    src VARCHAR(10),
+    PRIMARY KEY (ts_code, member_code, level)
+);
+CREATE INDEX IF NOT EXISTS idx_sw_member_code ON sw_index_member(member_code);

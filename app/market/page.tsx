@@ -3,6 +3,7 @@
 import { useState, useEffect, useCallback } from 'react';
 import { EChart } from '@/components/market/EChart';
 import { Card } from '@/components/ui/card';
+import { cn } from '@/lib/utils';
 import { LineChart, Loader2 } from 'lucide-react';
 
 const IDX_OPTIONS = [
@@ -26,20 +27,32 @@ export default function MarketPage() {
   const [idxCode, setIdxCode] = useState('000001.SH');
   const [idxVal, setIdxVal] = useState<any>(null);
   const [loading, setLoading] = useState(true);
+  const [limitUp, setLimitUp] = useState<any>(null);
+  const [hotStocks, setHotStocks] = useState<any>(null);
+  const [sectorFlow, setSectorFlow] = useState<any[]>([]);
+  const [sectorIndex, setSectorIndex] = useState<any[]>([]);
 
   const fetchAll = useCallback(async () => {
     setLoading(true);
     try {
-      const [b, n, m, s] = await Promise.all([
+      const [b, n, m, s, lu, hs, sf, si] = await Promise.all([
         fetch('/api/market/breadth?days=60').then(r => r.json()),
         fetch('/api/market/northbound?days=120').then(r => r.json()),
         fetch('/api/market/margin?days=120').then(r => r.json()),
         fetch('/api/rps/sectors?period=250&min=87').then(r => r.json()),
+        fetch('/api/limit-up').then(r => r.ok ? r.json() : null).catch(() => null),
+        fetch('/api/fuyao/hot-stocks').then(r => r.ok ? r.json() : null).catch(() => null),
+        fetch('/api/market/sector-flow?days=5').then(r => r.json()).catch(() => null),
+        fetch('/api/market/sector-index?days=1').then(r => r.json()).catch(() => null),
       ]);
       if (b.items) setBreadth(b.items);
       if (n.items) setNorthbound(n.items);
       if (m.items) setMargin(m.items);
       if (s.sectors) setSectors(s.sectors);
+      if (lu && !lu.error) setLimitUp(lu);
+      if (hs && !hs.error) setHotStocks(hs);
+      if (sf?.sectors) setSectorFlow(sf.sectors);
+      if (si?.sectors) setSectorIndex(si.sectors);
     } catch { /* ignore */ } finally { setLoading(false); }
   }, []);
 
@@ -138,6 +151,40 @@ export default function MarketPage() {
             </div>
           </Card>
 
+          {/* 板块资金流向（近5日主力净流入排行） */}
+          <Card className="p-4">
+            <h3 className="font-medium mb-1">板块资金流向（近5日主力净流入）</h3>
+            <p className="text-xs text-gray-500 mb-2">红色=净流入，绿色=净流出（亿元）</p>
+            {sectorFlow.length > 0 ? (
+              <div className="h-72 overflow-y-auto space-y-0.5">
+                {sectorFlow.slice(0, 30).map((s) => {
+                  const yi = s.totalNet != null ? Number(s.totalNet) / 10000 : null;
+                  return (
+                    <div key={s.industry} className="flex items-center gap-2 text-xs py-0.5">
+                      <span className="w-20 truncate text-gray-600 dark:text-gray-400 shrink-0">{s.industry}</span>
+                      <div className="flex-1 bg-gray-100 dark:bg-gray-800 rounded h-4 relative overflow-hidden">
+                        {yi != null && yi >= 0 && (
+                          <div className="absolute left-1/2 top-0 h-full bg-red-200 dark:bg-red-900/50"
+                            style={{ width: `${Math.min(Math.abs(yi) / 50 * 100, 50)}%` }} />
+                        )}
+                        {yi != null && yi < 0 && (
+                          <div className="absolute right-1/2 top-0 h-full bg-green-200 dark:bg-green-900/50"
+                            style={{ width: `${Math.min(Math.abs(yi) / 50 * 100, 50)}%` }} />
+                        )}
+                        <div className="absolute left-1/2 top-0 w-px h-full bg-gray-300 dark:bg-gray-600" />
+                      </div>
+                      <span className={cn("w-14 text-right font-mono shrink-0",
+                        yi != null && yi >= 0 ? "text-red-600" : "text-green-600")}>
+                        {yi != null ? `${yi >= 0 ? '+' : ''}${yi.toFixed(1)}` : '--'}
+                      </span>
+                      <span className="text-xs text-gray-400 shrink-0">{s.stockCount}只</span>
+                    </div>
+                  );
+                })}
+              </div>
+            ) : <Empty />}
+          </Card>
+
           {/* 4. 指数估值分位 */}
           <Card className="p-4">
             <div className="flex items-center justify-between mb-1">
@@ -203,6 +250,109 @@ export default function MarketPage() {
                 }} />
               ) : <Empty />}
             </div>
+          </Card>
+
+          {/* 7. 涨停情绪（Tushare limit_list_d） */}
+          <Card className="p-4">
+            <h3 className="font-medium mb-1">涨停情绪</h3>
+            {limitUp?.items?.up?.length > 0 ? (
+              <>
+                <p className="text-xs text-gray-500 mb-2">
+                  今日涨停 <b className="text-red-600">{limitUp.count.up}</b> 只
+                  · 跌停 <b className="text-green-600">{limitUp.count.down}</b> 只
+                  {limitUp.count.broken > 0 && <span className="text-gray-400"> · 炸板 {limitUp.count.broken}</span>}
+                </p>
+                <div className="space-y-1 max-h-48 overflow-y-auto">
+                  {limitUp.items.up.slice(0, 15).map((s: any) => (
+                    <div key={s.tsCode} className="flex items-center gap-2 text-xs py-1 border-b border-gray-50 dark:border-gray-800/50">
+                      <span className={cn("px-1.5 py-0.5 rounded font-medium shrink-0",
+                        s.limitTimes >= 3 ? "bg-red-100 text-red-700" : "bg-orange-100 text-orange-700")}>
+                        {s.limitTimes}板
+                      </span>
+                      <span className="font-medium shrink-0">{s.name}</span>
+                      <span className="text-gray-400 shrink-0">{s.firstTime}</span>
+                      {s.openTimes > 0 && <span className="text-orange-500 shrink-0">炸{s.openTimes}次</span>}
+                      {s.fdAmount != null && <span className="text-gray-400 shrink-0">封单{(s.fdAmount / 1e4).toFixed(0)}万</span>}
+                      <span className="text-gray-500 truncate">{s.upStat}</span>
+                    </div>
+                  ))}
+                  {limitUp.items.up.length > 15 && <p className="text-xs text-gray-400 pt-1">还有 {limitUp.items.up.length - 15} 只...</p>}
+                </div>
+              </>
+            ) : <Empty />}
+          </Card>
+
+          {/* 行业指数涨跌幅排行 */}
+          <Card className="p-4">
+            <h3 className="font-medium mb-1">行业涨跌幅排行</h3>
+            <p className="text-xs text-gray-500 mb-2">申万一级行业指数（当日涨跌幅）</p>
+            {sectorIndex.length > 0 ? (
+              <div className="h-56 overflow-y-auto space-y-0.5">
+                {sectorIndex.slice(0, 25).map((s) => {
+                  const pct = s.latestPctChg;
+                  const name = s.tsCode.replace(/\.SI$/, '');
+                  return (
+                    <div key={s.tsCode} className="flex items-center gap-2 text-xs py-0.5">
+                      <span className="w-20 truncate text-gray-600 dark:text-gray-400 shrink-0">{name}</span>
+                      <div className="flex-1 h-4 relative">
+                        <div className="absolute left-1/2 top-0 w-px h-full bg-gray-300 dark:bg-gray-600" />
+                        {pct != null && pct >= 0 && (
+                          <div className="absolute left-1/2 top-0 h-full bg-red-200 dark:bg-red-900/50"
+                            style={{ width: `${Math.min(Math.abs(pct) * 8, 48)}%` }} />
+                        )}
+                        {pct != null && pct < 0 && (
+                          <div className="absolute right-1/2 top-0 h-full bg-green-200 dark:bg-green-900/50"
+                            style={{ width: `${Math.min(Math.abs(pct) * 8, 48)}%` }} />
+                        )}
+                      </div>
+                      <span className={cn("w-12 text-right font-mono shrink-0",
+                        pct != null && pct >= 0 ? "text-red-600" : "text-green-600")}>
+                        {pct != null ? `${pct >= 0 ? '+' : ''}${pct.toFixed(2)}%` : '--'}
+                      </span>
+                    </div>
+                  );
+                })}
+              </div>
+            ) : <Empty />}
+          </Card>
+
+          {/* 8. 热度排行 */}
+          <Card className="p-4">
+            <h3 className="font-medium mb-1">热度排行</h3>
+            {hotStocks?.hot?.item?.length > 0 ? (
+              <>
+                <p className="text-xs text-gray-500 mb-2">热股 Top10（24h）</p>
+                <div className="space-y-1 mb-3">
+                  {hotStocks.hot.item.slice(0, 10).map((s: any) => (
+                    <div key={s.thscode} className="flex items-center gap-2 text-xs py-0.5">
+                      <span className={cn("w-5 text-center font-bold shrink-0",
+                        s.rank <= 3 ? "text-red-500" : "text-gray-400")}>{s.rank}</span>
+                      <span className="font-medium shrink-0">{s.name}</span>
+                      <span className={cn("text-xs shrink-0",
+                        s.rank_trend === 'up' ? "text-red-500" : s.rank_trend === 'down' ? "text-green-500" : "text-gray-400")}>
+                        {s.rank_trend === 'up' ? '↑' : s.rank_trend === 'down' ? '↓' : '—'}
+                        {s.rank_change !== 0 && Math.abs(s.rank_change)}
+                      </span>
+                      <span className="text-gray-400 ml-auto">{(Number(s.heat) / 10000).toFixed(0)}万</span>
+                    </div>
+                  ))}
+                </div>
+                {hotStocks?.skyrocket?.item?.length > 0 && (
+                  <>
+                    <p className="text-xs text-gray-500 mb-1 mt-3">飙升 Top5（1h）</p>
+                    <div className="space-y-1">
+                      {hotStocks.skyrocket.item.slice(0, 5).map((s: any) => (
+                        <div key={s.thscode} className="flex items-center gap-2 text-xs py-0.5">
+                          <span className="w-5 text-center font-bold text-orange-500 shrink-0">{s.rank}</span>
+                          <span className="font-medium shrink-0">{s.name}</span>
+                          <span className="text-orange-500 shrink-0">↑{s.rank_change}</span>
+                        </div>
+                      ))}
+                    </div>
+                  </>
+                )}
+              </>
+            ) : <Empty />}
           </Card>
         </div>
       )}

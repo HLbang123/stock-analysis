@@ -435,9 +435,23 @@ export default function AiPage() {
       const marketStatusNote = `[市场状态] ${await fetchMarketStatusNote()}\n\n`;
       const rpsNote = rpsRes && !rpsRes.error ? `[RPS强度] 20日:${rpsRes.rps20?.toFixed(1)} 60日:${rpsRes.rps60?.toFixed(1)} 120日:${rpsRes.rps120?.toFixed(1)} 250日:${rpsRes.rps250?.toFixed(1)}（${rpsRes.rps250 >= 95 ? '全市场前5%极强' : rpsRes.rps250 >= 87 ? '强势' : '中等偏弱'}）\n\n` : '';
       const etf = isETF(selectedCode);
+      // ETF 时拉基金持仓注入 prompt
+      let etfHoldingsNote = '';
+      if (etf) {
+        const em = selectedCode.match(/^([a-z]+)(\d+)$/i);
+        if (em) {
+          const thscode = `${em[2]}.${em[1].toUpperCase()}`;
+          try {
+            const fundRes = await fetch(`/api/fuyao/fund?code=${thscode}`).then(r => r.ok ? r.json() : null);
+            if (fundRes?.holdings?.length > 0) {
+              etfHoldingsNote = `[基金持仓] 前${fundRes.holdings.length}大重仓股：${fundRes.holdings.map((h: any) => `${h.stock_name}(${h.hold_ratio.toFixed(1)}%)`).join('、')}\n\n`;
+            }
+          } catch {}
+        }
+      }
       const stage1 = {
         systemPrompt: buildAnalystSystemPrompt(etf),
-        userPrompt: marketStatusNote + rpsNote + buildAnalystUserPrompt(selectedCode, stock.name, quoteJson, klineSummary, engineSummary, indicatorBlock, reflectionBlock, positionNote, etf, tushareBlock, getIndustry(selectedCode)),
+        userPrompt: marketStatusNote + rpsNote + etfHoldingsNote + buildAnalystUserPrompt(selectedCode, stock.name, quoteJson, klineSummary, engineSummary, indicatorBlock, reflectionBlock, positionNote, etf, tushareBlock, getIndustry(selectedCode)),
       };
       // Stage 2 辩论数据（路由自行处理角色分配和调用）
       const debateDataPrompt = buildDebateDataPrompt(selectedCode, stock.name, quoteJson, indicatorBlock, marketStatusNote);

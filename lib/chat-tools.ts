@@ -110,6 +110,50 @@ export const CHAT_TOOLS = [
       },
     },
   },
+  {
+    type: "function",
+    function: {
+      name: "get_anomaly_reason",
+      description: "获取当日个股异动原因解读（涨停/跌停/大涨/大跌的原因），包含关键词和AI生成的分析内容",
+      parameters: {
+        type: "object",
+        properties: {
+          tags: { type: "string", description: "异动标签过滤，逗号分隔：LIMIT_UP(涨停)/LIMIT_DOWN(跌停)/SHARP_RISE(大涨)/SHARP_FALL(大跌)。不传=全部" },
+          code: { type: "string", description: "按股票查询，传同花顺代码如 600519.SH。不传则返回全部异动列表" },
+        },
+      },
+    },
+  },
+  {
+    type: "function",
+    function: {
+      name: "get_limit_up_pool",
+      description: "获取当日涨停股票池，含涨停原因、连板天数、封单金额、涨停时间",
+      parameters: { type: "object", properties: {} },
+    },
+  },
+  {
+    type: "function",
+    function: {
+      name: "get_hot_stocks",
+      description: "获取同花顺热股榜单Top30和飙升榜Top30，反映市场关注度",
+      parameters: { type: "object", properties: {} },
+    },
+  },
+  {
+    type: "function",
+    function: {
+      name: "get_fund_holdings",
+      description: "查询ETF或基金的前十大重仓股及持仓占比，用于分析ETF成分",
+      parameters: {
+        type: "object",
+        properties: {
+          code: { type: "string", description: "基金代码，如 510050.SH（ETF）或 025480.OF（场外基金）" },
+        },
+        required: ["code"],
+      },
+    },
+  },
 ];
 
 /** 执行工具调用，返回简洁文本结果（给 LLM 处理） */
@@ -200,6 +244,43 @@ export async function executeTool(name: string, args: any, origin: string): Prom
         const d = await r.json();
         if (d.error) return `扫描失败: ${d.error}`;
         return `扫描到${d.count}只: ` + d.items.map((s: any, i: number) => `${i + 1}.${s.name}(${s.tsCode.replace(/\.(SH|SZ|BJ)$/, '')}) RPS${s.rps?.toFixed(1)} 涨跌${s.latestChange?.toFixed(1)}%`).join('; ');
+      }
+      case "get_anomaly_reason": {
+        const { fuyaoGet } = await import("@/lib/fuyao");
+        const path = args.code
+          ? "/api/a-share/special-data/anomaly-analysis-stock"
+          : "/api/a-share/special-data/anomaly-analysis-list";
+        const params: Record<string, string> | undefined = args.code ? { thscodes: args.code } : (args.tags ? { tag_codes: args.tags } : undefined);
+        const data: any = await fuyaoGet(path, params);
+        if (!data.item?.length) return args.code ? "该股票今日无异动" : "今日无异动数据";
+        return data.item.slice(0, 20).map((i: any) =>
+          `${i.stock_name}(${i.thscode}) [${i.tag_name}] 关键词:${i.keyword_list?.join("/")}\n${i.analysis_content?.slice(0, 150)}`
+        ).join('\n---\n');
+      }
+      case "get_limit_up_pool": {
+        const { fuyaoGet } = await import("@/lib/fuyao");
+        const data: any = await fuyaoGet("/api/a-share/special-data/limit-up-pool");
+        if (!data.item?.length) return "今日无涨停股票";
+        return `今日涨停${data.item.length}只:\n` + data.item.map((i: any) =>
+          `${i.continue_day_text} ${i.name}(${i.ticker}) 涨停时间${i.limit_up_time} 原因:${i.limit_up_reason}`
+        ).join('\n');
+      }
+      case "get_hot_stocks": {
+        const { fuyaoGet } = await import("@/lib/fuyao");
+        const [hot, skyrocket]: any[] = await Promise.all([
+          fuyaoGet("/api/a-share/special-data/hot-stock-list", { level: "24h" }),
+          fuyaoGet("/api/a-share/special-data/skyrocket-list", { level: "1h" }),
+        ]);
+        const hotStr = hot.item?.slice(0, 10).map((i: any) => `${i.rank}.${i.name}(${i.ticker}) 热度${i.heat} ${i.rank_trend}`).join('; ');
+        const skyStr = skyrocket.item?.slice(0, 10).map((i: any) => `${i.rank}.${i.name}(${i.ticker}) 飙升${i.rank_change > 0 ? '+' : ''}${i.rank_change}名`).join('; ');
+        return `热股Top10: ${hotStr}\n飙升Top10: ${skyStr}`;
+      }
+      case "get_fund_holdings": {
+        const { fuyaoGet } = await import("@/lib/fuyao");
+        const fundType = args.code.endsWith(".OF") ? "otc" : "exchange";
+        const data: any = await fuyaoGet("/api/fund/portfolio/holdings", { fund_type: fundType, thscode: args.code });
+        if (!data.item?.length) return `未找到 ${args.code} 的持仓数据`;
+        return `前${data.item.length}大重仓股: ` + data.item.map((h: any) => `${h.stock_name}(${h.hold_ratio.toFixed(2)}%)`).join('、');
       }
       default:
         return `未知工具: ${name}`;

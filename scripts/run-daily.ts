@@ -10,11 +10,13 @@ import { execSync } from "child_process";
 const STEPS = [
   { name: "日线同步", cmd: "npx tsx scripts/sync-daily.ts" },
   { name: "RPS 计算", cmd: "npx tsx scripts/compute-rps.ts" },
+  { name: "资金流向", cmd: "npx tsx scripts/sync-moneyflow.ts" },
   { name: "大盘宽度", cmd: "npx tsx scripts/compute-market-breadth.ts" },
+  { name: "行业指数", cmd: "npx tsx scripts/sync-sw-daily.ts" },
   { name: "指数估值", cmd: "npx tsx scripts/sync-index-valuation.ts" },
   { name: "北向资金", cmd: "npx tsx scripts/sync-hsgt.ts" },
   { name: "融资融券", cmd: "npx tsx scripts/sync-margin.ts" },
-  // 基本面(ROE)不进每日——fina_indicator 必须逐只查，5000只≈30分钟，季度才变，手动跑
+  // 基本面(ROE) + 申万成分股 不进每日——按需手动跑
 ];
 
 // 周一额外更新股票列表（上市/退市变动）

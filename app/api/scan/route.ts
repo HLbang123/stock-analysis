@@ -74,8 +74,8 @@ export async function GET(request: Request) {
     }
     if (goldenCross) {
       if (gcDays === 0) {
-        // 不限：当前 MA5>MA13（金叉状态）
-        where.push(`sig.gc_state = true`);
+        // 即将金叉：MA5<MA13 但差距<2% 且 MA5在涨
+        where.push(`sig.gc_approaching = true`);
       } else {
         // 近 N 日内上穿过 且 当前仍 MA5>MA13（排除金叉后立即反转的伪信号）
         where.push(`sig.gc_fresh = true AND sig.gc_state = true`);
@@ -119,16 +119,22 @@ export async function GET(request: Request) {
           MAX(CASE WHEN rn = 1 THEN ma55 END) AS ma55_now,
           MAX(CASE WHEN rn = 1 THEN ma5  END) AS ma5_now,
           MAX(CASE WHEN rn = 1 THEN ma13 END) AS ma13_now,
+          MAX(CASE WHEN rn = 2 THEN ma5  END) AS ma5_prev_now,
+          MAX(CASE WHEN rn = 1 THEN close END) AS latest_close_ma,
           BOOL_OR(rn <= ${gcParam} AND ma5_prev <= ma13_prev AND ma5 > ma13) AS gc_fresh,
           BOOL_OR(rn = 1 AND ma5 > ma13) AS gc_state,
-          (MAX(CASE WHEN rn = 1 THEN ma55 END) >= MAX(CASE WHEN rn = 6 THEN ma55 END)) AS ma55_up
+          -- 即将金叉：MA5<MA13（未金叉）+ 差距<2% + MA5在涨
+          (MAX(CASE WHEN rn = 1 THEN ma5 END) < MAX(CASE WHEN rn = 1 THEN ma13 END)
+           AND (MAX(CASE WHEN rn = 1 THEN ma13 END) - MAX(CASE WHEN rn = 1 THEN ma5 END)) / NULLIF(MAX(CASE WHEN rn = 1 THEN ma13 END), 0) < 0.02
+           AND MAX(CASE WHEN rn = 1 THEN ma5 END) > MAX(CASE WHEN rn = 2 THEN ma5 END)) AS gc_approaching
         FROM mas GROUP BY "tsCode"
       )
       SELECT s.ts_code, s.name, s.industry,
              r.${rpsCol} AS rps, r.${retCol} AS ret,
              db.close AS latest_close, db.change_pct AS latest_change, db.vol AS latest_vol,
              sig.ma5_now, sig.ma13_now, sig.ma55_now,
-             sig.gc_fresh, sig.gc_state, sig.ma55_up,
+             sig.gc_fresh, sig.gc_state, sig.gc_approaching,
+             (sig.latest_close_ma > sig.ma55_now) AS ma55_up,
              f.roe AS roe
       FROM sig
       JOIN stocks s ON sig."tsCode" = s.ts_code
@@ -158,6 +164,8 @@ export async function GET(request: Request) {
       ma55_now: number | null;
       gc_fresh: boolean | null;
       gc_state: boolean | null;
+      gc_approaching: boolean | null;
+      latest_close_ma: number | null;
       ma55_up: boolean | null;
       roe: number | null;
     }
@@ -183,6 +191,7 @@ export async function GET(request: Request) {
         ma55: r.ma55_now != null ? Number(r.ma55_now) : null,
         gcFresh: r.gc_fresh === true,
         gcState: r.gc_state === true,
+        gcApproaching: r.gc_approaching === true,
         ma55Up: r.ma55_up === true,
         roe: r.roe != null ? Number(r.roe) : null,
       })),
