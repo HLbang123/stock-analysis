@@ -7,6 +7,7 @@ export async function GET(request: Request) {
   try {
     const { prisma } = await import("@/lib/db");
     // 取最近 N 个交易日的 moneyflow，按 industry 聚合
+    // trade_date 为 YYYYMMDD 文本，用 OFFSET 取第 N 个最近交易日作为下界
     const rows: any[] = await prisma.$queryRawUnsafe(
       `SELECT s.industry,
               COUNT(DISTINCT m.ts_code)::int AS stock_count,
@@ -17,7 +18,6 @@ export async function GET(request: Request) {
        FROM stock_moneyflow m
        JOIN stocks s ON m.ts_code = s.ts_code
        WHERE s.is_active = true AND s.industry IS NOT NULL AND s.industry != ''
-         AND m.trade_date >= (SELECT MAX(trade_date) FROM stock_moneyflow) - $1::int + 1
          AND m.trade_date >= (
            SELECT trade_date FROM stock_moneyflow ORDER BY trade_date DESC LIMIT 1 OFFSET $1 - 1
          )

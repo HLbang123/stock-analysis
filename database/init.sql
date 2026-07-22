@@ -134,14 +134,12 @@ CREATE INDEX IF NOT EXISTS idx_sw_daily_date ON sw_index_daily(trade_date);
 
 -- 申万行业成分股
 CREATE TABLE IF NOT EXISTS sw_index_member (
-    ts_code VARCHAR(20) NOT NULL,
-    name VARCHAR(40),
-    code VARCHAR(20),
+    index_code VARCHAR(20) NOT NULL,
+    index_name VARCHAR(40),
+    index_level VARCHAR(5) NOT NULL,
     member_code VARCHAR(12) NOT NULL,
     member_name VARCHAR(40),
-    weight DOUBLE PRECISION,
-    level VARCHAR(5),
-    src VARCHAR(10),
-    PRIMARY KEY (ts_code, member_code, level)
+    PRIMARY KEY (index_code, member_code, index_level)
 );
 CREATE INDEX IF NOT EXISTS idx_sw_member_code ON sw_index_member(member_code);
+CREATE INDEX IF NOT EXISTS idx_sw_member_level ON sw_index_member(index_level);

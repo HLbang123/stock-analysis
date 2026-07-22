@@ -3,25 +3,38 @@ export async function GET(request: Request) {
   const days = Math.min(parseInt(new URL(request.url).searchParams.get("days") || "1"), 30);
   try {
     const { prisma } = await import("@/lib/db");
+    // pct_chg 列 sw_daily 不返回，从 close 用 LAG 计算（需全历史取窗口前一日 close）
+    // 仅保留申万一级（L1）行业指数，并用 sw_index_member 补中文名
     const rows: any[] = await prisma.$queryRawUnsafe(
-      `WITH recent AS (
-        SELECT ts_code, trade_date, pct_chg, close, vol, amount,
-          ROW_NUMBER() OVER (PARTITION BY ts_code ORDER BY trade_date DESC) AS rn
-        FROM sw_index_daily
+      `WITH l1 AS (
+        SELECT DISTINCT index_code, index_name FROM sw_index_member WHERE index_level = 'L1'
+      ), ranked AS (
+        SELECT d.ts_code, d.trade_date, d.close, d.vol, d.amount,
+          LAG(d.close) OVER (PARTITION BY d.ts_code ORDER BY d.trade_date) AS prev_close,
+          ROW_NUMBER() OVER (PARTITION BY d.ts_code ORDER BY d.trade_date DESC) AS rn
+        FROM sw_index_daily d
+        JOIN l1 ON l1.index_code = d.ts_code
+      ), recent AS (
+        SELECT * FROM ranked
         WHERE trade_date >= (
           SELECT trade_date FROM sw_index_daily ORDER BY trade_date DESC LIMIT 1 OFFSET $1 - 1
         )
       )
-      SELECT ts_code,
+      SELECT r.ts_code,
+        l1.index_name AS name,
         MAX(CASE WHEN rn = 1 THEN close END) AS latest_close,
-        AVG(pct_chg) AS avg_pct_chg,
-        SUM(pct_chg) AS cum_pct_chg,
-        MAX(CASE WHEN rn = 1 THEN pct_chg END) AS latest_pct_chg,
+        AVG(CASE WHEN prev_close IS NOT NULL AND prev_close <> 0
+                 THEN (close - prev_close) / prev_close * 100 END) AS avg_pct_chg,
+        SUM(CASE WHEN prev_close IS NOT NULL AND prev_close <> 0
+                 THEN (close - prev_close) / prev_close * 100 END) AS cum_pct_chg,
+        MAX(CASE WHEN rn = 1 AND prev_close IS NOT NULL AND prev_close <> 0
+                 THEN (close - prev_close) / prev_close * 100 END) AS latest_pct_chg,
         MAX(CASE WHEN rn = 1 THEN vol END) AS latest_vol,
         MAX(CASE WHEN rn = 1 THEN amount END) AS latest_amount,
         COUNT(*)::int AS days_count
-      FROM recent
-      GROUP BY ts_code
+      FROM recent r
+      JOIN l1 ON l1.index_code = r.ts_code
+      GROUP BY r.ts_code, l1.index_name
       ORDER BY cum_pct_chg DESC NULLS LAST`,
       days
     );
@@ -29,6 +42,7 @@ export async function GET(request: Request) {
       days,
       sectors: rows.map((r) => ({
         tsCode: r.ts_code,
+        name: r.name,
         latestClose: r.latest_close != null ? Number(r.latest_close) : null,
         avgPctChg: r.avg_pct_chg != null ? Number(r.avg_pct_chg) : null,
         cumPctChg: r.cum_pct_chg != null ? Number(r.cum_pct_chg) : null,

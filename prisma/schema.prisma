@@ -161,16 +161,14 @@ model SwIndexDaily {
 
 /// 申万行业成分股
 model SwIndexMember {
-  tsCode      String @db.VarChar(20) @map("ts_code")  // 行业指数代码
-  name        String? @db.VarChar(40)                 // 行业名称
-  code        String? @db.VarChar(20)                 // 行业代码
-  memberCode  String @db.VarChar(12) @map("member_code") // 成分股代码
-  memberName  String? @db.VarChar(40) @map("member_name")
-  weight      Float?
-  level       String? @db.VarChar(5)  // L1/L2/L3
-  src         String? @db.VarChar(10)
+  indexCode  String @db.VarChar(20) @map("index_code") // 行业指数代码
+  indexName  String? @db.VarChar(40) @map("index_name") // 行业名称
+  indexLevel String @db.VarChar(5) @map("index_level") // L1/L2/L3
+  memberCode String @db.VarChar(12) @map("member_code") // 成分股代码
+  memberName String? @db.VarChar(40) @map("member_name") // 成分股名称
 
-  @@id([tsCode, memberCode, level])
+  @@id([indexCode, memberCode, indexLevel])
   @@index([memberCode])
+  @@index([indexLevel])
   @@map("sw_index_member")
 }

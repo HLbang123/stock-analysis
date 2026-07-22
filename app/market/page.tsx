@@ -262,8 +262,8 @@ export default function MarketPage() {
                   · 跌停 <b className="text-green-600">{limitUp.count.down}</b> 只
                   {limitUp.count.broken > 0 && <span className="text-gray-400"> · 炸板 {limitUp.count.broken}</span>}
                 </p>
-                <div className="space-y-1 max-h-48 overflow-y-auto">
-                  {limitUp.items.up.slice(0, 15).map((s: any) => (
+                <div className="space-y-1 max-h-64 overflow-y-auto">
+                  {limitUp.items.up.map((s: any) => (
                     <div key={s.tsCode} className="flex items-center gap-2 text-xs py-1 border-b border-gray-50 dark:border-gray-800/50">
                       <span className={cn("px-1.5 py-0.5 rounded font-medium shrink-0",
                         s.limitTimes >= 3 ? "bg-red-100 text-red-700" : "bg-orange-100 text-orange-700")}>
@@ -276,7 +276,6 @@ export default function MarketPage() {
                       <span className="text-gray-500 truncate">{s.upStat}</span>
                     </div>
                   ))}
-                  {limitUp.items.up.length > 15 && <p className="text-xs text-gray-400 pt-1">还有 {limitUp.items.up.length - 15} 只...</p>}
                 </div>
               </>
             ) : <Empty />}
@@ -290,7 +289,7 @@ export default function MarketPage() {
               <div className="h-56 overflow-y-auto space-y-0.5">
                 {sectorIndex.slice(0, 25).map((s) => {
                   const pct = s.latestPctChg;
-                  const name = s.tsCode.replace(/\.SI$/, '');
+                  const name = s.name || s.tsCode.replace(/\.SI$/, '');
                   return (
                     <div key={s.tsCode} className="flex items-center gap-2 text-xs py-0.5">
                       <span className="w-20 truncate text-gray-600 dark:text-gray-400 shrink-0">{name}</span>
@@ -345,7 +344,7 @@ export default function MarketPage() {
                         <div key={s.thscode} className="flex items-center gap-2 text-xs py-0.5">
                           <span className="w-5 text-center font-bold text-orange-500 shrink-0">{s.rank}</span>
                           <span className="font-medium shrink-0">{s.name}</span>
-                          <span className="text-orange-500 shrink-0">↑{s.rank_change}</span>
+                          {s.rank_change > 0 && <span className="text-orange-500 shrink-0">↑{s.rank_change}</span>}
                         </div>
                       ))}
                     </div>

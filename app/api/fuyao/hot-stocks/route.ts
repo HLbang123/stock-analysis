@@ -5,7 +5,7 @@ export async function GET(request: Request) {
     const { fuyaoGet } = await import("@/lib/fuyao");
     const [hot, skyrocket] = await Promise.all([
       fuyaoGet("/api/a-share/special-data/hot-stock-list", { level }),
-      fuyaoGet("/api/a-share/special-data/skyrocket-list", { level: "1h" }),
+      fuyaoGet("/api/a-share/special-data/skyrocket-list", { period: "hour" }),
     ]);
     return Response.json({ hot, skyrocket });
   } catch (e: any) {

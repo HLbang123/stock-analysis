@@ -106,9 +106,9 @@ export async function getHotStockList(level: "24h" | "1h" = "24h"): Promise<{ ti
   return fuyaoGet("/api/a-share/special-data/hot-stock-list", { level });
 }
 
-/** 飙升榜 Top30 */
-export async function getSkyrocketList(level: "24h" | "1h" = "1h"): Promise<{ timestamp: number; item: HotStockItem[] }> {
-  return fuyaoGet("/api/a-share/special-data/skyrocket-list", { level });
+/** 飙升榜 Top30（period: day 日榜 / hour 小时榜） */
+export async function getSkyrocketList(period: "day" | "hour" = "hour"): Promise<{ timestamp: number; item: HotStockItem[] }> {
+  return fuyaoGet("/api/a-share/special-data/skyrocket-list", { period });
 }
 
 // ===== 基金数据 =====

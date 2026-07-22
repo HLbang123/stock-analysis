@@ -12,10 +12,10 @@ export async function GET() {
     const { getLimitListD } = await import("@/lib/tushare");
     const rows = await getLimitListD(tradeDate);
 
-    // 按类型分组
-    const up = rows.filter(r => r.limit === "涨停" || r.up_stat?.includes("涨停"));
-    const down = rows.filter(r => r.limit === "跌停");
-    const broken = rows.filter(r => r.limit === "炸板" || r.open_times > 0);
+    // 按类型分组（limit 字段：U涨停 / D跌停 / Z炸板）
+    const up = rows.filter(r => r.limit === "U");
+    const down = rows.filter(r => r.limit === "D");
+    const broken = rows.filter(r => r.limit === "Z");
 
     return Response.json({
       tradeDate,

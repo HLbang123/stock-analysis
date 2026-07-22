@@ -69,8 +69,8 @@ export async function GET(request: Request) {
       where.push(`r.${rpsCol} >= $${params.length}`);
     }
     if (industry) {
-      params.push(`%${industry}%`);
-      where.push(`s.industry LIKE $${params.length}`);
+      params.push(industry);
+      where.push(`s.ts_code IN (SELECT member_code FROM sw_index_member WHERE index_level = 'L1' AND index_name = $${params.length})`);
     }
     if (goldenCross) {
       if (gcDays === 0) {
@@ -109,7 +109,7 @@ export async function GET(request: Request) {
           w55 AS (PARTITION BY "tsCode" ORDER BY "tradeDate" ROWS BETWEEN 54 PRECEDING AND CURRENT ROW)
       ),
       mas AS (
-        SELECT "tsCode", rn, ma5, ma13, ma55, "tradeDate",
+        SELECT "tsCode", rn, ma5, ma13, ma55, "tradeDate", close,
           LAG(ma5)  OVER (PARTITION BY "tsCode" ORDER BY "tradeDate") AS ma5_prev,
           LAG(ma13) OVER (PARTITION BY "tsCode" ORDER BY "tradeDate") AS ma13_prev
         FROM recent
@@ -126,7 +126,9 @@ export async function GET(request: Request) {
           -- 即将金叉：MA5<MA13（未金叉）+ 差距<2% + MA5在涨
           (MAX(CASE WHEN rn = 1 THEN ma5 END) < MAX(CASE WHEN rn = 1 THEN ma13 END)
            AND (MAX(CASE WHEN rn = 1 THEN ma13 END) - MAX(CASE WHEN rn = 1 THEN ma5 END)) / NULLIF(MAX(CASE WHEN rn = 1 THEN ma13 END), 0) < 0.02
-           AND MAX(CASE WHEN rn = 1 THEN ma5 END) > MAX(CASE WHEN rn = 2 THEN ma5 END)) AS gc_approaching
+           AND MAX(CASE WHEN rn = 1 THEN ma5 END) > MAX(CASE WHEN rn = 2 THEN ma5 END)) AS gc_approaching,
+          -- 55日线朝上：最新价 > 最新MA55
+          (MAX(CASE WHEN rn = 1 THEN close END) > MAX(CASE WHEN rn = 1 THEN ma55 END)) AS ma55_up
         FROM mas GROUP BY "tsCode"
       )
       SELECT s.ts_code, s.name, s.industry,
@@ -134,7 +136,7 @@ export async function GET(request: Request) {
              db.close AS latest_close, db.change_pct AS latest_change, db.vol AS latest_vol,
              sig.ma5_now, sig.ma13_now, sig.ma55_now,
              sig.gc_fresh, sig.gc_state, sig.gc_approaching,
-             (sig.latest_close_ma > sig.ma55_now) AS ma55_up,
+             sig.ma55_up,
              f.roe AS roe
       FROM sig
       JOIN stocks s ON sig."tsCode" = s.ts_code
