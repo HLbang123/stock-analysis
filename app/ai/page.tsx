@@ -24,6 +24,7 @@ import { ProfileSettingsModal } from '@/components/ai/ProfileSettingsModal';
 import { ProfileFormModal } from '@/components/ai/ProfileFormModal';
 import { AnalysisHistory } from '@/components/ai/AnalysisHistory';
 import { AiChat } from '@/components/ai/AiChat';
+import { ReasoningPanel } from '@/components/ai/ReasoningPanel';
 import { generateId } from '@/components/ai/shared';
 
 export default function AiPage() {
@@ -46,15 +47,19 @@ export default function AiPage() {
   } | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [streamingText, setStreamingText] = useState('');
+  const [streamingReasoning, setStreamingReasoning] = useState('');
   const abortRef = useRef<AbortController | null>(null);
 
   const [isDeepAnalyzing, setIsDeepAnalyzing] = useState(false);
   const [deepStage, setDeepStage] = useState<'idle' | 'analyst' | 'debate' | 'verdict'>('idle');
   const [deepResult, setDeepResult] = useState<{
     analyst: string;
+    analystReasoning?: string;
     debate: string;
+    debateReasoning?: string;
     debateError?: string;
     verdict: string;
+    verdictReasoning?: string;
     verdictError?: string;
     structured: {
       action: string;
@@ -202,6 +207,7 @@ export default function AiPage() {
     setResult(null);
     setDeepResult(null);
     setStreamingText('');
+    setStreamingReasoning('');
 
     const abortController = new AbortController();
     abortRef.current = abortController;
@@ -264,6 +270,7 @@ export default function AiPage() {
       const reader = res.body!.getReader();
       const decoder = new TextDecoder();
       let fullText = '';
+      let reasoningText = '';
       let sseBuffer = '';
 
       while (true) {
@@ -282,20 +289,26 @@ export default function AiPage() {
           if (data === '[DONE]') continue;
 
           try {
-            const chunk = JSON.parse(data) as string;
-            fullText += chunk;
-            setStreamingText(fullText);
+            const chunk = JSON.parse(data);
+            if (typeof chunk === 'string') {
+              fullText += chunk;
+              setStreamingText(fullText);
 
-            // 实时更新结构化结果
-            const parsed = parseStreamContent(fullText);
-            setResult({
-              riskLevel: parsed.riskLevel,
-              analysis: parsed.analysis,
-              suggestion: parsed.suggestion,
-              triggeredRules: parsed.triggeredRules,
-              supportPrice: parsed.supportPrice,
-              resistancePrice: parsed.resistancePrice,
-            });
+              // 实时更新结构化结果
+              const parsed = parseStreamContent(fullText);
+              setResult({
+                riskLevel: parsed.riskLevel,
+                analysis: parsed.analysis,
+                suggestion: parsed.suggestion,
+                triggeredRules: parsed.triggeredRules,
+                supportPrice: parsed.supportPrice,
+                resistancePrice: parsed.resistancePrice,
+              });
+            } else if (chunk && chunk.reasoning) {
+              // reasoning 模型的思考过程（DeepSeek-R1 / GLM-4.5+）
+              reasoningText += chunk.reasoning;
+              setStreamingReasoning(reasoningText);
+            }
           } catch {
             // 跳过无法解析的chunk
           }
@@ -367,6 +380,7 @@ export default function AiPage() {
     setDeepResult(null);
     setDeepStage('idle');
     setResult(null);
+    setStreamingReasoning('');
 
     const abortController = new AbortController();
     deepAbortRef.current = abortController;
@@ -493,9 +507,12 @@ export default function AiPage() {
       const decoder = new TextDecoder();
       let sseBuffer = '';
       let analystText = '';
+      let analystReasoning = '';
       let debateText = '';
+      let debateReasoning = '';
       let debateError = '';
       let verdictText = '';
+      let verdictReasoning = '';
       let verdictError = '';
 
       while (true) {
@@ -529,6 +546,13 @@ export default function AiPage() {
                   analyst: analystText,
                 }));
               }
+              if (msg.reasoning) {
+                analystReasoning += msg.reasoning;
+                setDeepResult(prev => ({
+                  ...(prev || { analyst: '', debate: '', verdict: '', structured: null }),
+                  analystReasoning,
+                }));
+              }
               if (msg.done) completedMap.analyst = analystText;
             }
 
@@ -542,6 +566,13 @@ export default function AiPage() {
                 setDeepResult(prev => ({
                   ...(prev || { analyst: analystText, debate: '', verdict: '', structured: null }),
                   debate: debateText,
+                }));
+              }
+              if (msg.reasoning) {
+                debateReasoning += msg.reasoning;
+                setDeepResult(prev => ({
+                  ...(prev || { analyst: analystText, debate: debateText, verdict: '', structured: null }),
+                  debateReasoning,
                 }));
               }
               if (msg.error) {
@@ -562,6 +593,13 @@ export default function AiPage() {
                   ...(prev || { analyst: analystText, debate: debateText, verdict: '', structured: null }),
                   verdict: verdictText,
                   structured: parsed,
+                }));
+              }
+              if (msg.reasoning) {
+                verdictReasoning += msg.reasoning;
+                setDeepResult(prev => ({
+                  ...(prev || { analyst: analystText, debate: debateText, verdict: verdictText, structured: null }),
+                  verdictReasoning,
                 }));
               }
               if (msg.done) completedMap.verdict = verdictText;
@@ -788,6 +826,13 @@ export default function AiPage() {
       {/* 分析结果 */}
       {(result || streamingText) && (
         <div className="space-y-4 mb-6">
+          {/* 思考过程（reasoning 模型） */}
+          {streamingReasoning && (
+            <div className="bg-white dark:bg-gray-900 rounded-xl p-4 shadow-sm">
+              <ReasoningPanel reasoning={streamingReasoning} isStreaming={isAnalyzing} />
+            </div>
+          )}
+
           {/* 风险等级 */}
           {result?.riskLevel ? (
             <div className={cn(
@@ -918,6 +963,10 @@ export default function AiPage() {
                   <span className="text-blue-500 animate-pulse text-lg font-bold">···</span>
                 )}
               </div>
+              <ReasoningPanel
+                reasoning={deepResult.analystReasoning || ''}
+                isStreaming={isDeepAnalyzing && deepStage === 'analyst'}
+              />
             </div>
           )}
           {isDeepAnalyzing && deepStage === 'debate' && !deepResult?.debate && (
@@ -947,6 +996,10 @@ export default function AiPage() {
               ) : isDeepAnalyzing && (deepStage === 'debate' || deepStage === 'verdict') ? (
                 <div className="text-sm text-gray-400 animate-pulse">等待辩论结果...</div>
               ) : null}
+              <ReasoningPanel
+                reasoning={deepResult?.debateReasoning || ''}
+                isStreaming={isDeepAnalyzing && deepStage === 'debate'}
+              />
             </div>
           )}
           {isDeepAnalyzing && deepStage === 'verdict' && !deepResult?.verdict && (
@@ -1070,6 +1123,11 @@ export default function AiPage() {
               {isDeepAnalyzing && deepStage === 'verdict' && deepResult?.verdict && (
                 <span className="inline-block w-0.5 h-4 bg-green-500 ml-0.5 animate-pulse align-middle" />
               )}
+
+              <ReasoningPanel
+                reasoning={deepResult?.verdictReasoning || ''}
+                isStreaming={isDeepAnalyzing && deepStage === 'verdict'}
+              />
             </div>
           )}
         </div>

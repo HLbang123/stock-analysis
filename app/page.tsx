@@ -1,6 +1,6 @@
 'use client';
 
-import { useEffect, useMemo, useState } from 'react';
+import { useMemo, useState } from 'react';
 import { useRouter } from 'next/navigation';
 import { useStockStore } from '@/store';
 import { getRealtimeQuote, getKLineSina } from '@/services/stockApi';
@@ -13,17 +13,9 @@ import { UpdateLog } from '@/components/UpdateLog';
 
 export default function HomePage() {
   const router = useRouter();
-  const { watchlist, alerts, isCheckingAlerts, clearAlerts, clearAllAlerts, setIsCheckingAlerts, rules } = useStockStore();
+  const { watchlist, alerts, isCheckingAlerts, clearAlerts, clearAllAlerts, setIsCheckingAlerts } = useStockStore();
 
   const [resultMessage, setResultMessage] = useState<string | null>(null);
-
-  // 初始化规则
-  useEffect(() => {
-    const store = useStockStore.getState();
-    if (store.rules.length === 0) {
-      useStockStore.setState({ rules: ALERT_RULES });
-    }
-  }, []);
 
   // 分组预警
   const groupedAlerts = useMemo(() => {
@@ -90,7 +82,7 @@ export default function HomePage() {
         const updatedKLines = buildUpdatedKLines(quote, kLines);
 
         // 检查规则
-        const enabledRules = rules.filter(r => r.isEnabled);
+        const enabledRules = ALERT_RULES.filter(r => r.isEnabled);
         const results = checkAllRules(updatedKLines, quote, enabledRules);
 
         for (const result of results) {

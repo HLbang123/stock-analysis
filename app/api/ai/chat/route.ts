@@ -3,6 +3,7 @@ import { formatAiError } from '@/lib/ai-error';
 import { buildChatUrl, buildLLMHeaders, createTimeoutSignal, llmRouteError, sseResponse } from '@/lib/llm-client';
 import { readLlmDeltas, encodeSSE, endSSE } from '@/lib/llm-stream';
 import { CHAT_TOOLS, executeTool } from '@/lib/chat-tools';
+import { getProvider } from '@/lib/llm/providers';
 
 const CHAT_SYSTEM_PROMPT = `你是A股投资分析助手。你可以：
 1. 回答关于技术分析、K线形态、均线系统、MACD/RSI等指标的问题
@@ -52,10 +53,12 @@ export async function POST(request: NextRequest) {
           try { controller.enqueue(encoder.encode(': keepalive\n\n')); } catch { /* 流已关闭 */ }
         }, 15000);
 
+        const useTools = getProvider(baseUrl, model).supportsTools(model);
         try {
           // 多轮工具调用（最多 3 轮）：每轮非流式调 LLM，有 tool_calls 就执行后继续，没有就把答案写入流
+          // reasoning 模型（deepseek-reasoner / glm-z1 / o1 等）不支持 function calling → useTools=false，循环不执行，直接走 streamFinalAnswer
           let resolved = false;
-          for (let round = 0; round < 3; round++) {
+          for (let round = 0; round < 3 && useTools; round++) {
             let toolData: any = null;
             try {
               const { signal, clear } = createTimeoutSignal(60000);
@@ -154,5 +157,8 @@ async function streamFinalAnswer(
     return;
   }
 
-  await readLlmDeltas(llmResponse, (delta) => encodeSSE(encoder, controller, delta));
+  await readLlmDeltas(llmResponse, (d) => {
+    if (d.content) encodeSSE(encoder, controller, d.content);
+    if (d.reasoning) encodeSSE(encoder, controller, { reasoning: d.reasoning });
+  });
 }

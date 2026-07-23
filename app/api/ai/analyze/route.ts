@@ -51,7 +51,12 @@ export async function POST(request: NextRequest) {
     const stream = new ReadableStream({
       async start(controller) {
         try {
-          await readLlmDeltas(llmResponse, (delta) => encodeSSE(encoder, controller, delta));
+          await readLlmDeltas(llmResponse, (d) => {
+            // content 继续 bare string（客户端按 typeof string 分支累加正文）
+            if (d.content) encodeSSE(encoder, controller, d.content);
+            // reasoning 走对象通道，客户端折叠展示"思考过程"
+            if (d.reasoning) encodeSSE(encoder, controller, { reasoning: d.reasoning });
+          });
         } catch (e: any) {
           console.error('[AI Proxy] Stream read error:', e.message);
           encodeSSE(encoder, controller, '\n\n[流中断]');

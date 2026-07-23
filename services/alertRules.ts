@@ -1,20 +1,14 @@
 import { KLineData, RealtimeQuote, AlertRule, RuleCheckResult } from '@/types';
+import { calculateMA as calcMAValues, calcRSISeries } from '@/lib/indicators';
+import { splitKLines } from '@/lib/stock-helpers';
 
 /**
- * 辅助函数：计算移动平均线
+ * 移动平均线序列（单一事实源：复用 lib/indicators，避免与详情页/AI页两套 MA 分叉）。
+ * lib 版以 number[] 入参、数据不足处为 NaN；此处包一层 KLineData[]→close[]。
+ * 调用方均有 length>=5 守卫且只读近端 idx，早期 NaN 不影响行为。
  */
 function calculateMA(kLines: KLineData[], period: number): number[] {
-  const result: number[] = [];
-  for (let i = 0; i < kLines.length; i++) {
-    if (i < period - 1) {
-      result.push(0);
-    } else {
-      const slice = kLines.slice(i - period + 1, i + 1);
-      const avg = slice.reduce((sum, k) => sum + k.close, 0) / period;
-      result.push(avg);
-    }
-  }
-  return result;
+  return calcMAValues(kLines.map(k => k.close), period);
 }
 
 /**
@@ -61,63 +55,17 @@ function calculateLowerShadowPercent(k: KLineData): number {
 }
 
 /**
- * 计算 RSI（Wilder's smoothing 方法）
+ * RSI（单一事实源：复用 lib/indicators 的 Wilder RSI 序列，与详情页/AI页同源同值）。
+ * 合成盘中 bar 的剥离由 splitKLines 在数据边界统一处理——本函数不再手写
+ * date===today 判断。旧实现用"最后 period 根简单平均"(SMA-RSI)，盘中一根 -3%
+ * 合成 bar 直接占 1/6 无历史稀释，能把 RSI6 从 32 砸到 19.7；改 Wilder 全历史
+ * 平滑后与同花顺对齐。
  */
 function calculateRSI(kLines: KLineData[], period: number = 6): number {
-  if (kLines.length < period + 1) return 50;
-  const changes: number[] = [];
-  for (let i = kLines.length - period; i < kLines.length; i++) {
-    changes.push(kLines[i].close - kLines[i - 1].close);
-  }
-  const gains = changes.map(c => c > 0 ? c : 0);
-  const losses = changes.map(c => c < 0 ? -c : 0);
-  const avgGain = gains.reduce((a, b) => a + b, 0) / period;
-  const avgLoss = losses.reduce((a, b) => a + b, 0) / period;
-  if (avgLoss === 0) return 100;
-  const rs = avgGain / avgLoss;
-  return 100 - (100 / (1 + rs));
-}
-
-/**
- * 计算指定周期内最大回撤（百分比）
- */
-function calculateMaxDrawdown(kLines: KLineData[], period: number): number {
-  if (kLines.length < period) return 0;
-  const segment = kLines.slice(-period);
-  let peak = segment[0].high;
-  let maxDD = 0;
-  for (const k of segment) {
-    if (k.high > peak) peak = k.high;
-    const dd = (peak - k.low) / peak;
-    if (dd > maxDD) maxDD = dd;
-  }
-  return maxDD;
-}
-
-/**
- * 统计指定周期内涨幅超过阈值的阳线数量
- */
-function countBigYangLines(kLines: KLineData[], period: number, threshold: number = 3.0): number {
-  if (kLines.length < period + 1) return 0;
-  let count = 0;
-  for (let i = kLines.length - period; i < kLines.length; i++) {
-    const change = calculateChangePercent(kLines[i].close, kLines[i - 1].close);
-    if (change > threshold) count++;
-  }
-  return count;
-}
-
-/**
- * 统计指定周期内跌幅超过阈值的阴线数量
- */
-function countBigYinLines(kLines: KLineData[], period: number, threshold: number = 3.0): number {
-  if (kLines.length < period + 1) return 0;
-  let count = 0;
-  for (let i = kLines.length - period; i < kLines.length; i++) {
-    const change = calculateChangePercent(kLines[i].close, kLines[i - 1].close);
-    if (change < -threshold) count++;
-  }
-  return count;
+  const { completedBars } = splitKLines(kLines);
+  const arr = calcRSISeries(completedBars.map(k => k.close), period);
+  const v = arr[arr.length - 1];
+  return isNaN(v) ? 50 : v;
 }
 
 /**

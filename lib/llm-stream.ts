@@ -1,10 +1,18 @@
+/** 一个 LLM delta 片段。content 是正文，reasoning 是思考过程（DeepSeek-R1 / GLM-4.5+ 等 reasoning 模型）。 */
+export interface LlmDelta {
+  content?: string;
+  reasoning?: string;
+}
+
 /**
  * 读取 OpenAI 兼容 SSE 流，逐个 delta 回调
  * 自动处理 buffer 切分、`data:` 前缀、`[DONE]` 标记和无法解析的行
+ * 同时读取 content 与 reasoning_content / reasoning（不同 provider 字段名不同），
+ * 让 DeepSeek-R1、GLM-4.5+ 等推理模型的思考过程不再被丢弃。
  */
 export async function readLlmDeltas(
   llmResponse: Response,
-  onDelta: (delta: string) => void
+  onDelta: (delta: LlmDelta) => void
 ): Promise<void> {
   const reader = llmResponse.body!.getReader();
   const decoder = new TextDecoder();
@@ -27,8 +35,14 @@ export async function readLlmDeltas(
 
       try {
         const parsed = JSON.parse(data);
-        const delta = parsed.choices?.[0]?.delta?.content;
-        if (delta) onDelta(delta);
+        const delta = parsed.choices?.[0]?.delta;
+        if (!delta) continue;
+        const content = typeof delta.content === 'string' ? delta.content : undefined;
+        // reasoning 字段名兜底：DeepSeek/部分 GLM 用 reasoning_content，部分 OpenAI 兼容包装用 reasoning
+        const reasoning = typeof delta.reasoning_content === 'string'
+          ? delta.reasoning_content
+          : typeof delta.reasoning === 'string' ? delta.reasoning : undefined;
+        if (content || reasoning) onDelta({ content, reasoning });
       } catch {
         // 跳过无法解析的行
       }

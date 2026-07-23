@@ -34,6 +34,15 @@ export interface KLineData {
   amount?: number;
 }
 
+// K线序列：显式分离"已完成日K"与"盘中合成 bar"
+// 由 splitKLines 产生。RSI / 量能基线 / 箱体等"已完成视角"指标读 completedBars；
+// MA / MACD / 布林 等"盘中实时"指标读 combinedBars()。
+// 把"吃不吃合成 bar"的决策集中到数据边界一处，避免各指标各自 slice(0,-1) 防御。
+export interface KLineSeries {
+  completedBars: KLineData[];    // 已完成日K（不含盘中合成 bar）
+  intradayBar: KLineData | null; // 盘中合成 bar（非交易日 / 无合成时为 null）
+}
+
 // 预警级别
 export enum AlertLevel {
   INFO = 'INFO',         // 关注/机会

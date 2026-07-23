@@ -7,6 +7,7 @@ import { getRealtimeQuote, getKLineSina } from '@/services/stockApi';
 import { fetchTushareData, formatTopListForChat } from '@/services/tushareData';
 import { cn } from '@/lib/utils';
 import { Send, Trash } from 'lucide-react';
+import { ReasoningPanel } from '@/components/ai/ReasoningPanel';
 
 interface QuickResult {
   riskLevel: string;
@@ -36,7 +37,7 @@ interface Props {
 }
 
 export function AiChat({ currentProfile, selectedCode, watchlist, result, deepStructured }: Props) {
-  const [chatMessages, setChatMessages] = useState<{ role: 'user' | 'assistant'; content: string }[]>([]);
+  const [chatMessages, setChatMessages] = useState<{ role: 'user' | 'assistant'; content: string; reasoning?: string }[]>([]);
   const [chatInput, setChatInput] = useState('');
   const [isChatStreaming, setIsChatStreaming] = useState(false);
   const [attachStockContext, setAttachStockContext] = useState(true);
@@ -150,6 +151,7 @@ export function AiChat({ currentProfile, selectedCode, watchlist, result, deepSt
       const decoder = new TextDecoder();
       let sseBuffer = '';
       let aiContent = '';
+      let aiReasoning = '';
 
       setChatMessages(prev => [...prev, { role: 'assistant', content: '' }]);
 
@@ -173,7 +175,14 @@ export function AiChat({ currentProfile, selectedCode, watchlist, result, deepSt
               aiContent += chunk;
               setChatMessages(prev => {
                 const updated = [...prev];
-                updated[updated.length - 1] = { role: 'assistant', content: aiContent };
+                updated[updated.length - 1] = { role: 'assistant', content: aiContent, reasoning: aiReasoning || undefined };
+                return updated;
+              });
+            } else if (chunk && chunk.reasoning) {
+              aiReasoning += chunk.reasoning;
+              setChatMessages(prev => {
+                const updated = [...prev];
+                updated[updated.length - 1] = { role: 'assistant', content: aiContent, reasoning: aiReasoning };
                 return updated;
               });
             }
@@ -259,6 +268,13 @@ export function AiChat({ currentProfile, selectedCode, watchlist, result, deepSt
                     <span className="text-blue-500 animate-pulse text-lg font-bold">···</span>
                   )}
                 </div>
+                {msg.role === 'assistant' && msg.reasoning && (
+                  <ReasoningPanel
+                    reasoning={msg.reasoning}
+                    isStreaming={isChatStreaming && i === chatMessages.length - 1}
+                    variant="light"
+                  />
+                )}
               </div>
             </div>
           ))}

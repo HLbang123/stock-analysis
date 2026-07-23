@@ -63,9 +63,10 @@ export async function POST(request: NextRequest) {
           try { controller.enqueue(encoder.encode(': keepalive\n\n')); } catch { /* 流已关闭 */ }
         }, 15000);
 
-        /** 执行一个阶段的 LLM 调用，流式输出到客户端，返回完整输出文本。任何失败最终都抛出（带 [stage] 前缀） */
-        async function runStage(stageKey: string, systemPrompt: string, userPrompt: string, maxTokens = 4096, attempt = 1): Promise<string> {
+        /** 执行一个阶段的 LLM 调用，流式输出到客户端，返回完整输出文本 + 思考过程。任何失败最终都抛出（带 [stage] 前缀） */
+        async function runStage(stageKey: string, systemPrompt: string, userPrompt: string, maxTokens = 4096, attempt = 1): Promise<{ text: string; reasoning: string }> {
           let fullOutput = '';
+          let fullReasoning = '';
           const { signal, clear } = createTimeoutSignal(120000);
 
           try {
@@ -104,22 +105,29 @@ export async function POST(request: NextRequest) {
             let repeatCount = 0;
             let stuckWarning = false;
 
-            await readLlmDeltas(llmResponse, (delta) => {
-              // 卡死检测：连续相同输出
-              if (delta === lastDelta) {
-                repeatCount++;
-              } else {
-                repeatCount = 0;
-                lastDelta = delta;
+            await readLlmDeltas(llmResponse, (d) => {
+              // reasoning 累积（不进 fullOutput，避免污染下游辩论/裁决 prompt），单独通道发给前端折叠展示
+              if (d.reasoning) {
+                fullReasoning += d.reasoning;
+                encodeSSE(encoder, controller, { stage: stageKey, reasoning: d.reasoning });
               }
-              if (repeatCount >= 3 && !stuckWarning) {
-                stuckWarning = true;
-                console.warn(`[Deep AI Proxy] ${stageKey} 检测到卡死（连续重复输出）`);
-                encodeSSE(encoder, controller, { stage: stageKey, warning: '检测到输出重复，可能陷入循环' });
-              }
+              if (d.content) {
+                // 卡死检测：连续相同输出（只看正文，不看 reasoning）
+                if (d.content === lastDelta) {
+                  repeatCount++;
+                } else {
+                  repeatCount = 0;
+                  lastDelta = d.content;
+                }
+                if (repeatCount >= 3 && !stuckWarning) {
+                  stuckWarning = true;
+                  console.warn(`[Deep AI Proxy] ${stageKey} 检测到卡死（连续重复输出）`);
+                  encodeSSE(encoder, controller, { stage: stageKey, warning: '检测到输出重复，可能陷入循环' });
+                }
 
-              fullOutput += delta;
-              encodeSSE(encoder, controller, { stage: stageKey, text: delta });
+                fullOutput += d.content;
+                encodeSSE(encoder, controller, { stage: stageKey, text: d.content });
+              }
             });
 
             // 空输出：模型异常，重试；仍空则抛出
@@ -154,7 +162,7 @@ export async function POST(request: NextRequest) {
           }
 
           encodeSSE(encoder, controller, { stage: stageKey, done: true });
-          return fullOutput;
+          return { text: fullOutput, reasoning: fullReasoning };
         }
 
         /** 断点续传：命中缓存（completed[stageKey]）则回放文本跳过 LLM 调用，否则正常执行 runStage */
@@ -170,9 +178,15 @@ export async function POST(request: NextRequest) {
             console.log(`[Deep AI Proxy] ${stageKey} 命中缓存，跳过 LLM 调用`);
             return cached;
           }
-          const text = await runStage(stageKey, sys, usr, maxTokens);
+          const { text, reasoning } = await runStage(stageKey, sys, usr, maxTokens);
           if (isDebate) {
-            encodeSSE(encoder, controller, { stage: 'debate', role: stageKey, text: text + '\n\n' });
+            // 辩论阶段：runStage 的 live 流（stage=角色名）客户端不处理，
+            // 这里统一以 stage='debate' 补发完整文本 + 思考过程给前端
+            encodeSSE(encoder, controller, {
+              stage: 'debate', role: stageKey,
+              text: text + '\n\n',
+              ...(reasoning ? { reasoning } : {}),
+            });
           }
           return text;
         }
