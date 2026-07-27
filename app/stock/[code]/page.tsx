@@ -130,27 +130,22 @@ export default function StockDetailPage() {
     return markerMap;
   }, [ruleResults, kLines]);
 
-  // 分时图预警标记（智能定位：见顶放最高点，见底放最低点，量放量最大点）
+  // 分时图预警标记（智能定位：见顶放最高点，见底放最低点）
   const minuteMarkers = useMemo(() => {
     if (minuteData.length === 0 || ruleResults.length === 0) return [];
     return ruleResults.map((result, i) => {
       let index = minuteData.length - 1; // 默认最后一点
       const ruleId = result.ruleId || '';
-      if (['R02', 'R07', 'R09'].includes(ruleId)) {
-        // 见顶形态 → 最高价位置
+      if (ruleId === 'R02') {
+        // 见顶阶梯 → 最高价位置
         let maxIdx = 0; let maxPrice = 0;
         minuteData.forEach((p, idx) => { if (p.price > maxPrice) { maxPrice = p.price; maxIdx = idx; } });
         index = maxIdx;
-      } else if (['R06', 'R11', 'R12', 'R13', 'R14', 'R15'].includes(ruleId)) {
+      } else if (['R11', 'R12', 'R13', 'R14', 'R15'].includes(ruleId)) {
         // 见底/企稳形态 → 最低价位置
         let minIdx = 0; let minPrice = Infinity;
         minuteData.forEach((p, idx) => { if (p.price < minPrice) { minPrice = p.price; minIdx = idx; } });
         index = minIdx;
-      } else if (ruleId === 'R01') {
-        // 量能 → 最大量位置
-        let maxIdx = 0; let maxVol = 0;
-        minuteData.forEach((p, idx) => { if (p.volume > maxVol) { maxVol = p.volume; maxIdx = idx; } });
-        index = maxIdx;
       }
       return { index, number: i + 1, level: ALERT_RULES.find(r => r.id === ruleId)?.level || 'INFO' };
     });

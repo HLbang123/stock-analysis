@@ -16,6 +16,8 @@ export interface RpsItem {
   gcFresh: boolean;
   gcState: boolean;
   ma55Up: boolean;
+  vcp: boolean;
+  roe: number | null;
 }
 
 interface ScannerState {
@@ -24,19 +26,22 @@ interface ScannerState {
   rpsPeriod: number;
   rpsMin: number;
   rpsIndustry: string;
+  industryLevel: 'L1' | 'L2';
   rpsResults: RpsItem[];
-  // 三个过滤器（AND 组合）
+  // 四个过滤器（AND 组合）
   filterRps: boolean;
   goldenCross: boolean;
   gcDays: number;
   ma55Up: boolean;
   filterRoe: boolean;
   minRoe: number;
+  vcp: boolean;
 
   setSelectedSectors: (updater: string[] | ((prev: string[]) => string[])) => void;
   setRpsPeriod: (n: number) => void;
   setRpsMin: (n: number) => void;
   setRpsIndustry: (updater: string | ((prev: string) => string)) => void;
+  setIndustryLevel: (v: 'L1' | 'L2') => void;
   setRpsResults: (updater: RpsItem[] | ((prev: RpsItem[]) => RpsItem[])) => void;
   setFilterRps: (v: boolean) => void;
   setGoldenCross: (v: boolean) => void;
@@ -44,6 +49,7 @@ interface ScannerState {
   setMa55Up: (v: boolean) => void;
   setFilterRoe: (v: boolean) => void;
   setMinRoe: (n: number) => void;
+  setVcp: (v: boolean) => void;
   clearResults: () => void;
 }
 
@@ -57,6 +63,7 @@ export const useScannerStore = create<ScannerState>()(
       rpsPeriod: 250,
       rpsMin: 87,
       rpsIndustry: '',
+      industryLevel: 'L1',
       rpsResults: [],
       filterRps: true,
       goldenCross: false,
@@ -64,11 +71,13 @@ export const useScannerStore = create<ScannerState>()(
       ma55Up: false,
       filterRoe: false,
       minRoe: 15,
+      vcp: false,
 
       setSelectedSectors: (updater) => set((s) => ({ selectedSectors: resolve(updater, s.selectedSectors) })),
       setRpsPeriod: (rpsPeriod) => set({ rpsPeriod }),
       setRpsMin: (rpsMin) => set({ rpsMin }),
       setRpsIndustry: (updater) => set((s) => ({ rpsIndustry: resolve(updater, s.rpsIndustry) })),
+      setIndustryLevel: (industryLevel) => set({ industryLevel }),
       setRpsResults: (updater) => set((s) => ({ rpsResults: resolve(updater, s.rpsResults) })),
       setFilterRps: (filterRps) => set({ filterRps }),
       setGoldenCross: (goldenCross) => set({ goldenCross }),
@@ -76,16 +85,18 @@ export const useScannerStore = create<ScannerState>()(
       setMa55Up: (ma55Up) => set({ ma55Up }),
       setFilterRoe: (filterRoe) => set({ filterRoe }),
       setMinRoe: (minRoe) => set({ minRoe }),
+      setVcp: (vcp) => set({ vcp }),
       clearResults: () => set({ rpsResults: [] }),
     }),
     {
       name: 'scanner-store',
-      version: 2,
+      version: 4,
       partialize: (s) => ({
         selectedSectors: s.selectedSectors,
         rpsPeriod: s.rpsPeriod,
         rpsMin: s.rpsMin,
         rpsIndustry: s.rpsIndustry,
+        industryLevel: s.industryLevel,
         rpsResults: s.rpsResults,
         filterRps: s.filterRps,
         goldenCross: s.goldenCross,
@@ -93,8 +104,9 @@ export const useScannerStore = create<ScannerState>()(
         ma55Up: s.ma55Up,
         filterRoe: s.filterRoe,
         minRoe: s.minRoe,
+        vcp: s.vcp,
       }),
-      // v1→v2：丢弃已删除的 rules 模式字段
+      // v1→v2：丢弃已删除的 rules 模式字段；v2→v3：新增 vcp 字段（缺省 false 由默认值兜底）
       migrate: (persisted: unknown) => {
         const p = persisted as Record<string, unknown> | undefined;
         if (!p) return p as any;

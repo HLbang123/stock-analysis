@@ -1,0 +1,183 @@
+/**
+ * AI 筛选 — 技术特征计算
+ *
+ * 补 lib/indicators.ts 缺的 ATR / 最大回撤 / 波动率 / 量比，
+ * 以及 MACD/RSI 状态判定（状态化而非序列，供因子打分用）。
+ * 输入序列均按日期升序（最旧在前，最新在末）。
+ */
+
+/** 简单移动平均序列 */
+export function ma(values: number[], period: number): number[] {
+  const out = new Array(values.length).fill(null) as number[];
+  let sum = 0;
+  for (let i = 0; i < values.length; i++) {
+    sum += values[i];
+    if (i >= period) sum -= values[i - period];
+    if (i >= period - 1) out[i] = sum / period;
+  }
+  return out;
+}
+
+/** 指数移动平均序列（等价 pandas ewm(span=N, adjust=false)） */
+export function ema(values: number[], span: number): number[] {
+  const out = new Array(values.length).fill(null) as number[];
+  if (values.length === 0) return out;
+  const alpha = 2 / (span + 1);
+  let prev = values[0];
+  out[0] = prev;
+  for (let i = 1; i < values.length; i++) {
+    prev = alpha * values[i] + (1 - alpha) * prev;
+    out[i] = prev;
+  }
+  return out;
+}
+
+/** 最后一根的 MACD 状态：DIF 上穿/下穿 DEA */
+export function macdStatus(closes: number[]): string {
+  if (closes.length < 35) return 'neutral';
+  const ema12 = ema(closes, 12);
+  const ema26 = ema(closes, 26);
+  const dif = closes.map((_, i) => (ema12[i] != null && ema26[i] != null ? ema12[i]! - ema26[i]! : null));
+  const dea = ema(dif.map((v) => v ?? 0), 9);
+  const n = closes.length;
+  const dNow = dif[n - 1];
+  const dPrev = dif[n - 2];
+  const eNow = dea[n - 1];
+  const ePrev = dea[n - 2];
+  if (dNow == null || dPrev == null || eNow == null || ePrev == null) return 'neutral';
+  if (dPrev <= ePrev && dNow > eNow) return 'bullish';
+  if (dPrev >= ePrev && dNow < eNow) return 'bearish';
+  return dNow > eNow ? 'bullish' : dNow < eNow ? 'bearish' : 'neutral';
+}
+
+/** Wilder RSI 最后一根值 */
+export function rsi(closes: number[], period: number): number | null {
+  if (closes.length < period + 1) return null;
+  let gain = 0;
+  let loss = 0;
+  for (let i = 1; i <= period; i++) {
+    const ch = closes[i] - closes[i - 1];
+    if (ch >= 0) gain += ch;
+    else loss -= ch;
+  }
+  let avgGain = gain / period;
+  let avgLoss = loss / period;
+  for (let i = period + 1; i < closes.length; i++) {
+    const ch = closes[i] - closes[i - 1];
+    const g = ch > 0 ? ch : 0;
+    const l = ch < 0 ? -ch : 0;
+    avgGain = (avgGain * (period - 1) + g) / period;
+    avgLoss = (avgLoss * (period - 1) + l) / period;
+  }
+  if (avgLoss === 0) return 100;
+  const rs = avgGain / avgLoss;
+  return 100 - 100 / (1 + rs);
+}
+
+/** RSI 状态：<30 超卖，>70 超买 */
+export function rsiStatus(closes: number[]): string {
+  const v = rsi(closes, 14);
+  if (v == null) return 'neutral';
+  if (v < 30) return 'oversold';
+  if (v > 70) return 'overbought';
+  return 'neutral';
+}
+
+/** 20 日波动率（日收益标准差 ×√20 ×100，近似年化百分比） */
+export function volatility20d(closes: number[]): number | null {
+  if (closes.length < 21) return null;
+  const rets: number[] = [];
+  for (let i = closes.length - 20; i < closes.length; i++) {
+    if (closes[i - 1] > 0) rets.push((closes[i] - closes[i - 1]) / closes[i - 1]);
+  }
+  if (rets.length < 2) return null;
+  const mean = rets.reduce((a, b) => a + b, 0) / rets.length;
+  const variance = rets.reduce((a, b) => a + (b - mean) ** 2, 0) / (rets.length - 1);
+  return Math.sqrt(variance) * Math.sqrt(20) * 100;
+}
+
+/** 20 日最大回撤百分比（负值，如 -8.5 表示回撤 8.5%） */
+export function maxDrawdown20d(closes: number[]): number | null {
+  if (closes.length < 2) return null;
+  const start = Math.max(0, closes.length - 20);
+  const slice = closes.slice(start);
+  let peak = slice[0];
+  let maxDd = 0;
+  for (const c of slice) {
+    if (c > peak) peak = c;
+    const dd = (c - peak) / peak;
+    if (dd < maxDd) maxDd = dd;
+  }
+  return maxDd * 100;
+}
+
+/** 20 日 ATR 占价格百分比（True Range 均值 / close ×100） */
+export function atr20pct(closes: number[], highs: number[], lows: number[]): number | null {
+  const n = closes.length;
+  if (n < 21) return null;
+  const trs: number[] = [];
+  for (let i = n - 20; i < n; i++) {
+    const tr = Math.max(
+      highs[i] - lows[i],
+      Math.abs(highs[i] - closes[i - 1]),
+      Math.abs(lows[i] - closes[i - 1]),
+    );
+    trs.push(tr);
+  }
+  const atr = trs.reduce((a, b) => a + b, 0) / trs.length;
+  const lastClose = closes[n - 1];
+  if (!lastClose) return null;
+  return (atr / lastClose) * 100;
+}
+
+/** 量比 = 最新成交量 / 20 日均量 */
+export function volumeRatio(vols: number[]): number | null {
+  if (vols.length < 21) return null;
+  const last = vols[vols.length - 1];
+  const slice = vols.slice(vols.length - 21, vols.length - 1); // 前 20 根
+  const avg = slice.reduce((a, b) => a + b, 0) / slice.length;
+  if (!avg) return null;
+  return last / avg;
+}
+
+/**
+ * 综合技术信号分（0-100）：MA 多头 + MACD 多头 + RSI 健康 + 站上 MA20 + 量价配合
+ * 简化版 alphasift signal_score，用于 momentum/stability/risk 因子输入。
+ */
+export function signalScore(closes: number[], vols: number[]): number | null {
+  if (closes.length < 55) return null;
+  const ma5 = ma(closes, 5);
+  const ma13 = ma(closes, 13);
+  const ma20 = ma(closes, 20);
+  const ma55 = ma(closes, 55);
+  const n = closes.length;
+  const last = closes[n - 1];
+  let score = 50;
+
+  // MA 多头排列
+  if (ma5[n - 1]! > ma13[n - 1]! && ma13[n - 1]! > ma55[n - 1]!) score += 15;
+  else if (ma5[n - 1]! < ma13[n - 1]! && ma13[n - 1]! < ma55[n - 1]!) score -= 15;
+
+  // 站上 MA20
+  if (last > ma20[n - 1]!) score += 8;
+  else score -= 8;
+
+  // MACD 状态
+  const ms = macdStatus(closes);
+  if (ms === 'bullish') score += 10;
+  else if (ms === 'bearish') score -= 10;
+
+  // RSI 健康（40-60 中性偏强加分）
+  const r = rsi(closes, 14);
+  if (r != null) {
+    if (r >= 45 && r <= 65) score += 7;
+    else if (r > 70) score -= 5;
+    else if (r < 30) score += 3; // 超卖反弹预期
+  }
+
+  // 量价配合：放量上涨
+  const vr = volumeRatio(vols);
+  if (vr != null && last > closes[n - 2] && vr > 1.2) score += 5;
+
+  return Math.max(0, Math.min(100, score));
+}

@@ -26,6 +26,7 @@ export default function ScannerPage() {
     rpsPeriod, setRpsPeriod,
     rpsMin, setRpsMin,
     rpsIndustry, setRpsIndustry,
+    industryLevel, setIndustryLevel,
     rpsResults, setRpsResults,
     filterRps, setFilterRps,
     goldenCross, setGoldenCross,
@@ -33,16 +34,18 @@ export default function ScannerPage() {
     ma55Up, setMa55Up,
     filterRoe, setFilterRoe,
     minRoe, setMinRoe,
+    vcp, setVcp,
   } = useScannerStore();
 
   // 仅本组件内的瞬态 UI 状态
   const [showSectors, setShowSectors] = useState(true);
   const [showRpsIntro, setShowRpsIntro] = useState(false);
+  const [showVcpIntro, setShowVcpIntro] = useState(false);
   const [loading, setLoading] = useState(false);
   const [hasQueried, setHasQueried] = useState(false);
 
   // 动态行业列表（从 DB 拉，替代硬编码 SECTORS）
-  const [industries, setIndustries] = useState<{ name: string; count: number }[]>([]);
+  const [industries, setIndustries] = useState<{ name: string; count: number; l2: string[] }[]>([]);
 
   useEffect(() => {
     fetch('/api/industries').then(r => r.json()).then(d => { if (d.industries) setIndustries(d.industries); }).catch(() => {});
@@ -61,6 +64,7 @@ export default function ScannerPage() {
   const clearSectors = () => {
     setSelectedSectors([]);
     setRpsIndustry('');
+    setIndustryLevel('L1');
   };
 
   // 查询
@@ -72,10 +76,11 @@ export default function ScannerPage() {
       const params = new URLSearchParams({ period: String(st.rpsPeriod), limit: '50' });
       params.set('filterRps', String(st.filterRps));
       if (st.filterRps) params.set('minRps', String(st.rpsMin));
-      if (st.rpsIndustry) params.set('industry', st.rpsIndustry);
+      if (st.rpsIndustry) { params.set('industry', st.rpsIndustry); params.set('industryLevel', st.industryLevel); }
       if (st.goldenCross) { params.set('goldenCross', 'true'); params.set('gcDays', String(st.gcDays)); }
       if (st.ma55Up) params.set('ma55Up', 'true');
       if (st.filterRoe) { params.set('filterRoe', 'true'); params.set('minRoe', String(st.minRoe)); }
+      if (st.vcp) params.set('vcp', 'true');
       const res = await fetch(`/api/scan?${params}`);
       const data = await res.json();
       if (data.error) { toast.error(data.error); st.setRpsResults([]); }
@@ -111,7 +116,14 @@ export default function ScannerPage() {
   if (goldenCross) condParts.push(gcDays === 0 ? '5/13即将金叉' : `5/13金叉(近${gcDays}日)`);
   if (ma55Up) condParts.push('股价在55日线上方');
   if (filterRoe) condParts.push(`ROE≥${minRoe}%`);
+  if (vcp) condParts.push('VCP收缩');
   const condText = condParts.length > 0 ? condParts.join(' · ') : '无过滤（全市场 top RPS）';
+
+  // 当前选中的 L1（选中 L2 时回溯其父级 L1，用于高亮 + 展开 L2 子目录）
+  const activeL1 = !rpsIndustry ? '' :
+    industryLevel === 'L1' ? rpsIndustry :
+    (industries.find((ind) => ind.l2?.includes(rpsIndustry))?.name ?? '');
+  const activeL1Data = industries.find((ind) => ind.name === activeL1);
 
   return (
     <div>
@@ -133,6 +145,24 @@ export default function ScannerPage() {
         )}
       </div>
 
+      {/* VCP 说明 */}
+      <div className="bg-purple-50 dark:bg-purple-950/30 rounded-xl p-3 mb-4 text-sm">
+        <button onClick={() => setShowVcpIntro(!showVcpIntro)} className="flex items-center gap-1 text-purple-600 font-medium w-full text-left">
+          <Info className="w-4 h-4" /> VCP 波动率收缩形态说明
+          <span className="text-xs text-purple-400 ml-auto">{showVcpIntro ? '收起' : '展开'}</span>
+        </button>
+        {showVcpIntro && (
+          <div className="mt-2 text-gray-600 dark:text-gray-400 space-y-1 leading-relaxed">
+            <p><strong>VCP（Volatility Contraction Pattern）</strong>：Mark Minervini 的趋势延续形态。股价在上升中继里横盘整理，价格摆幅一波比一波小、右侧量能萎缩，卖压枯竭后放量突破。</p>
+            <p>• <strong>趋势前置</strong>：价 &gt; MA150 &gt; MA200 且 MA200 上行（只抓第二阶段上升期，过滤熊市假突破）</p>
+            <p>• <strong>递进收缩</strong>：近 60 日分三段（各 20 日），每段高低点波幅比上一段收缩 ≥20%</p>
+            <p>• <strong>右侧量缩</strong>：最近一段均量 &lt; 上一段 ×0.8</p>
+            <p>• <strong>贴近颈线</strong>：最新价 ≥ 底座最高点 ×0.97（即将/刚刚突破）</p>
+            <p>• 开启 VCP 会拉长历史窗口至 ~400 日历日以算 MA200，查询比平时略慢；与其他条件 AND 组合</p>
+          </div>
+        )}
+      </div>
+
       {/* 板块选择器 */}
       <div className="bg-white dark:bg-gray-900 rounded-xl shadow-sm mb-4">
         <button onClick={() => setShowSectors(!showSectors)} className="w-full p-4 flex items-center justify-between">
@@ -148,18 +178,62 @@ export default function ScannerPage() {
           <div className="px-4 pb-4">
             <button onClick={clearSectors} className="text-sm text-blue-600 mb-3">清空（全市场）</button>
             <div className="grid grid-cols-2 sm:grid-cols-3 md:grid-cols-4 gap-2">
-              {industries.map((ind) => (
-                <button key={ind.name} onClick={() => {
-                  setRpsIndustry(prev => prev === ind.name ? '' : ind.name);
-                  setSelectedSectors(prev => prev.includes(ind.name) ? [] : [ind.name]);
-                }}
-                  className={cn("px-3 py-2.5 rounded-lg text-sm text-left transition border-2",
-                    rpsIndustry === ind.name ? "border-blue-500 bg-blue-50 dark:bg-blue-950" : "border-gray-200 dark:border-gray-700 hover:border-gray-300")}>
-                  {ind.name}
-                  <span className="text-xs text-gray-400 ml-1">({ind.count})</span>
-                </button>
-              ))}
+              {industries.map((ind) => {
+                const isActive = activeL1 === ind.name;
+                return (
+                  <button key={ind.name} onClick={() => {
+                    if (isActive) {
+                      // 再次点击当前 L1 → 取消
+                      clearSectors();
+                    } else {
+                      setRpsIndustry(ind.name);
+                      setIndustryLevel('L1');
+                      setSelectedSectors([ind.name]);
+                    }
+                  }}
+                    className={cn("px-3 py-2 rounded-lg text-sm text-left transition border-2",
+                      isActive ? "border-blue-500 bg-blue-50 dark:bg-blue-950" : "border-gray-200 dark:border-gray-700 hover:border-gray-300")}>
+                    <div className="font-medium">{ind.name}
+                      <span className="text-xs text-gray-400 ml-1">({ind.count})</span>
+                    </div>
+                    {ind.l2?.length > 0 && (
+                      <div className="text-[10px] text-gray-400 mt-0.5 line-clamp-1 leading-tight">
+                        {ind.l2.slice(0, 3).join(' · ')}
+                      </div>
+                    )}
+                  </button>
+                );
+              })}
             </div>
+
+            {/* 选中 L1 后展开的 L2 子目录：可进一步缩到具体 L2，把选择权交给用户 */}
+            {activeL1Data && activeL1Data.l2?.length > 0 && (
+              <div className="mt-3 pt-3 border-t border-gray-100 dark:border-gray-800">
+                <div className="text-xs text-gray-500 mb-2">在「{activeL1Data.name}」内进一步选二级方向：</div>
+                <div className="flex flex-wrap gap-1.5">
+                  <button onClick={() => {
+                    setRpsIndustry(activeL1Data.name);
+                    setIndustryLevel('L1');
+                    setSelectedSectors([activeL1Data.name]);
+                  }}
+                    className={cn("px-2.5 py-1.5 rounded-lg text-xs transition border",
+                      industryLevel === 'L1' ? "bg-blue-600 text-white border-blue-600" : "bg-gray-50 dark:bg-gray-800 text-gray-600 dark:text-gray-300 border-gray-200 dark:border-gray-700 hover:border-blue-300")}>
+                    全部{activeL1Data.name}
+                  </button>
+                  {activeL1Data.l2.map((l2name) => (
+                    <button key={l2name} onClick={() => {
+                      setRpsIndustry(l2name);
+                      setIndustryLevel('L2');
+                      setSelectedSectors([l2name]);
+                    }}
+                      className={cn("px-2.5 py-1.5 rounded-lg text-xs transition border",
+                        industryLevel === 'L2' && rpsIndustry === l2name ? "bg-blue-600 text-white border-blue-600" : "bg-gray-50 dark:bg-gray-800 text-gray-600 dark:text-gray-300 border-gray-200 dark:border-gray-700 hover:border-blue-300")}>
+                      {l2name}
+                    </button>
+                  ))}
+                </div>
+              </div>
+            )}
           </div>
         )}
       </div>
@@ -196,10 +270,11 @@ export default function ScannerPage() {
 
           {/* 5/13金叉 */}
           <div className="flex flex-wrap items-center gap-3">
-            <label className="flex items-center gap-2 text-sm font-medium cursor-pointer">
-              <input type="checkbox" checked={goldenCross} onChange={e => setGoldenCross(e.target.checked)} className="w-4 h-4 rounded accent-blue-600" />
+            <label className={cn("flex items-center gap-2 text-sm font-medium", vcp ? "cursor-not-allowed text-gray-300 dark:text-gray-600" : "cursor-pointer")}>
+              <input type="checkbox" checked={goldenCross} disabled={vcp} onChange={e => setGoldenCross(e.target.checked)} className="w-4 h-4 rounded accent-blue-600" />
               5/13金叉
             </label>
+            {vcp && <span className="text-xs text-gray-400">VCP 下冲突（收缩期无金叉）</span>}
             {goldenCross && (
               <>
                 <span className="text-sm text-gray-500">近</span>
@@ -228,10 +303,11 @@ export default function ScannerPage() {
 
           {/* 股价在55日线上方 */}
           <div className="flex flex-wrap items-center gap-3">
-            <label className="flex items-center gap-2 text-sm font-medium cursor-pointer">
-              <input type="checkbox" checked={ma55Up} onChange={e => setMa55Up(e.target.checked)} className="w-4 h-4 rounded accent-blue-600" />
+            <label className={cn("flex items-center gap-2 text-sm font-medium", vcp ? "cursor-not-allowed text-gray-300 dark:text-gray-600" : "cursor-pointer")} title={vcp ? 'VCP 已含趋势前置（价>MA150>MA200），与本条件冗余' : ''}>
+              <input type="checkbox" checked={ma55Up} disabled={vcp} onChange={e => setMa55Up(e.target.checked)} className="w-4 h-4 rounded accent-blue-600" />
               股价在55日线上方
             </label>
+            {vcp && <span className="text-xs text-gray-400">VCP 下冗余（趋势前置已含）</span>}
           </div>
 
           {/* ROE */}
@@ -246,6 +322,20 @@ export default function ScannerPage() {
                 {[5, 8, 10, 12, 15, 20, 25, 30].map(n => <option key={n} value={n}>{n}%</option>)}
               </select>
             )}
+          </div>
+
+          {/* VCP 波动率收缩 */}
+          <div className="flex flex-wrap items-center gap-3">
+            <label className="flex items-center gap-2 text-sm font-medium cursor-pointer">
+              <input type="checkbox" checked={vcp} onChange={e => {
+                const on = e.target.checked;
+                setVcp(on);
+                // VCP 趋势前置已含 MA55 上方；金叉时点与收缩时点互斥——开启 VCP 时清掉这两项
+                if (on) { setGoldenCross(false); setMa55Up(false); }
+              }} className="w-4 h-4 rounded accent-purple-600" />
+              VCP 波动率收缩
+            </label>
+            <span className="text-xs text-gray-400">趋势前置 + 三段递进收缩 + 右侧量缩 + 贴近颈线（开启后查询略慢，且与5/13金叉、55日线互斥）</span>
           </div>
         </div>
 
@@ -304,6 +394,7 @@ export default function ScannerPage() {
                       <div className="flex items-center justify-center gap-1 flex-wrap">
                         {item.gcState && <span className="text-xs bg-green-100 text-green-700 px-1.5 py-0.5 rounded">金叉</span>}
                         {item.ma55Up && <span className="text-xs bg-blue-100 text-blue-700 px-1.5 py-0.5 rounded">MA55↑</span>}
+                        {item.vcp && <span className="text-xs bg-purple-100 text-purple-700 px-1.5 py-0.5 rounded">VCP</span>}
                       </div>
                     </td>
                     <td className="px-3 py-2.5 text-center" onClick={e => e.stopPropagation()}>

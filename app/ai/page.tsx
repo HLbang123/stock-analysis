@@ -16,7 +16,7 @@ import { calculateIndicators, formatIndicatorsForPrompt } from '@/lib/indicators
 import { isETF } from '@/lib/identify';
 import { cn } from '@/lib/utils';
 import { buildUpdatedKLines } from '@/lib/stock-helpers';
-import { Brain, Settings, Loader2 } from 'lucide-react';
+import { Brain, Settings, Loader2, Sparkles } from 'lucide-react';
 import { fetchTushareData, formatTushareForPrompt } from '@/services/tushareData';
 import { toast } from 'sonner';
 import { Button } from '@/components/ui/button';
@@ -25,6 +25,7 @@ import { ProfileFormModal } from '@/components/ai/ProfileFormModal';
 import { AnalysisHistory } from '@/components/ai/AnalysisHistory';
 import { AiChat } from '@/components/ai/AiChat';
 import { ReasoningPanel } from '@/components/ai/ReasoningPanel';
+import { AiScreenPanel } from '@/components/ai/AiScreenPanel';
 import { generateId } from '@/components/ai/shared';
 
 export default function AiPage() {
@@ -34,6 +35,7 @@ export default function AiPage() {
 
   const [showSettings, setShowSettings] = useState(false);
   const [showAddProfile, setShowAddProfile] = useState(false);
+  const [mode, setMode] = useState<'analyze' | 'screen'>('analyze');
   const [editingProfile, setEditingProfile] = useState<AiProfile | null>(null);
   const [selectedCode, setSelectedCode] = useState<string>('');
   const [isAnalyzing, setIsAnalyzing] = useState(false);
@@ -716,6 +718,38 @@ export default function AiPage() {
         </div>
       )}
 
+      {/* 模式切换：个股分析 / AI 筛选 */}
+      {currentProfile && (
+        <div className="flex gap-2 mb-4">
+          <button
+            onClick={() => setMode('analyze')}
+            className={cn(
+              'flex-1 py-2 rounded-lg text-sm font-medium flex items-center justify-center gap-1.5 transition',
+              mode === 'analyze' ? 'bg-purple-600 text-white' : 'bg-gray-100 dark:bg-gray-800 text-gray-500 hover:bg-gray-200',
+            )}
+          >
+            <Brain className="w-4 h-4" /> 个股分析
+          </button>
+          <button
+            onClick={() => setMode('screen')}
+            className={cn(
+              'flex-1 py-2 rounded-lg text-sm font-medium flex items-center justify-center gap-1.5 transition',
+              mode === 'screen' ? 'bg-purple-600 text-white' : 'bg-gray-100 dark:bg-gray-800 text-gray-500 hover:bg-gray-200',
+            )}
+          >
+            <Sparkles className="w-4 h-4" /> AI 筛选
+          </button>
+        </div>
+      )}
+
+      {/* AI 筛选模式 */}
+      {mode === 'screen' && currentProfile && (
+        <AiScreenPanel currentProfile={currentProfile} />
+      )}
+
+      {/* ===== 个股分析模式 ===== */}
+      {mode === 'analyze' && (
+      <>
       {/* 股票选择 + 分析按钮 */}
       {currentProfile && (
       <div className="bg-white dark:bg-gray-900 rounded-xl p-4 shadow-sm mb-4">
@@ -1154,6 +1188,9 @@ export default function AiPage() {
           result={result}
           deepStructured={deepResult?.structured ?? null}
         />
+      )}
+
+      </>
       )}
 
       {/* 设置弹窗 */}

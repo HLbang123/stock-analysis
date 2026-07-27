@@ -1,0 +1,263 @@
+/**
+ * AI 筛选 — 编排引擎
+ *
+ * 流程：L1 候选池(SQL) → enrich(算技术特征 + TS 侧技术硬筛)
+ *      → 因子打分 → LLM 重排(可选) → 风险层 → 组合分散 → 截取 maxOutput
+ * 设计参考 alphasift pipeline.screen()，分层独立可降级。
+ */
+
+import { randomUUID } from 'crypto';
+import type { AiPick, AiScreenRun, CandidateRaw, LlmConfig, StrategyPreset } from './types';
+import { fetchCandidates } from './candidates';
+import { macdStatus, rsiStatus, volatility20d, maxDrawdown20d, atr20pct, volumeRatio, signalScore, ma } from './indicators';
+import { computeScreenScores } from './scorer';
+import { rankCandidates } from './ranker';
+import { applyRiskOverlay, applyPortfolioOverlay } from './risk';
+
+/** CandidateRaw → AiPick，计算技术特征；返回 null 表示被 TS 侧技术硬筛剔除 */
+function enrich(c: CandidateRaw, preset: StrategyPreset): AiPick | null {
+  const closes = c.closes;
+  const highs = c.highs;
+  const lows = c.lows;
+  const vols = c.vols;
+  if (closes.length < 20 || c.latestClose == null) return null;
+
+  const macd = macdStatus(closes);
+  const rsiS = rsiStatus(closes);
+  const vol20 = volatility20d(closes);
+  const dd20 = maxDrawdown20d(closes);
+  const atr20 = highs.length === closes.length ? atr20pct(closes, highs, lows) : null;
+  const vr = volumeRatio(vols);
+  const sig = signalScore(closes, vols);
+
+  // TS 侧技术硬筛
+  const hf = preset.hardFilters;
+  if (hf.volatility20dPctMax != null && vol20 != null && vol20 > hf.volatility20dPctMax) return null;
+  if (hf.maxDrawdown20dPctMin != null && dd20 != null && dd20 < hf.maxDrawdown20dPctMin) return null;
+  if (hf.requireMaBullish && closes.length >= 55) {
+    const ma5 = ma(closes, 5);
+    const ma13 = ma(closes, 13);
+    const ma55 = ma(closes, 55);
+    const n = closes.length - 1;
+    if (!(ma5[n]! > ma13[n]! && ma13[n]! > ma55[n]!)) return null;
+  }
+
+  return {
+    tsCode: c.tsCode,
+    name: c.name,
+    industry: c.industry,
+    rps: c.rps,
+    latestClose: c.latestClose,
+    latestChange: c.latestChange,
+    latestAmount: c.latestAmount,
+    ret60d: c.ret60d,
+    macdStatus: macd,
+    rsiStatus: rsiS,
+    volatility20d: vol20,
+    maxDrawdown20d: dd20,
+    atr20: atr20,
+    volumeRatio: vr,
+    signalScore: sig,
+    roe: c.roe,
+    grossprofitMargin: c.grossprofitMargin,
+    orYoy: c.orYoy,
+    industryChangePct: c.industryChangePct,
+    factorScores: {},
+    screenScore: 0,
+    llmScore: null,
+    llmConfidence: null,
+    llmSector: '',
+    llmTheme: '',
+    llmThesis: '',
+    rankingReason: '',
+    riskSummary: '',
+    llmCatalysts: [],
+    llmRisks: [],
+    llmTags: [],
+    llmStyleFit: '',
+    llmWatchItems: [],
+    llmInvalidators: [],
+    finalScore: 0,
+    riskScore: null,
+    riskLevel: 'low',
+    riskPenalty: 0,
+    riskFlags: [],
+    portfolioPenalty: 0,
+    rank: 0,
+    entryPrice: c.latestClose,
+    entryDate: '',
+  };
+}
+
+export interface ScreenOutcome {
+  run: AiScreenRun;
+  picks: AiPick[]; // 已截取 maxOutput，已排序
+}
+
+/**
+ * 跑一次 AI 筛选。
+ * @param preset 策略预设
+ * @param llmCfg LLM 配置（preset.llmRerank=false 时可不传）
+ */
+export async function runScreen(preset: StrategyPreset, llmCfg?: LlmConfig): Promise<ScreenOutcome> {
+  const degradation: string[] = [];
+  const { barDate, candidates } = await fetchCandidates(preset);
+
+  // enrich + TS 侧技术硬筛
+  let picks: AiPick[] = [];
+  for (const c of candidates) {
+    const p = enrich(c, preset);
+    if (p) {
+      p.entryDate = barDate;
+      picks.push(p);
+    }
+  }
+  const filteredCount = picks.length;
+  if (candidates.length > 0 && picks.length === 0) {
+    degradation.push('all_filtered_by_technical_hard_filter');
+  }
+
+  // 因子打分
+  computeScreenScores(picks, preset);
+
+  // LLM 重排（可选）
+  let llmRanked = false;
+  let llmModel: string | null = null;
+  let marketView = '';
+  let selectionLogic = '';
+  let portfolioRisk = '';
+  let coverage: number | null = null;
+
+  if (preset.llmRerank && llmCfg && picks.length > 0) {
+    llmModel = llmCfg.model;
+    const r = await rankCandidates(picks, preset, llmCfg);
+    picks = r.picks;
+    llmRanked = r.llmRanked;
+    marketView = r.marketView;
+    selectionLogic = r.selectionLogic;
+    portfolioRisk = r.portfolioRisk;
+    coverage = r.coverage;
+    degradation.push(...r.degradation);
+  } else {
+    // 不走 LLM：final = screen_score，按规则分排
+    picks.sort((a, b) => b.screenScore - a.screenScore);
+    for (const k of picks) k.finalScore = k.screenScore;
+    picks.forEach((k, i) => (k.rank = i + 1));
+    if (preset.llmRerank && !llmCfg) degradation.push('llm_config_missing');
+  }
+
+  // 风险层 + 组合层
+  picks = applyRiskOverlay(picks, preset);
+  picks = applyPortfolioOverlay(picks, preset);
+
+  // 截取 maxOutput
+  picks = picks.slice(0, preset.maxOutput);
+  picks.forEach((k, i) => (k.rank = i + 1));
+
+  const run: AiScreenRun = {
+    id: randomUUID(),
+    strategyId: preset.id,
+    strategyName: preset.name,
+    createdAt: new Date().toISOString(),
+    barDate,
+    rpsPeriod: preset.hardFilters.rpsPeriod ?? 60,
+    candidateCount: filteredCount,
+    pickCount: picks.length,
+    llmReranked: llmRanked,
+    llmModel,
+    llmMarketView: marketView,
+    llmSelectionLogic: selectionLogic,
+    llmPortfolioRisk: portfolioRisk,
+    llmCoverage: coverage,
+    degradation,
+    riskEnabled: true,
+    portfolioEnabled: !!preset.portfolioProfile,
+  };
+
+  return { run, picks };
+}
+
+/** DB Pick 行 → AiPick（补救重排时用，所有字段都已持久化） */
+export function dbPickToAiPick(r: any): AiPick {
+  return {
+    tsCode: r.tsCode,
+    name: r.name,
+    industry: r.industry,
+    rps: r.rps,
+    latestClose: r.latestClose,
+    latestChange: r.latestChange,
+    latestAmount: r.latestAmount,
+    ret60d: r.ret60d,
+    macdStatus: r.macdStatus ?? 'neutral',
+    rsiStatus: r.rsiStatus ?? 'neutral',
+    volatility20d: r.volatility20d,
+    maxDrawdown20d: r.maxDrawdown20d,
+    atr20: r.atr20,
+    volumeRatio: r.volumeRatio,
+    signalScore: r.signalScore,
+    roe: r.roe,
+    grossprofitMargin: r.grossprofitMargin,
+    orYoy: r.orYoy,
+    industryChangePct: r.industryChangePct,
+    factorScores: (r.factorScores as Record<string, number>) ?? {},
+    screenScore: r.screenScore,
+    llmScore: r.llmScore,
+    llmConfidence: r.llmConfidence,
+    llmSector: r.llmSector ?? '',
+    llmTheme: r.llmTheme ?? '',
+    llmThesis: r.llmThesis ?? '',
+    rankingReason: r.rankingReason ?? '',
+    riskSummary: r.riskSummary ?? '',
+    llmCatalysts: r.llmCatalysts ?? [],
+    llmRisks: r.llmRisks ?? [],
+    llmTags: r.llmTags ?? [],
+    llmStyleFit: r.llmStyleFit ?? '',
+    llmWatchItems: r.llmWatchItems ?? [],
+    llmInvalidators: r.llmInvalidators ?? [],
+    finalScore: r.finalScore,
+    riskScore: r.riskScore,
+    riskLevel: r.riskLevel ?? 'low',
+    riskPenalty: r.riskPenalty ?? 0,
+    riskFlags: r.riskFlags ?? [],
+    portfolioPenalty: r.portfolioPenalty ?? 0,
+    rank: r.rank ?? 0,
+    entryPrice: r.entryPrice,
+    entryDate: r.entryDate ?? '',
+  };
+}
+
+export interface RescueOutcome {
+  picks: AiPick[];
+  marketView: string;
+  selectionLogic: string;
+  portfolioRisk: string;
+  coverage: number | null;
+  degradation: string[];
+}
+
+/**
+ * 补救重排：对已保存的降级 Run（LLM 失败回退纯规则），用后续用户的 token 重跑 LLM。
+ * 成功返回 RescueOutcome；仍失败返回 null（调用方应设 llmRescued=true 熔断）。
+ */
+export async function rescueRun(
+  dbPicks: AiPick[],
+  preset: StrategyPreset,
+  cfg: LlmConfig,
+): Promise<RescueOutcome | null> {
+  if (dbPicks.length === 0) return null;
+  const r = await rankCandidates(dbPicks, preset, cfg);
+  if (!r.llmRanked) return null;
+  let picks = r.picks;
+  picks = applyRiskOverlay(picks, preset);
+  picks = applyPortfolioOverlay(picks, preset);
+  picks = picks.slice(0, preset.maxOutput);
+  picks.forEach((k, i) => (k.rank = i + 1));
+  return {
+    picks,
+    marketView: r.marketView,
+    selectionLogic: r.selectionLogic,
+    portfolioRisk: r.portfolioRisk,
+    coverage: r.coverage,
+    degradation: r.degradation,
+  };
+}

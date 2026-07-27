@@ -172,3 +172,104 @@ model SwIndexMember {
   @@index([indexLevel])
   @@map("sw_index_member")
 }
+
+// ===== AI 筛选（规则筛 + 因子打分 + LLM 重排 + 风险层）=====
+// 对外文案一律称「筛选」，不出现选股/荐股字眼（合规口径）。
+// Run/Pick 每次 T+N 回测埋点：entryPrice/entryDate 不可回填，exit* 字段供 Phase 3 回填。
+
+/// 一次 AI 筛选运行
+model AiScreenRun {
+  id                String  @id @default(uuid()) @db.VarChar(36)
+  strategyId        String  @map("strategy_id") @db.VarChar(32)
+  strategyName      String  @map("strategy_name") @db.VarChar(40)
+  createdAt         String  @map("created_at") @db.VarChar(32) // ISO
+  barDate           String  @map("bar_date") @db.VarChar(8)
+  rpsPeriod         Int     @map("rps_period")
+  candidateCount    Int     @map("candidate_count")
+  pickCount         Int     @map("pick_count")
+  llmReranked       Boolean @default(false) @map("llm_reranked")
+  llmRescued        Boolean @default(false) @map("llm_rescued") // 降级后是否已尝试用后续用户 token 补救（熔断，每天最多1次）
+  llmModel          String? @map("llm_model") @db.VarChar(80)
+  llmMarketView     String? @map("llm_market_view") @db.VarChar(300)
+  llmSelectionLogic String? @map("llm_selection_logic") @db.VarChar(400)
+  llmPortfolioRisk  String? @map("llm_portfolio_risk") @db.VarChar(400)
+  llmCoverage       Float?  @map("llm_coverage")
+  degradation       String[] // 降级日志
+  riskEnabled       Boolean @default(true) @map("risk_enabled")
+  portfolioEnabled  Boolean @default(false) @map("portfolio_enabled")
+
+  picks AiScreenPick[]
+
+  @@unique([strategyId, barDate])
+  @@index([createdAt])
+  @@index([strategyId])
+  @@map("ai_screen_runs")
+}
+
+/// 一次运行中的单只入选股（含因子分、LLM 理由、风险标签、T+N 埋点）
+model AiScreenPick {
+  id           String  @id @default(uuid()) @db.VarChar(36)
+  runId        String  @map("run_id") @db.VarChar(36)
+  rank         Int
+  tsCode       String  @map("ts_code") @db.VarChar(12)
+  name         String  @db.VarChar(40)
+  industry     String? @db.VarChar(40)
+
+  // 快照
+  rps           Float?
+  latestClose   Float? @map("latest_close")
+  latestChange  Float? @map("latest_change")
+  latestAmount  Float? @map("latest_amount")
+  // 技术特征
+  ret60d              Float? @map("ret_60d")
+  macdStatus          String? @map("macd_status") @db.VarChar(12)
+  rsiStatus           String? @map("rsi_status") @db.VarChar(12)
+  volatility20d       Float? @map("volatility_20d")
+  maxDrawdown20d      Float? @map("max_drawdown_20d")
+  atr20               Float? @map("atr_20")
+  volumeRatio         Float? @map("volume_ratio")
+  signalScore         Float? @map("signal_score")
+  // 基本面
+  roe                 Float?
+  grossprofitMargin   Float? @map("grossprofit_margin")
+  orYoy               Float? @map("or_yoy")
+  industryChangePct   Float? @map("industry_change_pct")
+  // 分数
+  factorScores        Json   @map("factor_scores")
+  screenScore         Float  @map("screen_score")
+  llmScore            Float? @map("llm_score")
+  llmConfidence       Float? @map("llm_confidence")
+  finalScore          Float  @map("final_score")
+  // LLM 输出
+  llmSector           String? @map("llm_sector") @db.VarChar(40)
+  llmTheme            String? @map("llm_theme") @db.VarChar(100)
+  llmThesis           String? @map("llm_thesis") @db.VarChar(240)
+  rankingReason       String? @map("ranking_reason") @db.VarChar(200)
+  riskSummary         String? @map("risk_summary") @db.VarChar(200)
+  llmCatalysts        String[] @map("llm_catalysts")
+  llmRisks            String[] @map("llm_risks")
+  llmTags             String[] @map("llm_tags")
+  llmStyleFit         String? @map("llm_style_fit") @db.VarChar(120)
+  llmWatchItems       String[] @map("llm_watch_items")
+  llmInvalidators     String[] @map("llm_invalidators")
+  // 风险层
+  riskScore           Float? @map("risk_score")
+  riskLevel           String? @map("risk_level") @db.VarChar(8)
+  riskPenalty         Float  @default(0) @map("risk_penalty")
+  riskFlags           String[] @map("risk_flags")
+  portfolioPenalty    Float  @default(0) @map("portfolio_penalty")
+  // T+N 回测埋点（entryPrice/entryDate 必存；exit* 字段 Phase 3 回填）
+  entryPrice          Float? @map("entry_price")
+  entryDate           String? @map("entry_date") @db.VarChar(8)
+  exitPrice           Float? @map("exit_price")
+  exitDate            String? @map("exit_date") @db.VarChar(8)
+  holdingReturnPct    Float? @map("holding_return_pct")
+  evalNote            String? @map("eval_note") @db.VarChar(200)
+
+  run AiScreenRun @relation(fields: [runId], references: [id], onDelete: Cascade)
+
+  @@index([runId])
+  @@index([tsCode])
+  @@index([entryDate])
+  @@map("ai_screen_picks")
+}

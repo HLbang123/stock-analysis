@@ -5,6 +5,9 @@
  *   - RPS：filterRps=true 时按 minRps + period 过滤
  *   - 5/13金叉：goldenCross=true 时按 gcDays 过滤（0=当前MA5>MA13状态；>0=最近gcDays日内上穿）
  *   - 55日线朝上：ma55Up=true 时 MA55(今) >= MA55(5交易日前)
+ *   - VCP 波动率收缩：vcp=true 时启用。拉长历史窗口至 ~400 日历日（覆盖 MA200），
+ *     在 SQL 内算 MA150/MA200 + Trend Template 趋势前置 + 三段波幅递进收缩 + 右侧量缩 + 贴近颈线。
+ *     不开 VCP 时走短窗口（120 日历日），零额外成本。
  *
  * 参数：
  *   period    - RPS 周期（默认 250）
@@ -16,6 +19,7 @@
  *   ma55Up    - 是否启用 55日线朝上过滤（默认 false）
  *   minRoe    - 最低 ROE（仅 filterRoe=true 时生效，默认 15）
  *   filterRoe - 是否启用 ROE 过滤（默认 false）
+ *   vcp       - 是否启用 VCP 波动率收缩过滤（默认 false）
  *   limit     - 返回数量（默认 50，上限 200）
  */
 export async function GET(request: Request) {
@@ -24,12 +28,14 @@ export async function GET(request: Request) {
   const minRps = parseFloat(searchParams.get("minRps") || "87");
   const filterRps = searchParams.get("filterRps") !== "false"; // 默认 true
   const industry = searchParams.get("industry");
+  const industryLevel = searchParams.get("industryLevel") === "L2" ? "L2" : "L1";
   const goldenCross = searchParams.get("goldenCross") === "true";
   const gcDaysRaw = parseInt(searchParams.get("gcDays") || "5");
   const gcDays = Number.isFinite(gcDaysRaw) ? Math.max(0, gcDaysRaw) : 5;
   const ma55Up = searchParams.get("ma55Up") === "true";
   const filterRoe = searchParams.get("filterRoe") === "true";
   const minRoe = parseFloat(searchParams.get("minRoe") || "15");
+  const vcp = searchParams.get("vcp") === "true";
   const limit = Math.min(parseInt(searchParams.get("limit") || "50"), 200);
 
   if (![20, 60, 120, 250].includes(period)) {
@@ -55,9 +61,9 @@ export async function GET(request: Request) {
       select: { tradeDate: true },
     });
 
-    // startDate = 今天往前 120 日历日（覆盖 55 交易日 + 5 日斜率窗口 + 缓冲）
+    // startDate：VCP 模式拉 ~400 日历日（≈285 交易日，覆盖 MA200 + 底座），否则 120 日历日（覆盖 MA55）
     const start = new Date();
-    start.setDate(start.getDate() - 120);
+    start.setDate(start.getDate() - (vcp ? 400 : 120));
     const startDate = start.toISOString().slice(0, 10).replace(/-/g, "");
 
     // 动态 WHERE 拼接
@@ -70,7 +76,7 @@ export async function GET(request: Request) {
     }
     if (industry) {
       params.push(industry);
-      where.push(`s.ts_code IN (SELECT member_code FROM sw_index_member WHERE index_level = 'L1' AND index_name = $${params.length})`);
+      where.push(`s.ts_code IN (SELECT member_code FROM sw_index_member WHERE index_level = '${industryLevel}' AND index_name = $${params.length})`);
     }
     if (goldenCross) {
       if (gcDays === 0) {
@@ -88,17 +94,64 @@ export async function GET(request: Request) {
       params.push(minRoe);
       where.push(`f.roe >= $${params.length}`);
     }
+    if (vcp) {
+      where.push(`vf.vcp = true`);
+    }
     params.push(limit);
 
     // gcDays 作为 SQL 参数传入 sig CTE 的 BOOL_OR（金叉窗口）
     const gcParam = gcDays > 0 ? gcDays : 9999; // 0(不限)时 gc_fresh 不用，给个大值无害
+
+    // ---- VCP 模式专属 SQL 片段（vcp=false 时全部为空字符串，查询退化为原样）----
+    // recent CTE：额外取 high/low/vol + MA150/MA200 窗口
+    const vcpRecentCols = vcp ? `,
+          high, low, vol,
+          AVG(close) OVER w150 AS ma150,
+          AVG(close) OVER w200 AS ma200` : "";
+    const vcpRecentWindows = vcp ? `,
+          w150 AS (PARTITION BY "tsCode" ORDER BY "tradeDate" ROWS BETWEEN 149 PRECEDING AND CURRENT ROW),
+          w200 AS (PARTITION BY "tsCode" ORDER BY "tradeDate" ROWS BETWEEN 199 PRECEDING AND CURRENT ROW)` : "";
+    // mas CTE：透传 VCP 所需列到 sig
+    const vcpMasCols = vcp ? `, high, low, vol, ma150, ma200` : "";
+    // sig CTE：分段波幅/量能 + MA150/MA200 快照（rn=1 最新，rn=21 为 20 交易日前，用于 MA200 上行判断）
+    const vcpSigCols = vcp ? `,
+          MAX(CASE WHEN rn = 1 THEN ma150 END) AS ma150_now,
+          MAX(CASE WHEN rn = 1 THEN ma200 END) AS ma200_now,
+          MAX(CASE WHEN rn = 21 THEN ma200 END) AS ma200_prev,
+          MAX(CASE WHEN rn BETWEEN 1 AND 60 THEN high END) AS base_high,
+          MAX(CASE WHEN rn BETWEEN 41 AND 60 THEN high END) AS seg1_high,
+          MIN(CASE WHEN rn BETWEEN 41 AND 60 THEN low END) AS seg1_low,
+          MAX(CASE WHEN rn BETWEEN 21 AND 40 THEN high END) AS seg2_high,
+          MIN(CASE WHEN rn BETWEEN 21 AND 40 THEN low END) AS seg2_low,
+          AVG(CASE WHEN rn BETWEEN 21 AND 40 THEN vol END) AS seg2_vol,
+          MAX(CASE WHEN rn BETWEEN 1 AND 20 THEN high END) AS seg3_high,
+          MIN(CASE WHEN rn BETWEEN 1 AND 20 THEN low END) AS seg3_low,
+          AVG(CASE WHEN rn BETWEEN 1 AND 20 THEN vol END) AS seg3_vol` : "";
+    // vcpfinal CTE：综合 Trend Template + 递进收缩 + 量缩 + 贴近颈线 → vcp 布尔
+    const vcpFinalCte = vcp ? `
+      , vcpfinal AS (
+        SELECT "tsCode",
+          ( latest_close_ma > ma150_now
+            AND ma150_now > ma200_now
+            AND ma200_now > COALESCE(ma200_prev, ma200_now)              -- MA200 上行
+            AND (seg3_high - seg3_low) / NULLIF(seg3_low, 0)
+              < (seg2_high - seg2_low) / NULLIF(seg2_low, 0) * 0.8        -- 第三段比第二段收缩≥20%
+            AND (seg2_high - seg2_low) / NULLIF(seg2_low, 0)
+              < (seg1_high - seg1_low) / NULLIF(seg1_low, 0) * 0.8        -- 第二段比第一段收缩≥20%
+            AND seg3_vol < seg2_vol * 0.8                                 -- 右侧量缩≥20%
+            AND latest_close_ma >= base_high * 0.97                       -- 贴近/突破底座颈线
+          ) AS vcp
+        FROM sig
+      )` : "";
+    const vcpJoin = vcp ? `LEFT JOIN vcpfinal vf ON vf."tsCode" = sig."tsCode"` : "";
+    const vcpSelect = vcp ? `, vf.vcp` : "";
 
     const query = `
       WITH recent AS (
         SELECT "tsCode", "tradeDate", close,
           AVG(close) OVER w5  AS ma5,
           AVG(close) OVER w13 AS ma13,
-          AVG(close) OVER w55 AS ma55,
+          AVG(close) OVER w55 AS ma55${vcpRecentCols},
           ROW_NUMBER() OVER (PARTITION BY "tsCode" ORDER BY "tradeDate" DESC) AS rn
         FROM daily_bars
         WHERE "tradeDate" >= $2
@@ -106,12 +159,12 @@ export async function GET(request: Request) {
         WINDOW
           w5  AS (PARTITION BY "tsCode" ORDER BY "tradeDate" ROWS BETWEEN 4 PRECEDING AND CURRENT ROW),
           w13 AS (PARTITION BY "tsCode" ORDER BY "tradeDate" ROWS BETWEEN 12 PRECEDING AND CURRENT ROW),
-          w55 AS (PARTITION BY "tsCode" ORDER BY "tradeDate" ROWS BETWEEN 54 PRECEDING AND CURRENT ROW)
+          w55 AS (PARTITION BY "tsCode" ORDER BY "tradeDate" ROWS BETWEEN 54 PRECEDING AND CURRENT ROW)${vcpRecentWindows}
       ),
       mas AS (
         SELECT "tsCode", rn, ma5, ma13, ma55, "tradeDate", close,
           LAG(ma5)  OVER (PARTITION BY "tsCode" ORDER BY "tradeDate") AS ma5_prev,
-          LAG(ma13) OVER (PARTITION BY "tsCode" ORDER BY "tradeDate") AS ma13_prev
+          LAG(ma13) OVER (PARTITION BY "tsCode" ORDER BY "tradeDate") AS ma13_prev${vcpMasCols}
         FROM recent
       ),
       sig AS (
@@ -128,20 +181,21 @@ export async function GET(request: Request) {
            AND (MAX(CASE WHEN rn = 1 THEN ma13 END) - MAX(CASE WHEN rn = 1 THEN ma5 END)) / NULLIF(MAX(CASE WHEN rn = 1 THEN ma13 END), 0) < 0.02
            AND MAX(CASE WHEN rn = 1 THEN ma5 END) > MAX(CASE WHEN rn = 2 THEN ma5 END)) AS gc_approaching,
           -- 55日线朝上：最新价 > 最新MA55
-          (MAX(CASE WHEN rn = 1 THEN close END) > MAX(CASE WHEN rn = 1 THEN ma55 END)) AS ma55_up
+          (MAX(CASE WHEN rn = 1 THEN close END) > MAX(CASE WHEN rn = 1 THEN ma55 END)) AS ma55_up${vcpSigCols}
         FROM mas GROUP BY "tsCode"
-      )
+      )${vcpFinalCte}
       SELECT s.ts_code, s.name, s.industry,
              r.${rpsCol} AS rps, r.${retCol} AS ret,
              db.close AS latest_close, db.change_pct AS latest_change, db.vol AS latest_vol,
              sig.ma5_now, sig.ma13_now, sig.ma55_now,
              sig.gc_fresh, sig.gc_state, sig.gc_approaching,
              sig.ma55_up,
-             f.roe AS roe
+             f.roe AS roe${vcpSelect}
       FROM sig
       JOIN stocks s ON sig."tsCode" = s.ts_code
       JOIN rps_scores r ON r."tsCode" = sig."tsCode" AND r."calcDate" = $1
       LEFT JOIN stock_fundamentals f ON f.ts_code = sig."tsCode"
+      ${vcpJoin}
       LEFT JOIN LATERAL (
         SELECT close, change_pct, vol FROM daily_bars
         WHERE "tsCode" = sig."tsCode" AND "tradeDate" <= $1
@@ -170,6 +224,7 @@ export async function GET(request: Request) {
       latest_close_ma: number | null;
       ma55_up: boolean | null;
       roe: number | null;
+      vcp?: boolean | null;
     }
 
     const rows = await prisma.$queryRawUnsafe<any[]>(query, ...params);
@@ -196,6 +251,7 @@ export async function GET(request: Request) {
         gcApproaching: r.gc_approaching === true,
         ma55Up: r.ma55_up === true,
         roe: r.roe != null ? Number(r.roe) : null,
+        vcp: r.vcp === true,
       })),
     });
   } catch (e: any) {
