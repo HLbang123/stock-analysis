@@ -1,6 +1,9 @@
 import { create } from 'zustand';
 import { persist } from 'zustand/middleware';
 
+/** 板块过滤：all=全部 / main=主板 / gem=创业板 / star=科创板 / bjse=北交所 */
+export type Board = 'all' | 'main' | 'gem' | 'star' | 'bjse';
+
 export interface RpsItem {
   tsCode: string;
   name: string;
@@ -18,6 +21,7 @@ export interface RpsItem {
   ma55Up: boolean;
   vcp: boolean;
   roe: number | null;
+  rsi: number | null;
 }
 
 interface ScannerState {
@@ -28,7 +32,7 @@ interface ScannerState {
   rpsIndustry: string;
   industryLevel: 'L1' | 'L2';
   rpsResults: RpsItem[];
-  // 四个过滤器（AND 组合）
+  // 过滤器（AND 组合）
   filterRps: boolean;
   goldenCross: boolean;
   gcDays: number;
@@ -36,6 +40,11 @@ interface ScannerState {
   filterRoe: boolean;
   minRoe: number;
   vcp: boolean;
+  filterRsi: boolean;
+  rsiPeriod: number;
+  rsiMin: number | null;
+  rsiMax: number | null;
+  board: Board;
 
   setSelectedSectors: (updater: string[] | ((prev: string[]) => string[])) => void;
   setRpsPeriod: (n: number) => void;
@@ -50,6 +59,11 @@ interface ScannerState {
   setFilterRoe: (v: boolean) => void;
   setMinRoe: (n: number) => void;
   setVcp: (v: boolean) => void;
+  setFilterRsi: (v: boolean) => void;
+  setRsiPeriod: (n: number) => void;
+  setRsiMin: (v: number | null) => void;
+  setRsiMax: (v: number | null) => void;
+  setBoard: (v: Board) => void;
   clearResults: () => void;
 }
 
@@ -72,6 +86,11 @@ export const useScannerStore = create<ScannerState>()(
       filterRoe: false,
       minRoe: 15,
       vcp: false,
+      filterRsi: false,
+      rsiPeriod: 6,
+      rsiMin: null,
+      rsiMax: 30,
+      board: 'all',
 
       setSelectedSectors: (updater) => set((s) => ({ selectedSectors: resolve(updater, s.selectedSectors) })),
       setRpsPeriod: (rpsPeriod) => set({ rpsPeriod }),
@@ -86,11 +105,16 @@ export const useScannerStore = create<ScannerState>()(
       setFilterRoe: (filterRoe) => set({ filterRoe }),
       setMinRoe: (minRoe) => set({ minRoe }),
       setVcp: (vcp) => set({ vcp }),
+      setFilterRsi: (filterRsi) => set({ filterRsi }),
+      setRsiPeriod: (rsiPeriod) => set({ rsiPeriod }),
+      setRsiMin: (rsiMin) => set({ rsiMin }),
+      setRsiMax: (rsiMax) => set({ rsiMax }),
+      setBoard: (board) => set({ board }),
       clearResults: () => set({ rpsResults: [] }),
     }),
     {
       name: 'scanner-store',
-      version: 4,
+      version: 6,
       partialize: (s) => ({
         selectedSectors: s.selectedSectors,
         rpsPeriod: s.rpsPeriod,
@@ -105,8 +129,13 @@ export const useScannerStore = create<ScannerState>()(
         filterRoe: s.filterRoe,
         minRoe: s.minRoe,
         vcp: s.vcp,
+        filterRsi: s.filterRsi,
+        rsiPeriod: s.rsiPeriod,
+        rsiMin: s.rsiMin,
+        rsiMax: s.rsiMax,
+        board: s.board,
       }),
-      // v1→v2：丢弃已删除的 rules 模式字段；v2→v3：新增 vcp 字段（缺省 false 由默认值兜底）
+      // v1→v2：丢弃已删除的 rules 模式字段；v2→v3：新增 vcp；v4→v5：新增 board；v5→v6：新增 RSI 过滤字段（缺省由默认值兜底）
       migrate: (persisted: unknown) => {
         const p = persisted as Record<string, unknown> | undefined;
         if (!p) return p as any;

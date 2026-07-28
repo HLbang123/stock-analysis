@@ -8,6 +8,8 @@
  *   - VCP 波动率收缩：vcp=true 时启用。拉长历史窗口至 ~400 日历日（覆盖 MA200），
  *     在 SQL 内算 MA150/MA200 + Trend Template 趋势前置 + 三段波幅递进收缩 + 右侧量缩 + 贴近颈线。
  *     不开 VCP 时走短窗口（120 日历日），零额外成本。
+ *   - RSI：filterRsi=true 时启用。在 SQL 内用窗口函数算 SMA 近似 RSI(rsiPeriod)，
+ *     rsiMin/rsiMax 任选其一或两者（AND 区间）。仅开启时计算，关闭零成本。
  *
  * 参数：
  *   period    - RPS 周期（默认 250）
@@ -20,6 +22,11 @@
  *   minRoe    - 最低 ROE（仅 filterRoe=true 时生效，默认 15）
  *   filterRoe - 是否启用 ROE 过滤（默认 false）
  *   vcp       - 是否启用 VCP 波动率收缩过滤（默认 false）
+ *   filterRsi - 是否启用 RSI 过滤（默认 false）
+ *   rsiPeriod - RSI 周期 6/12/24（默认 6，与预警 R12 同口径）
+ *   rsiMin    - RSI 下限（可选，RSI ≥ 此值）
+ *   rsiMax    - RSI 上限（可选，RSI ≤ 此值，如 30 筛超卖）
+ *   board     - 板块过滤：all(默认)/main(主板)/gem(创业板)/star(科创板)/bjse(北交所)，按 ts_code 前缀
  *   limit     - 返回数量（默认 50，上限 200）
  */
 export async function GET(request: Request) {
@@ -36,6 +43,12 @@ export async function GET(request: Request) {
   const filterRoe = searchParams.get("filterRoe") === "true";
   const minRoe = parseFloat(searchParams.get("minRoe") || "15");
   const vcp = searchParams.get("vcp") === "true";
+  const filterRsi = searchParams.get("filterRsi") === "true";
+  const rsiPeriodRaw = parseInt(searchParams.get("rsiPeriod") || "6");
+  const rsiPeriod = [6, 12, 24].includes(rsiPeriodRaw) ? rsiPeriodRaw : 6;
+  const rsiMin = searchParams.get("rsiMin");
+  const rsiMax = searchParams.get("rsiMax");
+  const board = searchParams.get("board") || "all";
   const limit = Math.min(parseInt(searchParams.get("limit") || "50"), 200);
 
   if (![20, 60, 120, 250].includes(period)) {
@@ -97,6 +110,27 @@ export async function GET(request: Request) {
     if (vcp) {
       where.push(`vf.vcp = true`);
     }
+    // 板块过滤（按 ts_code 前缀；stocks.market 只有 SH/SZ/BJ 分不开创业板/科创板）
+    if (board === "main") {
+      where.push(`s.ts_code ~ '^(600|601|603|605|000|001|002|003)\\.'`);
+    } else if (board === "gem") {
+      where.push(`s.ts_code ~ '^(300|301)\\.'`);
+    } else if (board === "star") {
+      where.push(`s.ts_code ~ '^(688|689)\\.'`);
+    } else if (board === "bjse") {
+      where.push(`s.ts_code ~ '\\.BJ$'`);
+    }
+    if (filterRsi) {
+      const rsiExpr = `(CASE WHEN sig.rsi_al_now IS NULL OR sig.rsi_al_now = 0 THEN 100 ELSE 100 - 100 / (1 + sig.rsi_ag_now / sig.rsi_al_now) END)`;
+      if (rsiMin != null && rsiMin !== "") {
+        params.push(Number(rsiMin));
+        where.push(`${rsiExpr} >= $${params.length}`);
+      }
+      if (rsiMax != null && rsiMax !== "") {
+        params.push(Number(rsiMax));
+        where.push(`${rsiExpr} <= $${params.length}`);
+      }
+    }
     params.push(limit);
 
     // gcDays 作为 SQL 参数传入 sig CTE 的 BOOL_OR（金叉窗口）
@@ -146,12 +180,29 @@ export async function GET(request: Request) {
     const vcpJoin = vcp ? `LEFT JOIN vcpfinal vf ON vf."tsCode" = sig."tsCode"` : "";
     const vcpSelect = vcp ? `, vf.vcp` : "";
 
+    // ---- RSI 模式专属 SQL 片段（filterRsi=false 时全部为空字符串，查询退化为原样）----
+    // SMA 近似 RSI：gain/loss 取 SMA(rsiPeriod)，rsi = 100 - 100/(1 + avgGain/avgLoss)
+    const rsiRecentCols = filterRsi ? `,
+          GREATEST(close - LAG(close) OVER (PARTITION BY "tsCode" ORDER BY "tradeDate"), 0) AS gain,
+          GREATEST(LAG(close) OVER (PARTITION BY "tsCode" ORDER BY "tradeDate") - close, 0) AS loss` : "";
+    const rsiMasCols = filterRsi ? `,
+          AVG(gain) OVER (PARTITION BY "tsCode" ORDER BY "tradeDate" ROWS BETWEEN ${rsiPeriod - 1} PRECEDING AND CURRENT ROW) AS rsi_ag,
+          AVG(loss) OVER (PARTITION BY "tsCode" ORDER BY "tradeDate" ROWS BETWEEN ${rsiPeriod - 1} PRECEDING AND CURRENT ROW) AS rsi_al` : "";
+    const rsiSigCols = filterRsi ? `,
+          MAX(CASE WHEN rn = 1 THEN rsi_ag END) AS rsi_ag_now,
+          MAX(CASE WHEN rn = 1 THEN rsi_al END) AS rsi_al_now` : "";
+    const rsiSelect = filterRsi
+      ? `,
+          CASE WHEN sig.rsi_al_now IS NULL OR sig.rsi_al_now = 0 THEN 100
+               ELSE 100 - 100 / (1 + sig.rsi_ag_now / sig.rsi_al_now) END AS rsi`
+      : "";
+
     const query = `
       WITH recent AS (
         SELECT "tsCode", "tradeDate", close,
           AVG(close) OVER w5  AS ma5,
           AVG(close) OVER w13 AS ma13,
-          AVG(close) OVER w55 AS ma55${vcpRecentCols},
+          AVG(close) OVER w55 AS ma55${vcpRecentCols}${rsiRecentCols},
           ROW_NUMBER() OVER (PARTITION BY "tsCode" ORDER BY "tradeDate" DESC) AS rn
         FROM daily_bars
         WHERE "tradeDate" >= $2
@@ -164,7 +215,7 @@ export async function GET(request: Request) {
       mas AS (
         SELECT "tsCode", rn, ma5, ma13, ma55, "tradeDate", close,
           LAG(ma5)  OVER (PARTITION BY "tsCode" ORDER BY "tradeDate") AS ma5_prev,
-          LAG(ma13) OVER (PARTITION BY "tsCode" ORDER BY "tradeDate") AS ma13_prev${vcpMasCols}
+          LAG(ma13) OVER (PARTITION BY "tsCode" ORDER BY "tradeDate") AS ma13_prev${vcpMasCols}${rsiMasCols}
         FROM recent
       ),
       sig AS (
@@ -181,7 +232,7 @@ export async function GET(request: Request) {
            AND (MAX(CASE WHEN rn = 1 THEN ma13 END) - MAX(CASE WHEN rn = 1 THEN ma5 END)) / NULLIF(MAX(CASE WHEN rn = 1 THEN ma13 END), 0) < 0.02
            AND MAX(CASE WHEN rn = 1 THEN ma5 END) > MAX(CASE WHEN rn = 2 THEN ma5 END)) AS gc_approaching,
           -- 55日线朝上：最新价 > 最新MA55
-          (MAX(CASE WHEN rn = 1 THEN close END) > MAX(CASE WHEN rn = 1 THEN ma55 END)) AS ma55_up${vcpSigCols}
+          (MAX(CASE WHEN rn = 1 THEN close END) > MAX(CASE WHEN rn = 1 THEN ma55 END)) AS ma55_up${vcpSigCols}${rsiSigCols}
         FROM mas GROUP BY "tsCode"
       )${vcpFinalCte}
       SELECT s.ts_code, s.name, s.industry,
@@ -190,7 +241,7 @@ export async function GET(request: Request) {
              sig.ma5_now, sig.ma13_now, sig.ma55_now,
              sig.gc_fresh, sig.gc_state, sig.gc_approaching,
              sig.ma55_up,
-             f.roe AS roe${vcpSelect}
+             f.roe AS roe${vcpSelect}${rsiSelect}
       FROM sig
       JOIN stocks s ON sig."tsCode" = s.ts_code
       JOIN rps_scores r ON r."tsCode" = sig."tsCode" AND r."calcDate" = $1
@@ -225,6 +276,7 @@ export async function GET(request: Request) {
       ma55_up: boolean | null;
       roe: number | null;
       vcp?: boolean | null;
+      rsi?: number | null;
     }
 
     const rows = await prisma.$queryRawUnsafe<any[]>(query, ...params);
@@ -252,6 +304,7 @@ export async function GET(request: Request) {
         ma55Up: r.ma55_up === true,
         roe: r.roe != null ? Number(r.roe) : null,
         vcp: r.vcp === true,
+        rsi: r.rsi != null ? Number(r.rsi) : null,
       })),
     });
   } catch (e: any) {

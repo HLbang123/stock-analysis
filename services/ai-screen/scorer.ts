@@ -192,6 +192,22 @@ function themeHeat(picks: AiPick[], p: Record<string, number>): number[] {
   });
 }
 
+/**
+ * 筹码峰复合因子：4 子维度各自横截面排名后加权合成。
+ * 暧昧形态不设绝对阈值，靠相对排名吸收——比同类"更低位密集+获利盘高+站上主峰+峰位下移"得分更高。
+ * 子维度权重：集中度 0.3 / 获利盘 0.3 / 峰位 0.25 / 漂移 0.15
+ */
+function chip(picks: AiPick[]): number[] {
+  const concRank = rankScore(picks.map((k) => k.chipConcentration), true, 50);   // 越小越密集越好
+  const profitRank = rankScore(picks.map((k) => k.chipProfitRatio), false, 50);  // 越高越好
+  const peakPosRank = rankScore(picks.map((k) => k.chipPeakPos), false, 50);     // 站上主峰为正越好
+  const driftRank = rankScore(picks.map((k) => k.chipPeakDrift), true, 50);      // 下移(负值)越好
+  return picks.map((_, i) => {
+    const s = concRank[i] * 0.3 + profitRank[i] * 0.3 + peakPosRank[i] * 0.25 + driftRank[i] * 0.15;
+    return clip(s, 0, 100);
+  });
+}
+
 /** 归一化因子权重到总和 1 */
 function normalizeWeights(weights: Record<string, number>): Record<string, number> {
   const total = Object.values(weights).reduce((a, b) => a + b, 0);
@@ -218,6 +234,7 @@ export function computeScreenScores(picks: AiPick[], preset: StrategyPreset): vo
     reversal: reversal(picks, p),
     stability: stability(picks, p),
     theme_heat: themeHeat(picks, p),
+    chip: chip(picks),
   };
 
   for (let i = 0; i < picks.length; i++) {

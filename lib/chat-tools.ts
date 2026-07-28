@@ -154,6 +154,18 @@ export const CHAT_TOOLS = [
       },
     },
   },
+  {
+    type: "function",
+    function: {
+      name: "get_chip_distribution",
+      description: "查询个股筹码分布（筹码峰），含主峰价位、平均成本、获利盘比例、90%集中度、峰位漂移，用于判断筹码密集/套牢/支撑阻力",
+      parameters: {
+        type: "object",
+        properties: { code: { type: "string", description: "股票代码，如 sz002463 或 sh600519" } },
+        required: ["code"],
+      },
+    },
+  },
 ];
 
 /** 执行工具调用，返回简洁文本结果（给 LLM 处理） */
@@ -281,6 +293,12 @@ export async function executeTool(name: string, args: any, origin: string): Prom
         const data: any = await fuyaoGet("/api/fund/portfolio/holdings", { fund_type: fundType, thscode: args.code });
         if (!data.item?.length) return `未找到 ${args.code} 的持仓数据`;
         return `前${data.item.length}大重仓股: ` + data.item.map((h: any) => `${h.stock_name}(${h.hold_ratio.toFixed(2)}%)`).join('、');
+      }
+      case "get_chip_distribution": {
+        const { getChipDistribution, formatChipSummary } = await import("@/lib/chip");
+        const chip = await getChipDistribution(args.code);
+        if (!chip) return `无 ${args.code} 的筹码数据（需≥5根含换手率的日线，可能历史未回补）`;
+        return `${args.code} 筹码分布：\n${formatChipSummary(chip)}`;
       }
       default:
         return `未知工具: ${name}`;

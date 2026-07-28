@@ -3,7 +3,7 @@
 import { useEffect, useState, useMemo } from 'react';
 import { useParams } from 'next/navigation';
 import { useStockStore } from '@/store';
-import { getRealtimeQuote, getKLineSina, getMinuteData } from '@/services/stockApi';
+import { getRealtimeQuote, getKLineSina, getMinuteData, getChipData } from '@/services/stockApi';
 import { isETF, parseCode } from '@/lib/identify';
 import { ALERT_RULES, checkAllRules } from '@/services/alertRules';
 import { RealtimeQuote, KLineData, RuleCheckResult } from '@/types';
@@ -70,7 +70,8 @@ export default function StockDetailPage() {
       // 构建实时K线并检查规则
       if (kLineData.length >= 5) {
         const updatedKLines = buildUpdatedKLines(quoteData, kLineData);
-        const results = checkAllRules(updatedKLines, quoteData, ALERT_RULES.filter(r => r.isEnabled));
+        const chip = await getChipData(code).catch(() => null);
+        const results = checkAllRules(updatedKLines, quoteData, ALERT_RULES.filter(r => r.isEnabled), chip);
 
         setRuleResults(results);
       }
@@ -141,7 +142,7 @@ export default function StockDetailPage() {
         let maxIdx = 0; let maxPrice = 0;
         minuteData.forEach((p, idx) => { if (p.price > maxPrice) { maxPrice = p.price; maxIdx = idx; } });
         index = maxIdx;
-      } else if (['R11', 'R12', 'R13', 'R14', 'R15'].includes(ruleId)) {
+      } else if (['R11', 'R12', 'R13', 'R14', 'R15', 'R17'].includes(ruleId)) {
         // 见底/企稳形态 → 最低价位置
         let minIdx = 0; let minPrice = Infinity;
         minuteData.forEach((p, idx) => { if (p.price < minPrice) { minPrice = p.price; minIdx = idx; } });

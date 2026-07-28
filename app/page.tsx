@@ -3,8 +3,8 @@
 import { useMemo, useState } from 'react';
 import { useRouter } from 'next/navigation';
 import { useStockStore } from '@/store';
-import { getRealtimeQuote, getKLineSina } from '@/services/stockApi';
-import { ALERT_RULES, checkAllRules } from '@/services/alertRules';
+import { getRealtimeQuote, getKLineSina, getChipData } from '@/services/stockApi';
+import { ALERT_RULES, checkAllRules, isBuyRule, REFERENCE_RULE_IDS } from '@/services/alertRules';
 import { AlertRecord } from '@/types';
 import { formatTime, cn, getAlertLevelColor } from '@/lib/utils';
 import { buildUpdatedKLines } from '@/lib/stock-helpers';
@@ -16,6 +16,14 @@ export default function HomePage() {
   const { watchlist, alerts, isCheckingAlerts, clearAlerts, clearAllAlerts, setIsCheckingAlerts } = useStockStore();
 
   const [resultMessage, setResultMessage] = useState<string | null>(null);
+  const [buyExpanded, setBuyExpanded] = useState<Set<string>>(new Set());
+  const toggleBuyExpand = (code: string) => {
+    setBuyExpanded(prev => {
+      const next = new Set(prev);
+      if (next.has(code)) next.delete(code); else next.add(code);
+      return next;
+    });
+  };
 
   // 分组预警
   const groupedAlerts = useMemo(() => {
@@ -36,10 +44,17 @@ export default function HomePage() {
         : effectiveAlerts.some(a => a.alertLevel === 'WARNING')
           ? 'WARNING'
           : 'INFO';
+      const buyAlerts = stockAlerts.filter(a => isBuyRule(a.ruleId) && !REFERENCE_RULE_IDS.has(a.ruleId));
+      const sellAlerts = stockAlerts.filter(a => !isBuyRule(a.ruleId) && !REFERENCE_RULE_IDS.has(a.ruleId));
+      const referenceAlerts = stockAlerts.filter(a => REFERENCE_RULE_IDS.has(a.ruleId));
       return {
         stockCode,
         stockName: stockAlerts[0].stockName,
         alerts: stockAlerts,
+        buyAlerts,
+        sellAlerts,
+        referenceAlerts,
+        buyResonance: buyAlerts.length >= 2,
         worstLevel,
         latestTime: Math.max(...stockAlerts.map(a => a.triggeredAt))
       };
@@ -48,6 +63,27 @@ export default function HomePage() {
 
   // 未读数
   const unreadCount = alerts.filter(a => !a.isRead).length;
+
+  // 单条预警行渲染
+  const renderAlertRow = (alert: AlertRecord) => (
+    <div
+      key={alert.id}
+      className={cn(
+        "flex items-start gap-2 text-sm p-2 rounded-lg",
+        alert.isExpired ? "bg-gray-100 opacity-60" : "bg-black/5"
+      )}
+    >
+      <span>
+        {alert.isExpired ? '⚪' :
+          alert.alertLevel === 'CRITICAL' ? '🔴' :
+          alert.alertLevel === 'WARNING' ? '🟡' : '🟢'}
+      </span>
+      <div className={cn("flex-1", alert.isExpired && "line-through")}>
+        <p>{alert.alertMessage}</p>
+        <p className="text-xs opacity-75 mt-0.5">建议: {alert.suggestion}</p>
+      </div>
+    </div>
+  );
 
   // 检查预警
   const checkAlerts = async () => {
@@ -81,9 +117,12 @@ export default function HomePage() {
 
         const updatedKLines = buildUpdatedKLines(quote, kLines);
 
+        // 筹码分布（DB 取数，失败返回 null，R18/R19 不触发）
+        const chip = await getChipData(stock.code);
+
         // 检查规则
         const enabledRules = ALERT_RULES.filter(r => r.isEnabled);
-        const results = checkAllRules(updatedKLines, quote, enabledRules);
+        const results = checkAllRules(updatedKLines, quote, enabledRules, chip);
 
         for (const result of results) {
           const rule = enabledRules.find(r => r.id === result.ruleId);
@@ -247,25 +286,38 @@ export default function HomePage() {
 
                   {/* 预警详情 */}
                   <div className="space-y-2">
-                    {group.alerts.map((alert) => (
-                      <div
-                        key={alert.id}
-                        className={cn(
-                          "flex items-start gap-2 text-sm p-2 rounded-lg",
-                          alert.isExpired ? "bg-gray-100 opacity-60" : "bg-black/5"
+                    {/* 卖出/风险信号：保持原样平铺 */}
+                    {group.sellAlerts.map(alert => renderAlertRow(alert))}
+
+                    {/* 参考级弱提醒（R18/R19 筹码峰）：平铺，不计入共振 */}
+                    {group.referenceAlerts.map(alert => renderAlertRow(alert))}
+
+                    {/* 买入信号：≥2 条聚合成"共振"，可展开看明细；否则平铺 */}
+                    {group.buyResonance ? (
+                      <div className="rounded-lg bg-green-500/10 border border-green-500/30 overflow-hidden">
+                        <button
+                          type="button"
+                          onClick={(e) => { e.stopPropagation(); toggleBuyExpand(group.stockCode); }}
+                          className="w-full flex items-center gap-2 text-sm p-2 text-left hover:bg-green-500/10 transition"
+                        >
+                          <span>🟢</span>
+                          <span className="font-medium whitespace-nowrap">买入共振 · {group.buyAlerts.length}条</span>
+                          <span className="text-xs opacity-70 truncate">
+                            {group.buyAlerts.map(a => a.ruleName).join(' / ')}
+                          </span>
+                          <span className="ml-auto text-xs opacity-70 whitespace-nowrap">
+                            {buyExpanded.has(group.stockCode) ? '收起 ▲' : '展开 ▼'}
+                          </span>
+                        </button>
+                        {buyExpanded.has(group.stockCode) && (
+                          <div className="space-y-1 px-2 pb-2">
+                            {group.buyAlerts.map(alert => renderAlertRow(alert))}
+                          </div>
                         )}
-                      >
-                        <span>
-                          {alert.isExpired ? '⚪' :
-                            alert.alertLevel === 'CRITICAL' ? '🔴' :
-                            alert.alertLevel === 'WARNING' ? '🟡' : '🟢'}
-                        </span>
-                        <div className={cn("flex-1", alert.isExpired && "line-through")}>
-                          <p>{alert.alertMessage}</p>
-                          <p className="text-xs opacity-75 mt-0.5">建议: {alert.suggestion}</p>
-                        </div>
                       </div>
-                    ))}
+                    ) : (
+                      group.buyAlerts.map(alert => renderAlertRow(alert))
+                    )}
                   </div>
 
                   {/* 时间 */}

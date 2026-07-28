@@ -5,7 +5,9 @@
  * 首次运行拉取近 300 个交易日（覆盖 RPS 250 计算）
  * 之后只拉增量（最近几天）
  *
- * 运行：npx tsx scripts/sync-daily.ts [--init]
+ * 运行：npx tsx scripts/sync-daily.ts [--init] [--backfill-chip]
+ *   --init           首次拉取近 300 个交易日
+ *   --backfill-chip  仅回补缺 turnover_rate/circ_mv 的历史交易日
  */
 
 import { callTushare, toRecords } from "../lib/tushare";
@@ -29,6 +31,13 @@ interface DailyItem {
   amount: number;
 }
 
+interface BasicItem {
+  ts_code: string;
+  trade_date: string;
+  turnover_rate: number | null;
+  circ_mv: number | null;
+}
+
 async function syncDate(tradeDate: string): Promise<number> {
   const res = await callTushare<DailyItem>("daily", {
     trade_date: tradeDate,
@@ -37,20 +46,48 @@ async function syncDate(tradeDate: string): Promise<number> {
   const bars = toRecords<DailyItem>(res);
   if (bars.length === 0) return 0;
 
-  // 原始 SQL 批量写入，跳过重复
+  // 并取 daily_basic（换手率/流通市值，筹码分布模型用），按 ts_code+trade_date 合并
+  const basicMap = new Map<string, BasicItem>();
+  try {
+    const basicRes = await callTushare<BasicItem>("daily_basic", {
+      trade_date: tradeDate,
+    }, "ts_code,trade_date,turnover_rate,circ_mv");
+    for (const b of toRecords<BasicItem>(basicRes)) {
+      basicMap.set(`${b.ts_code}_${b.trade_date}`, b);
+    }
+  } catch (e: any) {
+    console.error(`[sync-daily] ${tradeDate} daily_basic 失败: ${e.message?.slice(0, 80)}`);
+  }
+
+  // 原始 SQL 批量写入；DO UPDATE 保证增量重跑能刷新 turnover_rate/circ_mv
   for (let i = 0; i < bars.length; i += 500) {
     const batch = bars.slice(i, i + 500);
     const values: string[] = [];
     const params: any[] = [];
     for (const b of batch) {
       const idx = params.length;
-      values.push(`($${idx + 1},$${idx + 2},$${idx + 3},$${idx + 4},$${idx + 5},$${idx + 6},$${idx + 7},$${idx + 8},$${idx + 9},$${idx + 10})`);
-      params.push(b.ts_code, b.trade_date, b.open, b.high, b.low, b.close, b.pre_close, b.pct_chg, b.vol, b.amount);
+      values.push(`($${idx + 1},$${idx + 2},$${idx + 3},$${idx + 4},$${idx + 5},$${idx + 6},$${idx + 7},$${idx + 8},$${idx + 9},$${idx + 10},$${idx + 11},$${idx + 12})`);
+      const basic = basicMap.get(`${b.ts_code}_${b.trade_date}`);
+      params.push(
+        b.ts_code, b.trade_date, b.open, b.high, b.low, b.close,
+        b.pre_close, b.pct_chg, b.vol, b.amount,
+        basic?.turnover_rate ?? null, basic?.circ_mv ?? null,
+      );
     }
     await prisma.$executeRawUnsafe(
-      `INSERT INTO daily_bars ("tsCode", "tradeDate", open, high, low, close, pre_close, change_pct, vol, amount)
+      `INSERT INTO daily_bars ("tsCode", "tradeDate", open, high, low, close, pre_close, change_pct, vol, amount, turnover_rate, circ_mv)
        VALUES ${values.join(", ")}
-       ON CONFLICT ("tsCode", "tradeDate") DO NOTHING`,
+       ON CONFLICT ("tsCode", "tradeDate") DO UPDATE SET
+         turnover_rate = EXCLUDED.turnover_rate,
+         circ_mv = EXCLUDED.circ_mv,
+         open = EXCLUDED.open,
+         high = EXCLUDED.high,
+         low = EXCLUDED.low,
+         close = EXCLUDED.close,
+         pre_close = EXCLUDED.pre_close,
+         change_pct = EXCLUDED.change_pct,
+         vol = EXCLUDED.vol,
+         amount = EXCLUDED.amount`,
       ...params
     );
   }
@@ -58,8 +95,63 @@ async function syncDate(tradeDate: string): Promise<number> {
   return bars.length;
 }
 
+/** 回补模式：对已有 daily_bars 缺 turnover_rate 的交易日，按 trade_date 拉 daily_basic 补齐 */
+async function backfillChip(): Promise<number> {
+  const rows: { tradeDate: string }[] = await prisma.$queryRawUnsafe(
+    `SELECT DISTINCT "tradeDate" FROM daily_bars WHERE turnover_rate IS NULL ORDER BY "tradeDate"`
+  );
+  console.log(`[sync-daily] backfill-chip：${rows.length} 个交易日待补换手率`);
+  let filled = 0;
+  for (let i = 0; i < rows.length; i++) {
+    const tradeDate = rows[i].tradeDate;
+    try {
+      const basicRes = await callTushare<BasicItem>("daily_basic", {
+        trade_date: tradeDate,
+      }, "ts_code,trade_date,turnover_rate,circ_mv");
+      const basics = toRecords<BasicItem>(basicRes);
+      if (basics.length === 0) continue;
+      // upsert 方案（与主同步 syncDate 同模式）：INSERT ... ON CONFLICT DO UPDATE，
+      // 单语句无事务、无临时表，PK 冲突检测最快，无交互式事务超时风险。
+      // 仅更新 turnover_rate/circ_mv，不动已有 OHLC。
+      for (let j = 0; j < basics.length; j += 500) {
+        const batch = basics.slice(j, j + 500);
+        const values: string[] = [];
+        const params: any[] = [];
+        for (const b of batch) {
+          const idx = params.length;
+          values.push(`($${idx + 1},$${idx + 2},$${idx + 3},$${idx + 4})`);
+          params.push(b.ts_code, b.trade_date, b.turnover_rate, b.circ_mv);
+        }
+        await prisma.$executeRawUnsafe(
+          `INSERT INTO daily_bars ("tsCode", "tradeDate", turnover_rate, circ_mv)
+           VALUES ${values.join(", ")}
+           ON CONFLICT ("tsCode", "tradeDate") DO UPDATE SET
+             turnover_rate = EXCLUDED.turnover_rate,
+             circ_mv = EXCLUDED.circ_mv`,
+          ...params
+        );
+      }
+      filled += basics.length;
+      if ((i + 1) % 20 === 0 || i === rows.length - 1) {
+        console.log(`[sync-daily] backfill-chip ${i + 1}/${rows.length} 天，累计更新 ${filled} 条`);
+      }
+    } catch (e: any) {
+      console.error(`[sync-daily] backfill ${tradeDate} 失败:`, e?.code ?? "", e?.message ?? e);
+    }
+  }
+  return filled;
+}
+
 async function main() {
   const isInit = process.argv.includes("--init");
+  const isBackfillChip = process.argv.includes("--backfill-chip");
+
+  if (isBackfillChip) {
+    const filled = await backfillChip();
+    console.log(`\n[sync-daily] backfill-chip 完成：更新 ${filled} 条换手率`);
+    await prisma.$disconnect();
+    return;
+  }
 
   // 获取数据库中最新的交易日
   const latestBar = await prisma.dailyBar.findFirst({

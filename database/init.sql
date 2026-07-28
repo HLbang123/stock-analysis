@@ -23,6 +23,8 @@ CREATE TABLE IF NOT EXISTS daily_bars (
     change_pct DOUBLE PRECISION,          -- 涨跌幅(%)
     vol        DOUBLE PRECISION,          -- 成交量（手）
     amount     DOUBLE PRECISION,          -- 成交额（千元）
+    turnover_rate DOUBLE PRECISION,       -- 换手率（%），筹码分布模型用
+    circ_mv    DOUBLE PRECISION,          -- 流通市值（万元）
     PRIMARY KEY (ts_code, trade_date)
 );
 

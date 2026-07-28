@@ -273,7 +273,7 @@ export async function GET() {
       },
     });
     return NextResponse.json({
-      strategies: STRATEGY_PRESETS.map((s) => ({ id: s.id, name: s.name, description: s.description, category: s.category })),
+      strategies: STRATEGY_PRESETS.map((s) => ({ id: s.id, name: s.name, description: s.description, category: s.category, rulesText: s.rulesText })),
       runs,
     });
   } catch (e: any) {

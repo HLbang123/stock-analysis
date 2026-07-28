@@ -9,7 +9,7 @@
 import { randomUUID } from 'crypto';
 import type { AiPick, AiScreenRun, CandidateRaw, LlmConfig, StrategyPreset } from './types';
 import { fetchCandidates } from './candidates';
-import { macdStatus, rsiStatus, volatility20d, maxDrawdown20d, atr20pct, volumeRatio, signalScore, ma } from './indicators';
+import { macdStatus, rsiStatus, volatility20d, maxDrawdown20d, atr20pct, volumeRatio, signalScore, ma, chipFeatures } from './indicators';
 import { computeScreenScores } from './scorer';
 import { rankCandidates } from './ranker';
 import { applyRiskOverlay, applyPortfolioOverlay } from './risk';
@@ -29,6 +29,7 @@ function enrich(c: CandidateRaw, preset: StrategyPreset): AiPick | null {
   const atr20 = highs.length === closes.length ? atr20pct(closes, highs, lows) : null;
   const vr = volumeRatio(vols);
   const sig = signalScore(closes, vols);
+  const chip = chipFeatures(closes, highs, lows, vols, c.turnoverRates, c.latestClose);
 
   // TS 侧技术硬筛
   const hf = preset.hardFilters;
@@ -58,6 +59,10 @@ function enrich(c: CandidateRaw, preset: StrategyPreset): AiPick | null {
     atr20: atr20,
     volumeRatio: vr,
     signalScore: sig,
+    chipConcentration: chip.chipConcentration,
+    chipProfitRatio: chip.chipProfitRatio,
+    chipPeakPos: chip.chipPeakPos,
+    chipPeakDrift: chip.chipPeakDrift,
     roe: c.roe,
     grossprofitMargin: c.grossprofitMargin,
     orYoy: c.orYoy,
@@ -195,6 +200,10 @@ export function dbPickToAiPick(r: any): AiPick {
     atr20: r.atr20,
     volumeRatio: r.volumeRatio,
     signalScore: r.signalScore,
+    chipConcentration: r.chipConcentration ?? null,
+    chipProfitRatio: r.chipProfitRatio ?? null,
+    chipPeakPos: r.chipPeakPos ?? null,
+    chipPeakDrift: r.chipPeakDrift ?? null,
     roe: r.roe,
     grossprofitMargin: r.grossprofitMargin,
     orYoy: r.orYoy,

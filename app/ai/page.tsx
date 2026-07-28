@@ -3,7 +3,7 @@
 import { useState, useCallback, useRef } from 'react';
 import { useStockStore } from '@/store';
 import { useAiStore, AiProfile } from '@/store/ai-store';
-import { getRealtimeQuote, getKLineSina, getRealtimeQuoteCached, getKLineSinaCached, getIndustry, fetchMarketStatusNote } from '@/services/stockApi';
+import { getRealtimeQuote, getKLineSina, getRealtimeQuoteCached, getKLineSinaCached, getIndustry, fetchMarketStatusNote, getChipData } from '@/services/stockApi';
 import { ALERT_RULES, checkAllRules } from '@/services/alertRules';
 import { buildXinJieQuickSystemPrompt } from '@/services/xinjiePrompt';
 import { buildUserPrompt } from '@/services/aiPrompt';
@@ -225,7 +225,8 @@ export default function AiPage() {
 
       // 运行规则引擎
       const updatedKLines = kLines.length >= 5 ? buildUpdatedKLines(quote, kLines) : kLines;
-      const engineResults = checkAllRules(updatedKLines, quote, ALERT_RULES.filter(r => r.isEnabled));
+      const chip = await getChipData(selectedCode).catch(() => null);
+      const engineResults = checkAllRules(updatedKLines, quote, ALERT_RULES.filter(r => r.isEnabled), chip);
       const engineSummary = engineResults.length > 0
         ? engineResults.map(r => `${r.ruleId}:${r.message}`).join('; ')
         : '未触发任何破位/死叉/急跌等风险信号，技术面健康';
@@ -418,10 +419,16 @@ export default function AiPage() {
 
       // 运行规则引擎
       const updatedKLines = kLines.length >= 5 ? buildUpdatedKLines(quote, kLines) : kLines;
-      const engineResults = checkAllRules(updatedKLines, quote, ALERT_RULES.filter(r => r.isEnabled));
+      const chip = await getChipData(selectedCode).catch(() => null);
+      const engineResults = checkAllRules(updatedKLines, quote, ALERT_RULES.filter(r => r.isEnabled), chip);
       const engineSummary = engineResults.length > 0
         ? engineResults.map(r => `${r.ruleId}:${r.message}`).join('; ')
         : '未触发任何破位/死叉/急跌等风险信号，技术面健康';
+
+      // 筹码分布摘要（注入 stage1，让 LLM 解读暧昧形态）
+      const chipNote = chip
+        ? `[筹码分布]\n主峰价位: ${chip.dominantPeak} | 平均成本: ${chip.avgCost} | 获利盘: ${(chip.profitRatio * 100).toFixed(1)}% | 90%集中度: ${chip.concentration90.toFixed(3)}（越小越密集） | 峰位相对位置: ${chip.peakPos.toFixed(3)}（站上主峰为正） | 5日峰位漂移: ${chip.peakDrift.toFixed(3)}（下移为吸筹）\n（筹码形态仅供参考，需结合趋势与量能综合判断）\n\n`
+        : '';
 
       const quoteJson = JSON.stringify(quote, null, 2);
       const klineSummary = kLines.slice(-60).map(k =>
@@ -467,7 +474,7 @@ export default function AiPage() {
       }
       const stage1 = {
         systemPrompt: buildAnalystSystemPrompt(etf),
-        userPrompt: marketStatusNote + rpsNote + etfHoldingsNote + buildAnalystUserPrompt(selectedCode, stock.name, quoteJson, klineSummary, engineSummary, indicatorBlock, reflectionBlock, positionNote, etf, tushareBlock, getIndustry(selectedCode)),
+        userPrompt: marketStatusNote + rpsNote + etfHoldingsNote + chipNote + buildAnalystUserPrompt(selectedCode, stock.name, quoteJson, klineSummary, engineSummary, indicatorBlock, reflectionBlock, positionNote, etf, tushareBlock, getIndustry(selectedCode)),
       };
       // Stage 2 辩论数据（路由自行处理角色分配和调用）
       const debateDataPrompt = buildDebateDataPrompt(selectedCode, stock.name, quoteJson, indicatorBlock, marketStatusNote);

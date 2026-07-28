@@ -6,6 +6,52 @@
  * 输入序列均按日期升序（最旧在前，最新在末）。
  */
 
+import { computeChipDistribution, type ChipBar } from '@/lib/chip';
+
+export interface ChipFeatures {
+  chipConcentration: number | null;
+  chipProfitRatio: number | null;
+  chipPeakPos: number | null;
+  chipPeakDrift: number | null;
+}
+
+/** 筹码峰 4 子维度（薄封装 lib/chip.ts 单一事实源）。turnoverRates 与 closes 等长，可含 null。 */
+export function chipFeatures(
+  closes: number[], highs: number[], lows: number[], vols: number[],
+  turnoverRates: (number | null)[], currentPrice: number,
+): ChipFeatures {
+  const n = Math.min(closes.length, highs.length, lows.length, vols.length);
+  const bars: ChipBar[] = [];
+  for (let i = 0; i < n; i++) {
+    if (!Number.isFinite(closes[i]) || !Number.isFinite(highs[i]) || !Number.isFinite(lows[i])) continue;
+    bars.push({ high: highs[i], low: lows[i], close: closes[i], vol: vols[i] ?? 0, turnoverRate: turnoverRates[i] ?? null });
+  }
+  if (bars.length < 10 || !currentPrice || currentPrice <= 0) {
+    return { chipConcentration: null, chipProfitRatio: null, chipPeakPos: null, chipPeakDrift: null };
+  }
+
+  // 主窗口：最近 60 根
+  const mainBars = bars.slice(Math.max(0, bars.length - 60));
+  const main = computeChipDistribution(mainBars, currentPrice);
+  if (!main) return { chipConcentration: null, chipProfitRatio: null, chipPeakPos: null, chipPeakDrift: null };
+
+  // peakDrift：与 5 日前窗口的主峰对比（需多 5 根历史）
+  let drift: number | null = null;
+  if (bars.length > 60) {
+    const prevBars = bars.slice(bars.length - 65, bars.length - 5);
+    const prevPrice = prevBars[prevBars.length - 1]?.close ?? currentPrice;
+    const prev = computeChipDistribution(prevBars, prevPrice);
+    if (prev) drift = (main.dominantPeak - prev.dominantPeak) / main.avgCost;
+  }
+
+  return {
+    chipConcentration: main.concentration90,
+    chipProfitRatio: main.profitRatio,
+    chipPeakPos: main.peakPos,
+    chipPeakDrift: drift != null ? Math.round(drift * 1000) / 1000 : null,
+  };
+}
+
 /** 简单移动平均序列 */
 export function ma(values: number[], period: number): number[] {
   const out = new Array(values.length).fill(null) as number[];

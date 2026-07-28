@@ -3,7 +3,7 @@
  *
  * Phase 1 硬编码 4 个预设（均衡/动量/质量/防守），后期可改 DB 驱动 + UI 编辑。
  * factor_weights 不必归一，引擎内 _normalizeFactorWeights 会归一。
- * 数据约束：无 PE/PB/市值/换手率，故价值因子改用 quality（ROE+毛利率+营收增速）。
+ * 数据约束：无 PE/PB/市值，故价值因子改用 quality（ROE+毛利率+营收增速）；换手率已入库供筹码峰因子使用。
  */
 
 import type { StrategyPreset } from './types';
@@ -28,13 +28,14 @@ export const STRATEGY_PRESETS: StrategyPreset[] = [
       maxDrawdown20dPctMin: -18,
     },
     factorWeights: {
-      momentum: 0.24,
+      momentum: 0.20,
       quality: 0.22,
       liquidity: 0.16,
       stability: 0.16,
       activity: 0.10,
       reversal: 0.06,
-      theme_heat: 0.06,
+      theme_heat: 0.04,
+      chip: 0.06,
     },
     rankingHints: [
       '优先关注：',
@@ -42,6 +43,11 @@ export const STRATEGY_PRESETS: StrategyPreset[] = [
       '2. 基本面扎实（ROE、毛利率、营收增速靠前）',
       '3. 流动性充足、波动与回撤可控',
       '4. 主题热度可加分但不作为唯一依据',
+    ].join('\n'),
+    rulesText: [
+      '硬筛：RPS(60日)≥80 · 成交额≥5千万 · 单日涨跌±9.5% · 60日涨幅≤60% · 波动率≤55% · 回撤≥-18%',
+      '因子侧重：动量20% · 质量22% · 流动性16% · 稳定性16% · 活跃10% · 反转6% · 行业热度4% · 筹码6%',
+      '组合约束：同方向最多2只',
     ].join('\n'),
     maxOutput: 10,
     llmRerank: true,
@@ -64,13 +70,14 @@ export const STRATEGY_PRESETS: StrategyPreset[] = [
       requireMaBullish: true,
     },
     factorWeights: {
-      momentum: 0.42,
+      momentum: 0.40,
       activity: 0.18,
       liquidity: 0.14,
-      theme_heat: 0.12,
+      theme_heat: 0.10,
       quality: 0.08,
       stability: 0.04,
       reversal: 0.02,
+      chip: 0.04,
     },
     scoringProfile: {
       momentum_chase_start_pct: 7.0,
@@ -82,6 +89,11 @@ export const STRATEGY_PRESETS: StrategyPreset[] = [
       '2. 量价配合（放量上涨），量比适中',
       '3. 行业指数当日强势，主题热度上升',
       '4. 警惕连阳过热与单日追高，但允许较高波动',
+    ].join('\n'),
+    rulesText: [
+      '硬筛：RPS(60日)≥87 · 成交额≥1亿 · 单日-5%~+9.8% · 60日涨>5% · 必须MA5>MA13>MA55多头排列',
+      '因子侧重：动量40% · 活跃18% · 流动性14% · 行业热度10% · 质量8% · 稳定性4% · 反转2% · 筹码4%',
+      '组合约束：同方向最多2只（允许较高波动，追强加速段）',
     ].join('\n'),
     maxOutput: 10,
     llmRerank: true,
@@ -104,13 +116,14 @@ export const STRATEGY_PRESETS: StrategyPreset[] = [
       maxDrawdown20dPctMin: -12,
     },
     factorWeights: {
-      quality: 0.36,
+      quality: 0.34,
       stability: 0.22,
       momentum: 0.16,
       liquidity: 0.14,
       theme_heat: 0.06,
       activity: 0.04,
       reversal: 0.02,
+      chip: 0.02,
     },
     scoringProfile: {
       stability_high_volatility_pct: 38.0,
@@ -122,6 +135,11 @@ export const STRATEGY_PRESETS: StrategyPreset[] = [
       '2. 波动率与回撤可控，日线数据质量高',
       '3. RPS 中上、趋势稳健，非短线爆炒',
       '4. 估值/热度可参考但不作为主依据',
+    ].join('\n'),
+    rulesText: [
+      '硬筛：RPS(120日)≥70 · 成交额≥6千万 · 单日-7%~+7% · 波动率≤45% · 回撤≥-12%',
+      '因子侧重：质量34% · 稳定性22% · 动量16% · 流动性14% · 行业热度6% · 活跃4% · 反转2% · 筹码2%',
+      '组合约束：同方向最多2只（重基本面，找优质回踩）',
     ].join('\n'),
     maxOutput: 10,
     llmRerank: true,
@@ -145,13 +163,14 @@ export const STRATEGY_PRESETS: StrategyPreset[] = [
       maxDrawdown20dPctMin: -8,
     },
     factorWeights: {
-      stability: 0.34,
+      stability: 0.30,
       quality: 0.22,
       liquidity: 0.16,
       momentum: 0.14,
       theme_heat: 0.06,
       activity: 0.06,
       reversal: 0.02,
+      chip: 0.04,
     },
     scoringProfile: {
       stability_high_volatility_pct: 30.0,
@@ -169,6 +188,11 @@ export const STRATEGY_PRESETS: StrategyPreset[] = [
       '2. 基本面稳健、流动性充足',
       '3. 主题热度可加分但不覆盖稳定性约束',
       '4. 规避单日大涨大跌与异常放量',
+    ].join('\n'),
+    rulesText: [
+      '硬筛：RPS(60日)≥65 · 成交额≥8千万 · 单日-4%~+5% · 60日涨≤35% · 波动率≤32% · 回撤≥-8%',
+      '因子侧重：稳定性30% · 质量22% · 流动性16% · 动量14% · 行业热度6% · 活跃6% · 反转2% · 筹码4%',
+      '组合约束：同方向最多1只（最严控波动，防守观察仓）',
     ].join('\n'),
     maxOutput: 10,
     llmRerank: true,

@@ -4,7 +4,7 @@ import { AUTH_COOKIE, verifyToken } from "@/lib/auth";
 // 公开路径：登录页 + 登录接口
 const PUBLIC_PATHS = ["/login", "/api/auth"];
 
-export async function middleware(request: NextRequest) {
+export async function proxy(request: NextRequest) {
   const { pathname } = request.nextUrl;
 
   // 公开路径放行
@@ -26,7 +26,7 @@ export async function middleware(request: NextRequest) {
 }
 
 export const config = {
-  // 排除静态资源与公开数据文件，其余全过 middleware
+  // 排除静态资源与公开数据文件，其余全过 proxy
   matcher: [
     "/((?!_next/static|_next/image|favicon.ico|manifest.json|icon-.*|stocks.json|robots.txt).*)",
   ],

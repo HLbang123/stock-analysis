@@ -26,6 +26,7 @@ function candidateFull(k: AiPick): string {
     `  RPS:${fmt(k.rps, 1)} 60日涨幅:${fmt(k.ret60d)}% MACD:${k.macdStatus} RSI:${k.rsiStatus} 信号分:${fmt(k.signalScore, 0)}`,
     `  波动率:${fmt(k.volatility20d)}% 回撤:${fmt(k.maxDrawdown20d)}% ATR:${fmt(k.atr20)}% 量比:${fmt(k.volumeRatio)}`,
     `  ROE:${fmt(k.roe, 1)}% 毛利率:${fmt(k.grossprofitMargin, 1)}% 营收增速:${fmt(k.orYoy, 1)}% 行业指数涨幅:${fmt(k.industryChangePct)}%`,
+    `  筹码:集中度${fmt(k.chipConcentration, 3)} 获利盘${fmt(k.chipProfitRatio ? k.chipProfitRatio * 100 : null, 0)}% 峰位${fmt(k.chipPeakPos, 2)} 漂移${fmt(k.chipPeakDrift, 2)}`,
     `  因子分:${fs} 规则总分:${fmt(k.screenScore, 1)}`,
   ].join('\n');
 }

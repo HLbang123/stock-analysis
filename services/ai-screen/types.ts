@@ -2,7 +2,7 @@
  * AI 筛选 — 类型定义
  *
  * 设计参考 alphasift (Python) 的 models.py，按本项目可用数据裁剪：
- * 无 PE/PB/市值/换手率，故 Pick 字段相应删减；新增 entryPrice/entryDate 为 T+N 回测埋点。
+ * 基本面缺 PE/PB/市值，故 Pick 字段相应删减；换手率已纳入 daily_bars 供筹码峰因子使用；新增 entryPrice/entryDate 为 T+N 回测埋点。
  * 对外文案一律用「筛选」，避免选股/荐股字眼（合规口径，见 memory/ai-screen-naming-compliance.md）。
  */
 
@@ -42,6 +42,7 @@ export interface StrategyPreset {
   riskProfile?: Record<string, number>;
   portfolioProfile?: PortfolioProfile;
   rankingHints: string; // 给 LLM 的排序提示
+  rulesText: string; // 给用户看的规则说明（硬筛 + 因子权重 + 组合约束）
   maxOutput: number;
   llmRerank: boolean; // 是否启用 LLM 重排
 }
@@ -65,6 +66,7 @@ export interface CandidateRaw {
   highs: number[];
   lows: number[];
   vols: number[];
+  turnoverRates: (number | null)[]; // 换手率序列（%），筹码峰因子用，NULL 触发固定衰减降级
 }
 
 /** 候选 + 计算特征 + 打分 + LLM 重排 + 风险层后的最终对象 */
@@ -88,6 +90,12 @@ export interface AiPick {
   atr20: number | null;
   volumeRatio: number | null;
   signalScore: number | null; // 0-100 综合技术信号
+
+  // 筹码峰特征（lib/chip.ts 单一事实源）
+  chipConcentration: number | null; // 90% 集中度，越小越密集
+  chipProfitRatio: number | null;   // 获利盘比例 0-1
+  chipPeakPos: number | null;       // (价 − 主峰) / avgCost，站上主峰为正
+  chipPeakDrift: number | null;     // 5 日峰位漂移 / avgCost，下移为负(吸筹)
 
   // 基本面
   roe: number | null;

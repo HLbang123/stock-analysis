@@ -31,6 +31,8 @@ model DailyBar {
   changePct Float? @map("change_pct")
   vol       Float?
   amount    Float?
+  turnoverRate Float? @map("turnover_rate")
+  circMv    Float? @map("circ_mv")
 
   stock Stock @relation(fields: [tsCode], references: [tsCode])
 

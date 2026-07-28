@@ -1,7 +1,7 @@
 /**
  * AI 筛选 — 风险层 + 组合分散层
  *
- * 译自 alphasift risk.py，删 PE/PB/换手率/日线数据质量相关风险点（本项目无该数据）。
+ * 译自 alphasift risk.py，删 PE/PB/日线数据质量相关风险点（本项目无该数据）；新增筹码高位套牢风险点。
  * 风险层独立于总分：累加风险点 → 封顶扣分 → 可选一票否决。
  * 组合层：LLM 标的 sector 映射到风险桶，同桶超配递增扣分（封顶 3 倍步长）。
  */
@@ -23,6 +23,9 @@ export const DEFAULT_RISK_PROFILE: Record<string, number> = {
   low_llm_confidence_points: 1.5,
   llm_risk_points: 1.2,
   llm_risk_points_cap: 4.0,
+  chip_high_trap_profit: 0.35,   // 获利盘比例低于此值
+  chip_high_trap_peak_pos: -0.03, // 且主峰在当前价上方（套牢盘重）
+  chip_high_trap_points: 1.5,
   max_penalty: 12.0,
 };
 
@@ -112,6 +115,12 @@ function assessPickRisk(k: AiPick, p: Record<string, number>): { points: number;
   if (k.llmRisks.length > 0) {
     points += Math.min(k.llmRisks.length * p.llm_risk_points, p.llm_risk_points_cap);
     flags.push(...k.llmRisks);
+  }
+  // 筹码高位套牢：获利盘低 + 主峰在上方
+  if (k.chipProfitRatio != null && k.chipProfitRatio < p.chip_high_trap_profit
+      && k.chipPeakPos != null && k.chipPeakPos < p.chip_high_trap_peak_pos) {
+    points += p.chip_high_trap_points;
+    flags.push('chip_high_trap');
   }
   return { points, flags };
 }

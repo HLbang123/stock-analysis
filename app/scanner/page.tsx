@@ -3,7 +3,7 @@
 import { useState, useCallback, useEffect } from 'react';
 import { useRouter } from 'next/navigation';
 import { useStockStore } from '@/store';
-import { useScannerStore } from '@/store/scanner-store';
+import { useScannerStore, type Board } from '@/store/scanner-store';
 import { cn } from '@/lib/utils';
 import { Card } from '@/components/ui/card';
 import { Filter, Loader2, ChevronDown, ChevronUp, Plus, BarChart3, Info } from 'lucide-react';
@@ -14,6 +14,12 @@ const RPS_PERIODS = [
   { value: 60, label: '60日' },
   { value: 120, label: '120日' },
   { value: 250, label: '250日' },
+];
+
+const RSI_PERIODS = [
+  { value: 6, label: '6日' },
+  { value: 12, label: '12日' },
+  { value: 24, label: '24日' },
 ];
 
 const GC_PRESETS = [1, 3, 5];
@@ -35,6 +41,11 @@ export default function ScannerPage() {
     filterRoe, setFilterRoe,
     minRoe, setMinRoe,
     vcp, setVcp,
+    filterRsi, setFilterRsi,
+    rsiPeriod, setRsiPeriod,
+    rsiMin, setRsiMin,
+    rsiMax, setRsiMax,
+    board, setBoard,
   } = useScannerStore();
 
   // 仅本组件内的瞬态 UI 状态
@@ -81,6 +92,13 @@ export default function ScannerPage() {
       if (st.ma55Up) params.set('ma55Up', 'true');
       if (st.filterRoe) { params.set('filterRoe', 'true'); params.set('minRoe', String(st.minRoe)); }
       if (st.vcp) params.set('vcp', 'true');
+      if (st.filterRsi) {
+        params.set('filterRsi', 'true');
+        params.set('rsiPeriod', String(st.rsiPeriod));
+        if (st.rsiMin != null) params.set('rsiMin', String(st.rsiMin));
+        if (st.rsiMax != null) params.set('rsiMax', String(st.rsiMax));
+      }
+      if (st.board !== 'all') params.set('board', st.board);
       const res = await fetch(`/api/scan?${params}`);
       const data = await res.json();
       if (data.error) { toast.error(data.error); st.setRpsResults([]); }
@@ -117,6 +135,12 @@ export default function ScannerPage() {
   if (ma55Up) condParts.push('股价在55日线上方');
   if (filterRoe) condParts.push(`ROE≥${minRoe}%`);
   if (vcp) condParts.push('VCP收缩');
+  if (filterRsi) {
+    const lo = rsiMin != null ? `≥${rsiMin}` : '';
+    const hi = rsiMax != null ? `≤${rsiMax}` : '';
+    const bound = [lo, hi].filter(Boolean).join('且') || '不限';
+    condParts.push(`RSI(${rsiPeriod}日)${bound}`);
+  }
   const condText = condParts.length > 0 ? condParts.join(' · ') : '无过滤（全市场 top RPS）';
 
   // 当前选中的 L1（选中 L2 时回溯其父级 L1，用于高亮 + 展开 L2 子目录）
@@ -324,6 +348,37 @@ export default function ScannerPage() {
             )}
           </div>
 
+          {/* RSI */}
+          <div className="flex flex-wrap items-center gap-3">
+            <label className="flex items-center gap-2 text-sm font-medium cursor-pointer">
+              <input type="checkbox" checked={filterRsi} onChange={e => setFilterRsi(e.target.checked)} className="w-4 h-4 rounded accent-blue-600" />
+              RSI
+            </label>
+            {filterRsi && (
+              <>
+                <span className="text-sm text-gray-500">周期</span>
+                <div className="flex gap-1">
+                  {RSI_PERIODS.map(p => (
+                    <button key={p.value} onClick={() => setRsiPeriod(p.value)}
+                      className={cn("px-3 py-1.5 rounded-lg text-sm transition",
+                        rsiPeriod === p.value ? "bg-blue-600 text-white" : "bg-gray-100 dark:bg-gray-700 text-gray-600 dark:text-gray-400 hover:bg-gray-200")}>
+                      {p.label}
+                    </button>
+                  ))}
+                </div>
+                <span className="text-sm text-gray-500">≥</span>
+                <input type="number" min={0} max={100} value={rsiMin ?? ''} placeholder="不限"
+                  onChange={e => { const v = e.target.value; setRsiMin(v === '' ? null : Math.max(0, Math.min(100, Number(v)))); }}
+                  className="w-16 px-2 py-1.5 border border-gray-200 dark:border-gray-700 rounded-lg bg-white dark:bg-gray-800 text-sm" />
+                <span className="text-sm text-gray-500">且 ≤</span>
+                <input type="number" min={0} max={100} value={rsiMax ?? ''} placeholder="不限"
+                  onChange={e => { const v = e.target.value; setRsiMax(v === '' ? null : Math.max(0, Math.min(100, Number(v)))); }}
+                  className="w-16 px-2 py-1.5 border border-gray-200 dark:border-gray-700 rounded-lg bg-white dark:bg-gray-800 text-sm" />
+                <span className="text-xs text-gray-400">如 ≤30 筛超卖、≥70 筛超买；空=不限</span>
+              </>
+            )}
+          </div>
+
           {/* VCP 波动率收缩 */}
           <div className="flex flex-wrap items-center gap-3">
             <label className="flex items-center gap-2 text-sm font-medium cursor-pointer">
@@ -336,6 +391,21 @@ export default function ScannerPage() {
               VCP 波动率收缩
             </label>
             <span className="text-xs text-gray-400">趋势前置 + 三段递进收缩 + 右侧量缩 + 贴近颈线（开启后查询略慢，且与5/13金叉、55日线互斥）</span>
+          </div>
+
+          {/* 板块过滤 */}
+          <div className="flex flex-wrap items-center gap-3">
+            <label className="flex items-center gap-2 text-sm font-medium">
+              板块
+            </label>
+            <select value={board} onChange={e => setBoard(e.target.value as Board)}
+              className="px-3 py-1.5 border border-gray-200 dark:border-gray-700 rounded-lg bg-white dark:bg-gray-800 text-sm">
+              <option value="all">全部</option>
+              <option value="main">主板</option>
+              <option value="gem">创业板</option>
+              <option value="star">科创板</option>
+              <option value="bjse">北交所</option>
+            </select>
           </div>
         </div>
 
@@ -359,6 +429,7 @@ export default function ScannerPage() {
                   <th className="px-3 py-2 w-10">#</th>
                   <th className="px-3 py-2">股票</th>
                   <th className="px-3 py-2 text-right">RPS</th>
+                  {filterRsi && <th className="px-3 py-2 text-right">RSI</th>}
                   <th className="px-3 py-2 text-right">最新价</th>
                   <th className="px-3 py-2 text-right">日涨跌</th>
                   <th className="px-3 py-2 text-center">信号</th>
@@ -386,6 +457,18 @@ export default function ScannerPage() {
                         </span>
                       ) : '--'}
                     </td>
+                    {filterRsi && (
+                      <td className="px-3 py-2.5 text-right font-mono">
+                        {item.rsi != null ? (
+                          <span className={cn("text-xs px-1.5 py-0.5 rounded",
+                            item.rsi <= 30 ? "bg-green-100 text-green-700" :
+                            item.rsi >= 70 ? "bg-red-100 text-red-700" :
+                            "text-gray-500")}>
+                            {item.rsi.toFixed(1)}
+                          </span>
+                        ) : '--'}
+                      </td>
+                    )}
                     <td className="px-3 py-2.5 text-right font-mono">{item.latestClose != null ? item.latestClose.toFixed(2) : '--'}</td>
                     <td className={cn("px-3 py-2.5 text-right font-mono", (item.latestChange ?? 0) >= 0 ? "text-red-600" : "text-green-600")}>
                       {item.latestChange != null ? `${item.latestChange >= 0 ? '+' : ''}${item.latestChange.toFixed(2)}%` : '--'}

@@ -11,8 +11,9 @@ import type { CandidateRaw, HardFilterConfig, StrategyPreset } from './types';
 
 const RPS_COLS: Record<number, string> = { 20: 'rps_20', 60: 'rps_60', 120: 'rps_120', 250: 'rps_250' };
 
-/** 把 HardFilterConfig 拆成 SQL 可执行的片段 + TS 侧待筛标志 */
-function buildWhere(hf: HardFilterConfig): { sql: string[]; params: (string | number)[] } {
+/** 把 HardFilterConfig 拆成 SQL 可执行的片段 + TS 侧待筛标志
+ *  startIdx: where 参数在 allParams 中的起始下标（前面已有 calcDate/startDate/barDate 占用 $1..$3） */
+function buildWhere(hf: HardFilterConfig, startIdx: number): { sql: string[]; params: (string | number)[] } {
   const sql: string[] = [];
   const params: (string | number)[] = [];
   const push = (clause: string, val?: string | number) => {
@@ -23,18 +24,18 @@ function buildWhere(hf: HardFilterConfig): { sql: string[]; params: (string | nu
   if (hf.excludeSt) sql.push(`s.name NOT ILIKE '%ST%'`);
   if (hf.rpsMin != null) {
     const col = RPS_COLS[hf.rpsPeriod ?? 60] ?? 'rps_60';
-    push(`r.${col} >= $${params.length + 1}`, hf.rpsMin);
+    push(`r.${col} >= $${startIdx + params.length}`, hf.rpsMin);
   }
   if (hf.amountMin != null) {
     // daily_bars.amount 单位千元 → 换算
-    push(`db.amount * 1000 >= $${params.length + 1}`, hf.amountMin);
+    push(`db.amount * 1000 >= $${startIdx + params.length}`, hf.amountMin);
   }
-  if (hf.priceMin != null) push(`db.close >= $${params.length + 1}`, hf.priceMin);
-  if (hf.priceMax != null) push(`db.close <= $${params.length + 1}`, hf.priceMax);
-  if (hf.changePctMin != null) push(`db.change_pct >= $${params.length + 1}`, hf.changePctMin);
-  if (hf.changePctMax != null) push(`db.change_pct <= $${params.length + 1}`, hf.changePctMax);
-  if (hf.change60dMin != null) push(`r.ret_60 >= $${params.length + 1}`, hf.change60dMin);
-  if (hf.change60dMax != null) push(`r.ret_60 <= $${params.length + 1}`, hf.change60dMax);
+  if (hf.priceMin != null) push(`db.close >= $${startIdx + params.length}`, hf.priceMin);
+  if (hf.priceMax != null) push(`db.close <= $${startIdx + params.length}`, hf.priceMax);
+  if (hf.changePctMin != null) push(`db.change_pct >= $${startIdx + params.length}`, hf.changePctMin);
+  if (hf.changePctMax != null) push(`db.change_pct <= $${startIdx + params.length}`, hf.changePctMax);
+  if (hf.change60dMin != null) push(`r.ret_60 >= $${startIdx + params.length}`, hf.change60dMin);
+  if (hf.change60dMax != null) push(`r.ret_60 <= $${startIdx + params.length}`, hf.change60dMax);
 
   return { sql, params };
 }
@@ -57,12 +58,13 @@ export async function fetchCandidates(preset: StrategyPreset): Promise<Candidate
   const barDate = latestBar.tradeDate;
   const calcDate = latestRps.calcDate;
 
-  // 序列窗口：近 90 日历日 ≈ 60 交易日
+  // 序列窗口：近 100 日历日 ≈ 65 交易日（多取 5 根供筹码峰 peakDrift 偏移窗口对比）
   const start = new Date();
-  start.setDate(start.getDate() - 90);
+  start.setDate(start.getDate() - 100);
   const startDate = start.toISOString().slice(0, 10).replace(/-/g, '');
 
-  const { sql: whereSql, params } = buildWhere(hf);
+  // where 参数紧跟 calcDate/startDate/barDate 之后，起始占位符为 $4
+  const { sql: whereSql, params } = buildWhere(hf, 4);
   const whereClause = ['s.is_active = true', ...whereSql].join(' AND ');
 
   // 参数顺序：calcDate, startDate, barDate, ...where params
@@ -74,18 +76,19 @@ export async function fetchCandidates(preset: StrategyPreset): Promise<Candidate
              r.${rpsCol} AS rps, r.ret_60 AS ret60d,
              db.close, db.change_pct, db.vol, db.amount
       FROM stocks s
-      JOIN rps_scores r ON r.ts_code = s.ts_code AND r.calc_date = $1
-      JOIN daily_bars db ON db.ts_code = s.ts_code AND db.trade_date = $3
+      JOIN rps_scores r ON r."tsCode" = s.ts_code AND r."calcDate" = $1
+      JOIN daily_bars db ON db."tsCode" = s.ts_code AND db."tradeDate" = $3
       WHERE ${whereClause}
     )
     SELECT c.ts_code, c.name, c.industry, c.rps, c.ret60d,
            c.close, c.change_pct, c.vol, c.amount,
            f.roe, f.grossprofit_margin, f.or_yoy,
            ind.pct_chg AS industry_change_pct,
-           array_agg(d.close ORDER BY d.trade_date) AS closes,
-           array_agg(d.high ORDER BY d.trade_date) AS highs,
-           array_agg(d.low ORDER BY d.trade_date) AS lows,
-           array_agg(d.vol ORDER BY d.trade_date) AS vols
+           array_agg(d.close ORDER BY d."tradeDate") AS closes,
+           array_agg(d.high ORDER BY d."tradeDate") AS highs,
+           array_agg(d.low ORDER BY d."tradeDate") AS lows,
+           array_agg(d.vol ORDER BY d."tradeDate") AS vols,
+           array_agg(d.turnover_rate ORDER BY d."tradeDate") AS turnover_rates
     FROM cand c
     LEFT JOIN stock_fundamentals f ON f.ts_code = c.ts_code
     LEFT JOIN LATERAL (
@@ -93,7 +96,7 @@ export async function fetchCandidates(preset: StrategyPreset): Promise<Candidate
       WHERE m.member_code = c.ts_code AND m.index_level = 'L1' LIMIT 1
     ) m ON true
     LEFT JOIN sw_index_daily ind ON ind.ts_code = m.index_code AND ind.trade_date = $3
-    LEFT JOIN daily_bars d ON d.ts_code = c.ts_code AND d.trade_date >= $2
+    LEFT JOIN daily_bars d ON d."tsCode" = c.ts_code AND d."tradeDate" >= $2
     GROUP BY c.ts_code, c.name, c.industry, c.rps, c.ret60d,
              c.close, c.change_pct, c.vol, c.amount,
              f.roe, f.grossprofit_margin, f.or_yoy, ind.pct_chg
@@ -121,6 +124,9 @@ export async function fetchCandidates(preset: StrategyPreset): Promise<Candidate
     highs: Array.isArray(r.highs) ? (r.highs as any[]).map((x) => Number(x)).filter((x: number) => Number.isFinite(x)) : [],
     lows: Array.isArray(r.lows) ? (r.lows as any[]).map((x) => Number(x)).filter((x: number) => Number.isFinite(x)) : [],
     vols: Array.isArray(r.vols) ? (r.vols as any[]).map((x) => Number(x)).filter((x: number) => Number.isFinite(x)) : [],
+    turnoverRates: Array.isArray(r.turnover_rates)
+      ? (r.turnover_rates as any[]).map((x) => (x == null ? null : Number(x)))
+      : [],
   }));
 
   return { barDate, calcDate, candidates };

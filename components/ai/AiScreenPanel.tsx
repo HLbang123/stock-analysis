@@ -21,6 +21,7 @@ interface StrategyInfo {
   name: string;
   description: string;
   category: string;
+  rulesText: string;
 }
 
 interface RunListItem {
@@ -139,6 +140,13 @@ export function AiScreenPanel({ currentProfile }: { currentProfile: AiProfile })
           </button>
         ))}
       </div>
+
+      {/* 策略规则说明 */}
+      {strategies.find((s) => s.id === selectedStrategyId)?.rulesText && (
+        <div className="bg-gray-50 dark:bg-gray-800/40 rounded-xl p-3 mb-4 text-xs text-gray-600 dark:text-gray-400 whitespace-pre-line leading-relaxed">
+          {strategies.find((s) => s.id === selectedStrategyId)!.rulesText}
+        </div>
+      )}
 
       {/* 运行 */}
       <Card className="p-4 mb-4">
