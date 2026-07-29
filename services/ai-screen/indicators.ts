@@ -186,9 +186,45 @@ export function volumeRatio(vols: number[]): number | null {
   return last / avg;
 }
 
+/** 最后一根 MA 多头排列(MA5>MA13>MA55);序列不足返回 null */
+export function maBullish(closes: number[]): boolean | null {
+  if (closes.length < 55) return null;
+  const ma5 = ma(closes, 5);
+  const ma13 = ma(closes, 13);
+  const ma55 = ma(closes, 55);
+  const n = closes.length - 1;
+  if (ma5[n] == null || ma13[n] == null || ma55[n] == null) return null;
+  if (ma5[n]! > ma13[n]! && ma13[n]! > ma55[n]!) return true;
+  if (ma5[n]! < ma13[n]! && ma13[n]! < ma55[n]!) return false;
+  return false;
+}
+
+/** 距 MA20 的回踩幅度 (latestClose−MA20)/MA20×100;序列不足返回 null */
+export function pullbackToMa20Pct(closes: number[]): number | null {
+  if (closes.length < 20) return null;
+  const ma20 = ma(closes, 20);
+  const n = closes.length - 1;
+  const m = ma20[n];
+  const last = closes[n];
+  if (m == null || !m || !last) return null;
+  return ((last - m) / m) * 100;
+}
+
+/** 突破 20 日最高的幅度 (latestClose−20日最高)/20日最高×100;近高(>=-1.5)视为突破 setup;序列不足返回 null */
+export function breakout20dPct(closes: number[], highs: number[]): number | null {
+  const n = closes.length;
+  if (n < 2 || highs.length !== n) return null;
+  const start = Math.max(0, n - 20);
+  let hi = -Infinity;
+  for (let i = start; i < n - 1; i++) hi = Math.max(hi, highs[i]); // 不含当日,看是否突破前高
+  if (!Number.isFinite(hi) || hi <= 0) return null;
+  const last = closes[n - 1];
+  return ((last - hi) / hi) * 100;
+}
+
 /**
  * 综合技术信号分（0-100）：MA 多头 + MACD 多头 + RSI 健康 + 站上 MA20 + 量价配合
- * 简化版 alphasift signal_score，用于 momentum/stability/risk 因子输入。
+ * 简化版 alphasift signal_score,仅供 risk.ts 风险层读取(weak_signal),不再作为因子输入。
  */
 export function signalScore(closes: number[], vols: number[]): number | null {
   if (closes.length < 55) return null;

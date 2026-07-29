@@ -110,13 +110,13 @@ export async function GET(request: Request) {
     if (vcp) {
       where.push(`vf.vcp = true`);
     }
-    // 板块过滤（按 ts_code 前缀；stocks.market 只有 SH/SZ/BJ 分不开创业板/科创板）
+    // 板块过滤（按 ts_code 6 位前缀；ts_code 形如 "600000.SH"/"000001.SZ"/"830799.BJ"）
     if (board === "main") {
-      where.push(`s.ts_code ~ '^(600|601|603|605|000|001|002|003)\\.'`);
+      where.push(`s.ts_code ~ '^(600|601|603|605|000|001|002|003)'`);
     } else if (board === "gem") {
-      where.push(`s.ts_code ~ '^(300|301)\\.'`);
+      where.push(`s.ts_code ~ '^(300|301)'`);
     } else if (board === "star") {
-      where.push(`s.ts_code ~ '^(688|689)\\.'`);
+      where.push(`s.ts_code ~ '^(688|689)'`);
     } else if (board === "bjse") {
       where.push(`s.ts_code ~ '\\.BJ$'`);
     }

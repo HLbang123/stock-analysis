@@ -27,10 +27,11 @@ const isPreferredModel = (m?: string): boolean => {
   return parseInt(vm[1], 10) >= 4;
 };
 
-/** AiPick → Prisma pick create 数据 */
+/** AiPick → Prisma pick create 数据(全候选落库;非入选 selected=false/rank=null) */
 function pickToCreate(k: AiPick) {
   return {
-    rank: k.rank,
+    selected: k.selected,
+    rank: k.selected ? k.rank : null,
     tsCode: k.tsCode,
     name: k.name,
     industry: k.industry,
@@ -46,6 +47,9 @@ function pickToCreate(k: AiPick) {
     atr20: k.atr20,
     volumeRatio: k.volumeRatio,
     signalScore: k.signalScore,
+    maBullish: k.maBullish,
+    pullbackToMa20Pct: k.pullbackToMa20Pct,
+    breakout20dPct: k.breakout20dPct,
     roe: k.roe,
     grossprofitMargin: k.grossprofitMargin,
     orYoy: k.orYoy,
@@ -76,9 +80,10 @@ function pickToCreate(k: AiPick) {
   };
 }
 
-/** 补救成功后，AiPick → 需更新的字段 */
+/** 补救成功后,AiPick → 需更新的字段(仅入选 top-N) */
 function pickToUpdate(k: AiPick) {
   return {
+    selected: true,
     rank: k.rank,
     llmScore: k.llmScore,
     llmConfidence: k.llmConfidence,
@@ -101,6 +106,9 @@ function pickToUpdate(k: AiPick) {
     portfolioPenalty: k.portfolioPenalty,
   };
 }
+
+/** 展示用:只取入选行(rank!=null,兼容历史数据——旧 run 全员有 rank,新 run 仅 top-N 有 rank) */
+const displayPicks = (rows: any[]) => rows.filter((p: any) => p.rank != null).map(dbPickToAiPick);
 
 /** DB Run 行 → AiScreenRun（前端用） */
 function serializeRun(r: any): AiScreenRun {
@@ -156,7 +164,7 @@ export async function POST(request: NextRequest) {
     if (existing) {
       // 好结果（已 AI 重排 或 策略本身不用 LLM）→ 直接返回缓存
       if (!preset.llmRerank || existing.llmReranked) {
-        return NextResponse.json({ run: serializeRun(existing), picks: existing.picks.map(dbPickToAiPick) });
+        return NextResponse.json({ run: serializeRun(existing), picks: displayPicks(existing.picks) });
       }
       // 降级结果 + 未补救过 + 调用方是 DeepSeek → 用调用方 token 补救一次
       // （非 DeepSeek 模型不够格补救，直接看降级结果，等 DeepSeek 用户来升级）
@@ -165,7 +173,7 @@ export async function POST(request: NextRequest) {
         const dbPicks = existing.picks.map(dbPickToAiPick);
         const outcome = await rescueRun(dbPicks, preset, cfg);
         if (outcome) {
-          // 补救成功：更新 Run + 每个 Pick
+          // 补救成功：更新 Run + 清空全部候选的 selected/rank + 重标 top-N
           await prisma.$transaction([
             prisma.aiScreenRun.update({
               where: { id: existing.id },
@@ -180,6 +188,10 @@ export async function POST(request: NextRequest) {
                 degradation: [...(existing.degradation ?? []), ...outcome.degradation, 'rescued_by_later_token'],
               },
             }),
+            prisma.aiScreenPick.updateMany({
+              where: { runId: existing.id },
+              data: { selected: false, rank: null },
+            }),
             ...outcome.picks
               .map((k) => ({ id: idByCode.get(k.tsCode), data: pickToUpdate(k) }))
               .filter((u): u is { id: string; data: any } => !!u.id)
@@ -189,18 +201,18 @@ export async function POST(request: NextRequest) {
             where: { id: existing.id },
             include: { picks: { orderBy: { rank: 'asc' } } },
           });
-          return NextResponse.json({ run: serializeRun(refreshed), picks: refreshed!.picks.map(dbPickToAiPick) });
+          return NextResponse.json({ run: serializeRun(refreshed), picks: displayPicks(refreshed!.picks) });
         }
         // 补救仍失败：熔断，标记已补救避免后续用户继续烧 token
         await prisma.aiScreenRun.update({ where: { id: existing.id }, data: { llmRescued: true } });
-        return NextResponse.json({ run: serializeRun({ ...existing, llmRescued: true }), picks: existing.picks.map(dbPickToAiPick) });
+        return NextResponse.json({ run: serializeRun({ ...existing, llmRescued: true }), picks: displayPicks(existing.picks) });
       }
       // 已补救过或无 token → 返回现有降级结果
-      return NextResponse.json({ run: serializeRun(existing), picks: existing.picks.map(dbPickToAiPick) });
+      return NextResponse.json({ run: serializeRun(existing), picks: displayPicks(existing.picks) });
     }
 
     // 无缓存：首跑。runScreen 内部已含 LLM 重排 + 风险 + 组合
-    const { run, picks } = await runScreen(preset, cfg);
+    const { run, candidates, picks } = await runScreen(preset, cfg);
 
     // 质量门控：LLM 策略只有 DeepSeek 模型跑的结果才落库共享；非 DeepSeek 用户跑的一次性结果只返回给他看，不落库。
     // 非 LLM 策略（纯规则）无模型质量差异，首跑即落库。
@@ -230,7 +242,7 @@ export async function POST(request: NextRequest) {
           degradation: run.degradation,
           riskEnabled: run.riskEnabled,
           portfolioEnabled: run.portfolioEnabled,
-          picks: { create: picks.map(pickToCreate) },
+          picks: { create: candidates.map(pickToCreate) },
         },
       });
     } catch (e: any) {
@@ -240,7 +252,7 @@ export async function POST(request: NextRequest) {
           where: { strategyId_barDate: { strategyId: preset.id, barDate } },
           include: { picks: { orderBy: { rank: 'asc' } } },
         });
-        if (r) return NextResponse.json({ run: serializeRun(r), picks: r.picks.map(dbPickToAiPick) });
+        if (r) return NextResponse.json({ run: serializeRun(r), picks: displayPicks(r.picks) });
       }
       throw e;
     }

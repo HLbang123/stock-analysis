@@ -11,10 +11,11 @@ import { useRouter } from 'next/navigation';
 import { useAiScreenStore } from '@/store/ai-screen-store';
 import { cn } from '@/lib/utils';
 import { Card } from '@/components/ui/card';
-import { Loader2, ChevronDown, ChevronUp, AlertTriangle, History, Info, Sparkles } from 'lucide-react';
+import { Loader2, ChevronDown, ChevronUp, AlertTriangle, History, Info, Sparkles, BarChart3, Filter } from 'lucide-react';
 import { toast } from 'sonner';
 import type { AiProfile } from '@/store/ai-store';
 import type { AiPick, AiScreenRun } from '@/services/ai-screen/types';
+import { AiScreenStats } from './AiScreenStats';
 
 interface StrategyInfo {
   id: string;
@@ -22,6 +23,12 @@ interface StrategyInfo {
   description: string;
   category: string;
   rulesText: string;
+}
+
+interface IndustryInfo {
+  name: string;
+  count: number;
+  l2: string[];
 }
 
 interface RunListItem {
@@ -44,18 +51,25 @@ export function AiScreenPanel({ currentProfile }: { currentProfile: AiProfile })
   const { selectedStrategyId, setSelectedStrategy, lastRun, lastPicks, setLastRun } = useAiScreenStore();
 
   const [strategies, setStrategies] = useState<StrategyInfo[]>([]);
+  const [industries, setIndustries] = useState<IndustryInfo[]>([]);
   const [history, setHistory] = useState<RunListItem[]>([]);
   const [loading, setLoading] = useState(false);
   const [expanded, setExpanded] = useState<number | null>(null);
   const [showLlmDetail, setShowLlmDetail] = useState(false);
   const [showHistory, setShowHistory] = useState(false);
+  const [view, setView] = useState<'screen' | 'stats'>('screen');
+  const [sector, setSector] = useState('');
+  const [level, setLevel] = useState<'L1' | 'L2'>('L1');
+  const [board, setBoard] = useState('all');
 
   const refresh = useCallback(async () => {
     try {
-      const res = await fetch('/api/ai-screen');
+      const [res, indRes] = await Promise.all([fetch('/api/ai-screen'), fetch('/api/industries')]);
       const data = await res.json();
       if (data.strategies) setStrategies(data.strategies);
       if (data.runs) setHistory(data.runs);
+      const ind = await indRes.json();
+      if (ind.industries) setIndustries(ind.industries);
     } catch {
       /* 静默 */
     }
@@ -70,6 +84,8 @@ export function AiScreenPanel({ currentProfile }: { currentProfile: AiProfile })
       toast.error('LLM 配置不完整');
       return;
     }
+    setSector('');
+    setBoard('all');
     setLoading(true);
     try {
       const res = await fetch('/api/ai-screen', {
@@ -97,9 +113,13 @@ export function AiScreenPanel({ currentProfile }: { currentProfile: AiProfile })
     }
   };
 
-  const loadRun = async (runId: string) => {
+  const loadRun = async (runId: string, s = sector, l = level, b = board) => {
     try {
-      const res = await fetch(`/api/ai-screen/${runId}`);
+      const qs = new URLSearchParams();
+      if (s) { qs.set('sector', s); qs.set('level', l); }
+      if (b && b !== 'all') qs.set('board', b);
+      const suffix = qs.toString() ? `?${qs}` : '';
+      const res = await fetch(`/api/ai-screen/${runId}${suffix}`);
       const data = await res.json();
       if (data.error) toast.error(data.error);
       else if (data.run) {
@@ -111,6 +131,10 @@ export function AiScreenPanel({ currentProfile }: { currentProfile: AiProfile })
     }
   };
 
+  const applyFilter = () => {
+    if (lastRun) loadRun(lastRun.id);
+  };
+
   const toAppCode = (tsCode: string) => {
     const m = tsCode.match(/^(\d+)\.(SH|SZ|BJ)$/);
     return m ? m[2].toLowerCase() + m[1] : tsCode;
@@ -118,9 +142,19 @@ export function AiScreenPanel({ currentProfile }: { currentProfile: AiProfile })
 
   return (
     <div>
-      <p className="text-xs text-gray-500 dark:text-gray-400 mb-3">
-        规则硬筛 → 多因子打分 → AI 横向重排 → 风险/组合约束。AI 只在候选池内排序，不给目标价。
-      </p>
+      {/* 视图切换 */}
+      <div className="flex gap-1 mb-3 p-1 bg-gray-100 dark:bg-gray-800/50 rounded-lg w-fit">
+        <button onClick={() => setView('screen')} className={cn('px-3 py-1 rounded-md text-xs font-medium', view === 'screen' ? 'bg-white dark:bg-gray-900 text-purple-600 shadow-sm' : 'text-gray-500')}>筛选</button>
+        <button onClick={() => setView('stats')} className={cn('px-3 py-1 rounded-md text-xs font-medium flex items-center gap-1', view === 'stats' ? 'bg-white dark:bg-gray-900 text-purple-600 shadow-sm' : 'text-gray-500')}><BarChart3 className="w-3.5 h-3.5" /> 胜率复盘</button>
+      </div>
+
+      {view === 'stats' ? (
+        <AiScreenStats />
+      ) : (
+        <>
+          <p className="text-xs text-gray-500 dark:text-gray-400 mb-3">
+            规则硬筛 → 多因子打分 → AI 横向重排 → 风险/组合约束。AI 只在候选池内排序,不给目标价。
+          </p>
 
       {/* 策略选择 */}
       <div className="grid grid-cols-2 sm:grid-cols-4 gap-2 mb-4">
@@ -180,6 +214,38 @@ export function AiScreenPanel({ currentProfile }: { currentProfile: AiProfile })
         </div>
       )}
 
+      {/* 板块 + 主板过滤(展示层,不打分) */}
+      {lastRun && (
+        <Card className="p-3 mb-4">
+          <div className="flex flex-wrap items-center gap-2 text-xs">
+            <Filter className="w-3.5 h-3.5 text-gray-400" />
+            <span className="text-gray-500">板块</span>
+            <select value={sector} onChange={(e) => setSector(e.target.value)} className="px-2 py-1 rounded border border-gray-200 dark:border-gray-700 bg-transparent text-gray-700 dark:text-gray-300 max-w-[160px]">
+              <option value="">全市场</option>
+              {industries.map((ind) => (
+                <option key={ind.name} value={ind.name}>{ind.name}({ind.count})</option>
+              ))}
+            </select>
+            <select value={level} onChange={(e) => setLevel(e.target.value as 'L1' | 'L2')} className="px-2 py-1 rounded border border-gray-200 dark:border-gray-700 bg-transparent text-gray-700 dark:text-gray-300">
+              <option value="L1">一级行业</option>
+              <option value="L2">二级行业</option>
+            </select>
+            <span className="text-gray-500 ml-1">市场</span>
+            <select value={board} onChange={(e) => setBoard(e.target.value)} className="px-2 py-1 rounded border border-gray-200 dark:border-gray-700 bg-transparent text-gray-700 dark:text-gray-300">
+              <option value="all">全部</option>
+              <option value="main">主板</option>
+              <option value="gem">创业板</option>
+              <option value="star">科创板</option>
+              <option value="bjse">北交所</option>
+            </select>
+            <button onClick={applyFilter} className="px-2 py-1 rounded bg-purple-600 text-white hover:bg-purple-700">应用</button>
+            {(sector || board !== 'all') && (
+              <button onClick={() => { setSector(''); setBoard('all'); if (lastRun) loadRun(lastRun.id, '', 'L1', 'all'); }} className="text-gray-400 hover:text-gray-600">清除</button>
+            )}
+          </div>
+        </Card>
+      )}
+
       {/* 结果 */}
       {lastRun && lastPicks.length > 0 ? (
         <RunResult
@@ -199,6 +265,8 @@ export function AiScreenPanel({ currentProfile }: { currentProfile: AiProfile })
             <p className="text-sm mt-2">AI 在规则筛出的候选池内做横向排序与风险标注</p>
           </div>
         )
+      )}
+        </>
       )}
     </div>
   );

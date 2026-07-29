@@ -15,7 +15,7 @@ const RANK_WEIGHT = 0.4;
 const MIN_COVERAGE = 0.6;
 const MAX_RETRIES = 1;
 const LLM_TIMEOUT_MS = 90_000;
-const LLM_MAX_TOKENS = 4096;
+const LLM_MAX_TOKENS = 8192; // 30 只候选×12 字段(含 thesis/reason/risk 散文+5 数组)约 7k token,4096 会截断丢项触发覆盖率回退
 
 export interface RankResult {
   picks: AiPick[];

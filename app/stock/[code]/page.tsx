@@ -112,11 +112,33 @@ export default function StockDetailPage() {
     if (kLines.length < 55 || !quote) return null;
     const closes = [...kLines.map(k => k.close), quote.price];
     const ma = (p: number) => closes.slice(-p).reduce((a: number, b: number) => a + b, 0) / p;
-    const ma5 = ma(5), ma13 = ma(13), ma55 = ma(55);
-    const price = closes[closes.length - 1];
+    const maSeries = (p: number) => {
+      const out: number[] = [];
+      let sum = 0;
+      for (let i = 0; i < closes.length; i++) {
+        sum += closes[i];
+        if (i >= p) sum -= closes[i - p];
+        out.push(i >= p - 1 ? sum / p : NaN);
+      }
+      return out;
+    };
+    const ma5s = maSeries(5), ma13s = maSeries(13);
+    const ma55 = ma(55);
+    const n = closes.length - 1;
+    const price = closes[n];
+    // 最近 3 根内是否发生穿越(金叉/死叉事件);未穿越则只显示排列状态
+    let cross: 'golden' | 'death' | null = null;
+    for (let i = n; i > n - 3 && i >= 1; i--) {
+      const prevBull = ma5s[i - 1] > ma13s[i - 1];
+      const curBull = ma5s[i] > ma13s[i];
+      if (!prevBull && curBull) { cross = 'golden'; break; }
+      if (prevBull && !curBull) { cross = 'death'; break; }
+    }
+    const bullish = ma5s[n] > ma13s[n];
     return {
       aboveMa55: price > ma55,
-      goldenCross: ma5 > ma13,
+      bullish,
+      cross,
       ma55: ma55.toFixed(2),
     };
   }, [kLines, quote]);
@@ -295,8 +317,8 @@ export default function StockDetailPage() {
                 <span className={cn("px-2 py-1 rounded-lg text-xs font-medium", trendStatus.aboveMa55 ? "bg-red-50 text-red-600" : "bg-green-50 text-green-600")}>
                   {trendStatus.aboveMa55 ? 'MA55上方 ✓' : 'MA55下方 ⚠'} ({trendStatus.ma55})
                 </span>
-                <span className={cn("px-2 py-1 rounded-lg text-xs font-medium", trendStatus.goldenCross ? "bg-red-50 text-red-600" : "bg-green-50 text-green-600")}>
-                  5/13{trendStatus.goldenCross ? '金叉 ✓' : '死叉 ⚠'}
+                <span className={cn("px-2 py-1 rounded-lg text-xs font-medium", trendStatus.bullish ? "bg-red-50 text-red-600" : "bg-green-50 text-green-600")}>
+                  5/13{trendStatus.cross === 'golden' ? '金叉 ✓' : trendStatus.cross === 'death' ? '死叉 ⚠' : trendStatus.bullish ? '多头排列' : '空头排列'}
                 </span>
               </>
             )}

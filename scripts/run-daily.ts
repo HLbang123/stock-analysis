@@ -7,7 +7,7 @@
 
 import { execSync } from "child_process";
 
-const STEPS = [
+const STEPS: { name: string; cmd: string; fatal?: boolean }[] = [
   { name: "日线同步", cmd: "npx tsx scripts/sync-daily.ts" },
   { name: "RPS 计算", cmd: "npx tsx scripts/compute-rps.ts" },
   { name: "资金流向", cmd: "npx tsx scripts/sync-moneyflow.ts" },
@@ -16,6 +16,8 @@ const STEPS = [
   { name: "指数估值", cmd: "npx tsx scripts/sync-index-valuation.ts" },
   { name: "北向资金", cmd: "npx tsx scripts/sync-hsgt.ts" },
   { name: "融资融券", cmd: "npx tsx scripts/sync-margin.ts" },
+  // AI 筛选 T+N 回测回填(纯分析,失败不阻断日任务)
+  { name: "AI筛选T+N回填", cmd: "npx tsx scripts/backfill-ai-screen-eval.ts", fatal: false },
   // 基本面(ROE) + 申万成分股 不进每日——按需手动跑
 ];
 
@@ -39,6 +41,7 @@ async function main() {
       console.log(`[run-daily] ✓ ${step.name} 完成`);
     } catch (e: any) {
       console.error(`[run-daily] ✗ ${step.name} 失败:`, e.message);
+      if (step.fatal === false) continue; // 非关键步骤失败不中断
       process.exit(1);
     }
   }

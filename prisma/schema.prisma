@@ -208,11 +208,12 @@ model AiScreenRun {
   @@map("ai_screen_runs")
 }
 
-/// 一次运行中的单只入选股（含因子分、LLM 理由、风险标签、T+N 埋点）
+/// 一次运行中的单只候选(含因子分、LLM 理由、风险标签、T+N 埋点)。selected=true 为最终入选 top-N。
 model AiScreenPick {
   id           String  @id @default(uuid()) @db.VarChar(36)
   runId        String  @map("run_id") @db.VarChar(36)
-  rank         Int
+  selected     Boolean @default(false) @map("selected") // true=最终入选 top-N;false=候选池未入选(供 IC/A/B)
+  rank         Int?    // 入选名次 1..N;未入选为 null
   tsCode       String  @map("ts_code") @db.VarChar(12)
   name         String  @db.VarChar(40)
   industry     String? @db.VarChar(40)
@@ -231,6 +232,9 @@ model AiScreenPick {
   atr20               Float? @map("atr_20")
   volumeRatio         Float? @map("volume_ratio")
   signalScore         Float? @map("signal_score")
+  maBullish           Boolean? @map("ma_bullish")
+  pullbackToMa20Pct   Float? @map("pullback_to_ma20_pct")
+  breakout20dPct      Float? @map("breakout_20d_pct")
   // 基本面
   roe                 Float?
   grossprofitMargin   Float? @map("grossprofit_margin")
@@ -260,7 +264,7 @@ model AiScreenPick {
   riskPenalty         Float  @default(0) @map("risk_penalty")
   riskFlags           String[] @map("risk_flags")
   portfolioPenalty    Float  @default(0) @map("portfolio_penalty")
-  // T+N 回测埋点（entryPrice/entryDate 必存；exit* 字段 Phase 3 回填）
+  // T+N 入选埋点(entryPrice/entryDate 必存;exit* 字段已废弃,改用 AiScreenEval 多持有期表)
   entryPrice          Float? @map("entry_price")
   entryDate           String? @map("entry_date") @db.VarChar(8)
   exitPrice           Float? @map("exit_price")
@@ -268,10 +272,33 @@ model AiScreenPick {
   holdingReturnPct    Float? @map("holding_return_pct")
   evalNote            String? @map("eval_note") @db.VarChar(200)
 
-  run AiScreenRun @relation(fields: [runId], references: [id], onDelete: Cascade)
+  run  AiScreenRun    @relation(fields: [runId], references: [id], onDelete: Cascade)
+  evals AiScreenEval[]
 
   @@index([runId])
   @@index([tsCode])
   @@index([entryDate])
+  @@index([selected])
   @@map("ai_screen_picks")
+}
+
+/// T+N 多持有期回测评算(每 pick × 每持有期 N 一行)。回填脚本写入。
+model AiScreenEval {
+  id            String  @id @default(uuid()) @db.VarChar(36)
+  pickId        String  @map("pick_id") @db.VarChar(36)
+  nDays         Int     @map("n_days") // 1 / 5 / 20
+  exitPrice     Float?  @map("exit_price")
+  exitDate      String? @map("exit_date") @db.VarChar(8)
+  returnPct     Float?  @map("return_pct") // (exitPrice/entryPrice - 1)*100 - costBps/100
+  costBps       Float   @default(0) @map("cost_bps")
+  shapeStatus   String? @map("shape_status") @db.VarChar(32) // breakout_follow_through / failed_breakout / ...
+  maxDrawdownPct Float? @map("max_drawdown_pct")
+  maxRunupPct   Float?  @map("max_runup_pct")
+  pathStatus    String? @map("path_status") @db.VarChar(24)
+
+  pick AiScreenPick @relation(fields: [pickId], references: [id], onDelete: Cascade)
+
+  @@unique([pickId, nDays])
+  @@index([nDays])
+  @@map("ai_screen_evals")
 }

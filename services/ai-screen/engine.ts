@@ -9,7 +9,7 @@
 import { randomUUID } from 'crypto';
 import type { AiPick, AiScreenRun, CandidateRaw, LlmConfig, StrategyPreset } from './types';
 import { fetchCandidates } from './candidates';
-import { macdStatus, rsiStatus, volatility20d, maxDrawdown20d, atr20pct, volumeRatio, signalScore, ma, chipFeatures } from './indicators';
+import { macdStatus, rsiStatus, volatility20d, maxDrawdown20d, atr20pct, volumeRatio, signalScore, maBullish, pullbackToMa20Pct, breakout20dPct, chipFeatures } from './indicators';
 import { computeScreenScores } from './scorer';
 import { rankCandidates } from './ranker';
 import { applyRiskOverlay, applyPortfolioOverlay } from './risk';
@@ -29,19 +29,16 @@ function enrich(c: CandidateRaw, preset: StrategyPreset): AiPick | null {
   const atr20 = highs.length === closes.length ? atr20pct(closes, highs, lows) : null;
   const vr = volumeRatio(vols);
   const sig = signalScore(closes, vols);
+  const mab = maBullish(closes);
+  const pb = pullbackToMa20Pct(closes);
+  const bo = highs.length === closes.length ? breakout20dPct(closes, highs) : null;
   const chip = chipFeatures(closes, highs, lows, vols, c.turnoverRates, c.latestClose);
 
   // TS 侧技术硬筛
   const hf = preset.hardFilters;
   if (hf.volatility20dPctMax != null && vol20 != null && vol20 > hf.volatility20dPctMax) return null;
   if (hf.maxDrawdown20dPctMin != null && dd20 != null && dd20 < hf.maxDrawdown20dPctMin) return null;
-  if (hf.requireMaBullish && closes.length >= 55) {
-    const ma5 = ma(closes, 5);
-    const ma13 = ma(closes, 13);
-    const ma55 = ma(closes, 55);
-    const n = closes.length - 1;
-    if (!(ma5[n]! > ma13[n]! && ma13[n]! > ma55[n]!)) return null;
-  }
+  if (hf.requireMaBullish && mab !== true) return null;
 
   return {
     tsCode: c.tsCode,
@@ -59,6 +56,9 @@ function enrich(c: CandidateRaw, preset: StrategyPreset): AiPick | null {
     atr20: atr20,
     volumeRatio: vr,
     signalScore: sig,
+    maBullish: mab,
+    pullbackToMa20Pct: pb,
+    breakout20dPct: bo,
     chipConcentration: chip.chipConcentration,
     chipProfitRatio: chip.chipProfitRatio,
     chipPeakPos: chip.chipPeakPos,
@@ -88,6 +88,7 @@ function enrich(c: CandidateRaw, preset: StrategyPreset): AiPick | null {
     riskPenalty: 0,
     riskFlags: [],
     portfolioPenalty: 0,
+    selected: false,
     rank: 0,
     entryPrice: c.latestClose,
     entryDate: '',
@@ -96,13 +97,14 @@ function enrich(c: CandidateRaw, preset: StrategyPreset): AiPick | null {
 
 export interface ScreenOutcome {
   run: AiScreenRun;
-  picks: AiPick[]; // 已截取 maxOutput，已排序
+  candidates: AiPick[]; // 全候选(含 selected 标记 + screenScore),供落库 + IC/A/B
+  picks: AiPick[]; // 选中 top-N(selected=true, rank 1..N),供展示
 }
 
 /**
  * 跑一次 AI 筛选。
  * @param preset 策略预设
- * @param llmCfg LLM 配置（preset.llmRerank=false 时可不传）
+ * @param llmCfg LLM 配置(preset.llmRerank=false 时可不传)
  */
 export async function runScreen(preset: StrategyPreset, llmCfg?: LlmConfig): Promise<ScreenOutcome> {
   const degradation: string[] = [];
@@ -122,10 +124,10 @@ export async function runScreen(preset: StrategyPreset, llmCfg?: LlmConfig): Pro
     degradation.push('all_filtered_by_technical_hard_filter');
   }
 
-  // 因子打分
+  // 因子打分(全候选)
   computeScreenScores(picks, preset);
 
-  // LLM 重排（可选）
+  // LLM 重排(可选,仅对 topK 打分)
   let llmRanked = false;
   let llmModel: string | null = null;
   let marketView = '';
@@ -144,10 +146,9 @@ export async function runScreen(preset: StrategyPreset, llmCfg?: LlmConfig): Pro
     coverage = r.coverage;
     degradation.push(...r.degradation);
   } else {
-    // 不走 LLM：final = screen_score，按规则分排
+    // 不走 LLM:final = screen_score,按规则分排
     picks.sort((a, b) => b.screenScore - a.screenScore);
     for (const k of picks) k.finalScore = k.screenScore;
-    picks.forEach((k, i) => (k.rank = i + 1));
     if (preset.llmRerank && !llmCfg) degradation.push('llm_config_missing');
   }
 
@@ -155,9 +156,16 @@ export async function runScreen(preset: StrategyPreset, llmCfg?: LlmConfig): Pro
   picks = applyRiskOverlay(picks, preset);
   picks = applyPortfolioOverlay(picks, preset);
 
-  // 截取 maxOutput
-  picks = picks.slice(0, preset.maxOutput);
-  picks.forEach((k, i) => (k.rank = i + 1));
+  // 选中 top-N,标记 selected/rank(覆盖 overlay 临时设的 rank)
+  const selected = picks.slice(0, preset.maxOutput);
+  for (const k of picks) {
+    k.selected = false;
+    k.rank = 0;
+  }
+  selected.forEach((k, i) => {
+    k.selected = true;
+    k.rank = i + 1;
+  });
 
   const run: AiScreenRun = {
     id: randomUUID(),
@@ -167,7 +175,7 @@ export async function runScreen(preset: StrategyPreset, llmCfg?: LlmConfig): Pro
     barDate,
     rpsPeriod: preset.hardFilters.rpsPeriod ?? 60,
     candidateCount: filteredCount,
-    pickCount: picks.length,
+    pickCount: selected.length,
     llmReranked: llmRanked,
     llmModel,
     llmMarketView: marketView,
@@ -179,7 +187,7 @@ export async function runScreen(preset: StrategyPreset, llmCfg?: LlmConfig): Pro
     portfolioEnabled: !!preset.portfolioProfile,
   };
 
-  return { run, picks };
+  return { run, candidates: picks, picks: selected };
 }
 
 /** DB Pick 行 → AiPick（补救重排时用，所有字段都已持久化） */
@@ -200,6 +208,9 @@ export function dbPickToAiPick(r: any): AiPick {
     atr20: r.atr20,
     volumeRatio: r.volumeRatio,
     signalScore: r.signalScore,
+    maBullish: r.maBullish ?? null,
+    pullbackToMa20Pct: r.pullbackToMa20Pct ?? null,
+    breakout20dPct: r.breakout20dPct ?? null,
     chipConcentration: r.chipConcentration ?? null,
     chipProfitRatio: r.chipProfitRatio ?? null,
     chipPeakPos: r.chipPeakPos ?? null,
@@ -229,6 +240,7 @@ export function dbPickToAiPick(r: any): AiPick {
     riskPenalty: r.riskPenalty ?? 0,
     riskFlags: r.riskFlags ?? [],
     portfolioPenalty: r.portfolioPenalty ?? 0,
+    selected: r.selected ?? false,
     rank: r.rank ?? 0,
     entryPrice: r.entryPrice,
     entryDate: r.entryDate ?? '',
@@ -260,6 +272,10 @@ export async function rescueRun(
   picks = applyRiskOverlay(picks, preset);
   picks = applyPortfolioOverlay(picks, preset);
   picks = picks.slice(0, preset.maxOutput);
+  for (const k of picks) {
+    k.selected = true;
+    k.rank = 0;
+  }
   picks.forEach((k, i) => (k.rank = i + 1));
   return {
     picks,

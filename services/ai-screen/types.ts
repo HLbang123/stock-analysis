@@ -89,7 +89,10 @@ export interface AiPick {
   maxDrawdown20d: number | null;
   atr20: number | null;
   volumeRatio: number | null;
-  signalScore: number | null; // 0-100 综合技术信号
+  signalScore: number | null; // 0-100 综合技术信号(仅供 risk.ts 风险层读取,不再喂因子)
+  maBullish: boolean | null; // MA5>MA13>MA55 多头排列(trend 因子独占)
+  pullbackToMa20Pct: number | null; // (latestClose−MA20)/MA20×100,回踩深度(entry_timing 用)
+  breakout20dPct: number | null; // (latestClose−20日最高)/20日最高×100,shape_status 用
 
   // 筹码峰特征（lib/chip.ts 单一事实源）
   chipConcentration: number | null; // 90% 集中度，越小越密集
@@ -130,8 +133,9 @@ export interface AiPick {
   riskFlags: string[];
   portfolioPenalty: number;
 
-  // 入选埋点（T+N 回测用，不可回填，每次必存）
-  rank: number;
+  // 入选埋点(T+N 回测用,不可回填,每次必存)
+  selected: boolean; // true=最终入选 top-N;false=候选池未入选
+  rank: number; // 入选名次 1..N;未入选为 0(落库时映射 null)
   entryPrice: number | null; // 运行时的 latestClose
   entryDate: string; // 运行时的 barDate
 }
