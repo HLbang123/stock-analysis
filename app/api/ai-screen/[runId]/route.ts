@@ -40,6 +40,7 @@ export async function GET(request: NextRequest, { params }: { params: Promise<{ 
     const level = sp.get('level') === 'L2' ? 'L2' : 'L1';
     const board = sp.get('board') || 'all';
     const filtered = !!(sector || board !== 'all');
+    const limitRaw = parseInt(sp.get('limit') || '', 10);
 
     const run = await prisma.aiScreenRun.findUnique({
       where: { id: runId },
@@ -49,9 +50,12 @@ export async function GET(request: NextRequest, { params }: { params: Promise<{ 
       return NextResponse.json({ error: '运行记录不存在' }, { status: 404 });
     }
 
+    // 展示数量:用户可自选(10/15/20/30),默认=入选数;上限 30(LLM 只重排 topK=30,超出部分无 LLM 分)
+    const limit = Math.min(Math.max(Number.isFinite(limitRaw) && limitRaw > 0 ? limitRaw : run.pickCount || 10, 1), 30);
+
     let picks = run.picks as any[];
     if (filtered) {
-      // 展示层过滤:在全候选池里按 sector+board 筛,按 screenScore 重切 top-N
+      // 展示层过滤:在全候选池里按 sector+board 筛
       let sectorCodes: Set<string> | null = null;
       if (sector) {
         const members = await prisma.swIndexMember.findMany({
@@ -60,15 +64,12 @@ export async function GET(request: NextRequest, { params }: { params: Promise<{ 
         });
         sectorCodes = new Set(members.map((m) => m.memberCode));
       }
-      picks = picks
-        .filter((p) => (sectorCodes ? sectorCodes.has(p.tsCode) : true))
-        .filter((p) => matchBoard(p.tsCode, board))
-        .sort((a, b) => (b.screenScore ?? 0) - (a.screenScore ?? 0))
-        .slice(0, run.pickCount || 10);
-    } else {
-      // 默认:只回入选(rank!=null),兼容历史数据
-      picks = picks.filter((p) => p.rank != null);
+      picks = picks.filter((p) => (sectorCodes ? sectorCodes.has(p.tsCode) : true)).filter((p) => matchBoard(p.tsCode, board));
     }
+    // 按 finalScore 重切 limit(默认 limit=入选数时等价于 selected top-N)
+    picks = picks
+      .sort((a, b) => (b.finalScore ?? 0) - (a.finalScore ?? 0))
+      .slice(0, limit);
 
     return NextResponse.json({ run: { ...run, picks } });
   } catch (e: any) {
