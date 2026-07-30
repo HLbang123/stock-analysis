@@ -3,10 +3,11 @@
 import { useState, useCallback, useRef } from 'react';
 import { useStockStore } from '@/store';
 import { useAiStore, AiProfile } from '@/store/ai-store';
-import { getRealtimeQuote, getKLineSina, getRealtimeQuoteCached, getKLineSinaCached, getIndustry, fetchMarketStatusNote, getChipData } from '@/services/stockApi';
+import { getRealtimeQuote, getKLineSina, getRealtimeQuoteCached, getKLineSinaCached, getIndustry, fetchMarketStatusNote, getChipData, getMinuteDataCached } from '@/services/stockApi';
 import { ALERT_RULES, checkAllRules } from '@/services/alertRules';
-import { buildXinJieQuickSystemPrompt } from '@/services/xinjiePrompt';
-import { buildUserPrompt } from '@/services/aiPrompt';
+import { buildTscoreSystemPrompt, buildTscoreUserPrompt } from '@/services/t-score/prompt';
+import { buildIntradayContext } from '@/services/t-score/intraday';
+import { computeTScore } from '@/services/t-score/scorer';
 import {
   buildAnalystSystemPrompt, buildAnalystUserPrompt,
   buildVerdictSystemPrompt, buildVerdictUserPrompt,
@@ -26,7 +27,11 @@ import { AnalysisHistory } from '@/components/ai/AnalysisHistory';
 import { AiChat } from '@/components/ai/AiChat';
 import { ReasoningPanel } from '@/components/ai/ReasoningPanel';
 import { AiScreenPanel } from '@/components/ai/AiScreenPanel';
+import { TScorePanel, type TScorePanelResult } from '@/components/ai/TScorePanel';
 import { generateId } from '@/components/ai/shared';
+
+/** 波段评分结果（客户端算的因子分 + 路由返回的 LLM 微调合并） */
+type TScoreResult = TScorePanelResult;
 
 export default function AiPage() {
   const { watchlist } = useStockStore();
@@ -39,17 +44,8 @@ export default function AiPage() {
   const [editingProfile, setEditingProfile] = useState<AiProfile | null>(null);
   const [selectedCode, setSelectedCode] = useState<string>('');
   const [isAnalyzing, setIsAnalyzing] = useState(false);
-  const [result, setResult] = useState<{
-    riskLevel: string;
-    analysis: string;
-    suggestion: string;
-    triggeredRules: any[];
-    supportPrice: string;
-    resistancePrice: string;
-  } | null>(null);
+  const [result, setResult] = useState<TScoreResult | null>(null);
   const [error, setError] = useState<string | null>(null);
-  const [streamingText, setStreamingText] = useState('');
-  const [streamingReasoning, setStreamingReasoning] = useState('');
   const abortRef = useRef<AbortController | null>(null);
 
   const [isDeepAnalyzing, setIsDeepAnalyzing] = useState(false);
@@ -98,48 +94,6 @@ export default function AiPage() {
     setShowSettings(false);
     setShowAddProfile(true);
   };
-
-  // 从流式文本中逐步解析结构化字段
-  const parseStreamContent = useCallback((text: string) => {
-    const riskMatch = text.match(/RISK:(.+)/);
-    const supportMatch = text.match(/SUPPORT:(.+)/);
-    const resistanceMatch = text.match(/RESISTANCE:(.+)/);
-    const rulesMatch = text.match(/RULES:(.+)/);
-
-    // 按 --- 分割头部和正文
-    const bodySplit = text.split(/^---[\r\n]+/m);
-    let body = bodySplit.length > 1 ? bodySplit.slice(1).join('---\n') : text;
-    // 去掉结构化头字段（已在上方卡片展示，不重复出现在正文里）
-    body = body.replace(/^(RISK|SUPPORT|RESISTANCE|RULES):.*$/gm, '').replace(/\n{3,}/g, '\n\n').trim();
-
-    let analysis = body;
-    let suggestion = '';
-    const suggIdx = body.indexOf('### 操作建议');
-    if (suggIdx >= 0) {
-      analysis = body.slice(0, suggIdx).replace(/^###\s*综合分析\s*\n?/m, '').trim();
-      suggestion = body.slice(suggIdx).replace(/^###\s*操作建议\s*\n?/m, '').trim();
-    } else {
-      analysis = body.replace(/^###\s*综合分析\s*\n?/m, '').trim();
-    }
-
-    const rulesStr = rulesMatch?.[1]?.trim() || '';
-    const triggeredRules = rulesStr && rulesStr !== '无'
-      ? rulesStr.split(/[,，]/).filter(r => r.trim()).map(r => ({
-          rule_name: r.trim(),
-          level: 'WARNING' as const,
-          detail: r.trim(),
-        }))
-      : [];
-
-    return {
-      riskLevel: riskMatch?.[1]?.trim() || '',
-      supportPrice: supportMatch?.[1]?.trim() || '--',
-      resistancePrice: resistanceMatch?.[1]?.trim() || '--',
-      triggeredRules,
-      analysis,
-      suggestion,
-    };
-  }, []);
 
   // 从阶段三输出中解析结构化决策字段
   const parseVerdictContent = useCallback((text: string) => {
@@ -191,16 +145,16 @@ export default function AiPage() {
     };
   }, []);
 
-  // AI分析
-  const runAnalysis = async () => {
+  // 波段评分（替换原心姐快速分析）
+  const runTScore = async () => {
     if (!selectedCode || !currentProfile) {
-      toast.error('请先选择股票');
+      toast.error('请先选择标的');
       return;
     }
 
     const stock = watchlist.find(s => s.code === selectedCode);
     if (!stock) {
-      toast.error('股票不在自选列表中');
+      toast.error('标的不在自选列表中');
       return;
     }
 
@@ -208,153 +162,116 @@ export default function AiPage() {
     setError(null);
     setResult(null);
     setDeepResult(null);
-    setStreamingText('');
-    setStreamingReasoning('');
 
     const abortController = new AbortController();
     abortRef.current = abortController;
 
     try {
-      // 获取数据
-      const [quote, kLines] = await Promise.all([
+      const [quote, kLines, minute, chip] = await Promise.all([
         getRealtimeQuote(selectedCode),
         getKLineSina(selectedCode, 240, 120),
+        getMinuteDataCached(selectedCode),
+        getChipData(selectedCode).catch(() => null),
       ]);
 
       if (!quote) throw new Error('获取行情失败');
 
-      // 运行规则引擎
       const updatedKLines = kLines.length >= 5 ? buildUpdatedKLines(quote, kLines) : kLines;
-      const chip = await getChipData(selectedCode).catch(() => null);
       const engineResults = checkAllRules(updatedKLines, quote, ALERT_RULES.filter(r => r.isEnabled), chip);
-      const engineSummary = engineResults.length > 0
-        ? engineResults.map(r => `${r.ruleId}:${r.message}`).join('; ')
-        : '未触发任何破位/死叉/急跌等风险信号，技术面健康';
+      const indDaily = calculateIndicators(updatedKLines);
+      const intraday = buildIntradayContext(minute);
+      const marketNote = await fetchMarketStatusNote();
+      const marketOpen = marketNote.includes('交易中');
 
-      // 构建Prompt
-      const quoteJson = JSON.stringify(quote, null, 2);
-      const klineSummary = kLines.slice(-20).map(k =>
-        `${k.date} ${k.open} ${k.high} ${k.low} ${k.close} ${k.volume}`
-      ).join('\n');
+      // 分时不足或市场闭市 → degraded，不算分不调 LLM
+      if (!intraday.sufficient || !marketOpen) {
+        setResult({
+          degraded: true,
+          degradation: [...(intraday.sufficient ? [] : ['intraday_insufficient']), ...(!marketOpen ? ['market_closed'] : [])],
+          buyScore: 0, sellScore: 0, buyFactors: [], sellFactors: [],
+          intraday, engineResults,
+          finalBuy: 0, finalSell: 0, buyAdjust: 0, sellAdjust: 0,
+          buyReason: '', sellReason: '', analysis: '', confidence: 0, tags: [],
+          llmAdjusted: false, coverage: null,
+        });
+        toast.error(!marketOpen ? '市场已闭市，波段评分需在交易时段使用' : '分时数据不足，暂无法评分');
+        return;
+      }
 
-      // 计算技术指标
-      const indicatorResult = calculateIndicators(updatedKLines);
-      const indicatorBlock = formatIndicatorsForPrompt(indicatorResult);
+      // 确定性因子分
+      const t = computeTScore({ intraday, engineResults, chip, kLines: updatedKLines });
+      // 先把因子分结果显示出来（LLM 微调前）
+      setResult({
+        degraded: false, degradation: t.degradation,
+        buyScore: t.buyScore, sellScore: t.sellScore, buyFactors: t.buyFactors, sellFactors: t.sellFactors,
+        intraday, engineResults,
+        finalBuy: t.buyScore, finalSell: t.sellScore, buyAdjust: 0, sellAdjust: 0,
+        buyReason: '', sellReason: '', analysis: '', confidence: 0, tags: [],
+        llmAdjusted: false, coverage: null,
+      });
 
-      // 持仓占比
-      const positionNote = stock.positionPercent !== undefined
-        ? `注意：该股票占用户总持仓的${stock.positionPercent}%，请在分析中考虑仓位集中度风险。`
-        : undefined;
+      // LLM 微调
+      const systemPrompt = buildTscoreSystemPrompt(isETF(selectedCode));
+      const userPrompt = buildTscoreUserPrompt({
+        stockName: stock.name, code: selectedCode, ctx: intraday, indDaily, engineResults, chip,
+        buyScore: t.buyScore, sellScore: t.sellScore, buyFactors: t.buyFactors, sellFactors: t.sellFactors,
+        positionPercent: stock.positionPercent, marketNote: `[市场状态] ${marketNote}`,
+      });
 
-      const systemPrompt = buildXinJieQuickSystemPrompt(isETF(selectedCode));
-      const marketNote = `[市场状态] ${await fetchMarketStatusNote()}\n\n`;
-      const userPrompt = marketNote + buildUserPrompt(selectedCode, stock.name, quoteJson, klineSummary, engineSummary, indicatorBlock, positionNote);
-
-      // SSE 流式调用AI代理
-      const res = await fetch('/api/ai/analyze', {
+      const res = await fetch('/api/ai/t-score', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
-          systemPrompt,
-          userPrompt,
-          baseUrl: currentProfile.baseUrl,
-          apiKey: currentProfile.apiKey,
-          model: currentProfile.model,
+          systemPrompt, userPrompt,
+          baseUrl: currentProfile.baseUrl, apiKey: currentProfile.apiKey, model: currentProfile.model,
+          buyScore: t.buyScore, sellScore: t.sellScore,
         }),
         signal: abortController.signal,
       });
+      const data = await res.json();
+      if (!res.ok || data.error) throw new Error(data.error || 'API请求失败');
 
-      if (!res.ok) {
-        const errData = await res.json().catch(() => ({ error: `HTTP ${res.status}` }));
-        throw new Error(errData.error || 'API请求失败');
-      }
-
-      // 读取 SSE 流
-      const reader = res.body!.getReader();
-      const decoder = new TextDecoder();
-      let fullText = '';
-      let reasoningText = '';
-      let sseBuffer = '';
-
-      while (true) {
-        const { done, value } = await reader.read();
-        if (done) break;
-
-        sseBuffer += decoder.decode(value, { stream: true });
-        const lines = sseBuffer.split('\n');
-        sseBuffer = lines.pop() || '';
-
-        for (const line of lines) {
-          const trimmed = line.trim();
-          if (!trimmed || !trimmed.startsWith('data:')) continue;
-
-          const data = trimmed.slice(5).trim();
-          if (data === '[DONE]') continue;
-
-          try {
-            const chunk = JSON.parse(data);
-            if (typeof chunk === 'string') {
-              fullText += chunk;
-              setStreamingText(fullText);
-
-              // 实时更新结构化结果
-              const parsed = parseStreamContent(fullText);
-              setResult({
-                riskLevel: parsed.riskLevel,
-                analysis: parsed.analysis,
-                suggestion: parsed.suggestion,
-                triggeredRules: parsed.triggeredRules,
-                supportPrice: parsed.supportPrice,
-                resistancePrice: parsed.resistancePrice,
-              });
-            } else if (chunk && chunk.reasoning) {
-              // reasoning 模型的思考过程（DeepSeek-R1 / GLM-4.5+）
-              reasoningText += chunk.reasoning;
-              setStreamingReasoning(reasoningText);
-            }
-          } catch {
-            // 跳过无法解析的chunk
-          }
-        }
-      }
-
-      // 流结束，最终解析
-      const final = parseStreamContent(fullText);
-      const finalResult = {
-        riskLevel: final.riskLevel || '未知',
-        analysis: final.analysis || fullText || '(AI返回为空)',
-        suggestion: final.suggestion || '',
-        triggeredRules: final.triggeredRules,
-        supportPrice: final.supportPrice,
-        resistancePrice: final.resistancePrice,
+      const final: TScoreResult = {
+        degraded: false, degradation: t.degradation,
+        buyScore: t.buyScore, sellScore: t.sellScore, buyFactors: t.buyFactors, sellFactors: t.sellFactors,
+        intraday, engineResults,
+        finalBuy: data.finalBuy, finalSell: data.finalSell,
+        buyAdjust: data.buyAdjust, sellAdjust: data.sellAdjust,
+        buyReason: data.buyReason || '', sellReason: data.sellReason || '',
+        analysis: data.analysis || '', confidence: data.confidence ?? 0, tags: data.tags ?? [],
+        llmAdjusted: !!data.llmAdjusted, coverage: data.coverage ?? null,
       };
+      setResult(final);
 
-      setResult(finalResult);
-      setStreamingText('');
-
-      // 保存历史
+      // 保存历史（兼容 AnalysisHistory 的 pill/字段）
       aiStore.addHistory({
         id: generateId(),
         stockCode: selectedCode,
         stockName: stock.name,
         profileName: currentProfile.name,
         model: currentProfile.model,
-        riskLevel: finalResult.riskLevel,
-        analysis: finalResult.analysis,
-        suggestion: finalResult.suggestion,
-        triggeredRulesJson: JSON.stringify(finalResult.triggeredRules),
-        supportPrice: finalResult.supportPrice,
-        resistancePrice: finalResult.resistancePrice,
+        riskLevel: final.finalBuy >= 70 ? '高信号' : final.finalBuy >= 40 ? '中信号' : '低信号',
+        analysis: final.analysis || final.buyReason,
+        suggestion: [final.buyReason, final.sellReason].filter(Boolean).join(' / '),
+        triggeredRulesJson: JSON.stringify(final.engineResults.map(r => ({ ruleId: r.ruleId, message: r.message }))),
+        supportPrice: String(intraday.vwap.toFixed(2)),
+        resistancePrice: String(intraday.high.toFixed(2)),
         createdAt: Date.now(),
+        buyScore: final.finalBuy, sellScore: final.finalSell,
+        buyAdjust: final.buyAdjust, sellAdjust: final.sellAdjust,
+        buyReason: final.buyReason, sellReason: final.sellReason,
+        buyFactorsJson: JSON.stringify(final.buyFactors),
+        sellFactorsJson: JSON.stringify(final.sellFactors),
+        intradayJson: JSON.stringify(intraday),
+        llmAdjusted: final.llmAdjusted,
       });
 
-      toast.success('AI分析完成');
+      toast.success(final.llmAdjusted ? '波段评分完成' : '波段评分完成（LLM 未生效，已用纯因子分）');
     } catch (err: any) {
       if (err.name === 'AbortError') {
         // 用户主动取消，不显示错误
-        setStreamingText('');
       } else {
-        const msg = err.message || '分析失败';
+        const msg = err.message || '评分失败';
         setError(msg);
         toast.error(msg);
       }
@@ -383,7 +300,6 @@ export default function AiPage() {
     setDeepResult(null);
     setDeepStage('idle');
     setResult(null);
-    setStreamingReasoning('');
 
     const abortController = new AbortController();
     deepAbortRef.current = abortController;
@@ -391,7 +307,7 @@ export default function AiPage() {
     const completedMap: Record<string, string> = {};
 
     try {
-      // 获取数据（K线取60根，比心姐分析更多）
+      // 获取数据（K线取60根，比波段评分更多）
       const [quote, kLines, tushareData, rpsRes] = await Promise.all([
         getRealtimeQuoteCached(selectedCode),
         getKLineSinaCached(selectedCode, 240, 120),
@@ -777,9 +693,9 @@ export default function AiPage() {
         </select>
 
         <div className="flex gap-2 mb-1">
-          {/* 心姐分析 */}
+          {/* 波段评分 */}
           <button
-            onClick={runAnalysis}
+            onClick={runTScore}
             disabled={!selectedCode || isAnalyzing || isDeepAnalyzing}
             className={cn(
               "flex-1 py-3 rounded-xl font-medium flex items-center justify-center gap-2 transition",
@@ -789,9 +705,9 @@ export default function AiPage() {
             )}
           >
             {isAnalyzing ? (
-              <><Loader2 className="w-5 h-5 animate-spin" />心姐分析中...</>
+              <><Loader2 className="w-5 h-5 animate-spin" />评分中...</>
             ) : (
-              <><Brain className="w-5 h-5" />心姐分析</>
+              <><Brain className="w-5 h-5" />波段评分</>
             )}
           </button>
 
@@ -864,84 +780,10 @@ export default function AiPage() {
         </div>
       )}
 
-      {/* 分析结果 */}
-      {(result || streamingText) && (
-        <div className="space-y-4 mb-6">
-          {/* 思考过程（reasoning 模型） */}
-          {streamingReasoning && (
-            <div className="bg-white dark:bg-gray-900 rounded-xl p-4 shadow-sm">
-              <ReasoningPanel reasoning={streamingReasoning} isStreaming={isAnalyzing} />
-            </div>
-          )}
-
-          {/* 风险等级 */}
-          {result?.riskLevel ? (
-            <div className={cn(
-              "rounded-xl p-5 shadow-sm",
-              result.riskLevel.includes('高') ? "bg-red-50 dark:bg-red-950 border border-red-200" :
-              result.riskLevel.includes('中') ? "bg-orange-50 dark:bg-orange-950 border border-orange-200" :
-              "bg-blue-50 dark:bg-blue-950 border border-blue-200"
-            )}>
-              <div className="flex items-center justify-between">
-                <div>
-                  <p className="text-sm text-gray-500">风险等级</p>
-                  <p className="text-2xl font-bold mt-1">{result.riskLevel}</p>
-                </div>
-                <div className="text-right text-sm">
-                  <div className="text-gray-500">支撑 / 压力</div>
-                  <div className="font-medium mt-1">
-                    <span className="text-green-600">{result.supportPrice}</span>
-                    {' / '}
-                    <span className="text-red-600">{result.resistancePrice}</span>
-                  </div>
-                </div>
-              </div>
-            </div>
-          ) : streamingText ? (
-            <div className="rounded-xl p-5 shadow-sm bg-gray-50 dark:bg-gray-950 border border-gray-200 animate-pulse">
-              <p className="text-sm text-gray-500">正在接收分析结果...</p>
-            </div>
-          ) : null}
-
-          {/* 触发规则 */}
-          {result && result.triggeredRules.length > 0 && (
-            <div className="bg-white dark:bg-gray-900 rounded-xl p-4 shadow-sm">
-              <h3 className="font-semibold mb-3">AI识别的触发规则</h3>
-              <div className="space-y-2">
-                {result.triggeredRules.map((rule: any, i: number) => (
-                  <div key={i} className={cn(
-                    "p-3 rounded-lg text-sm",
-                    rule.level === 'CRITICAL' ? "bg-red-50 text-red-700" :
-                    rule.level === 'WARNING' ? "bg-orange-50 text-orange-700" :
-                    "bg-blue-50 text-blue-700"
-                  )}>
-                    <span className="font-medium">{rule.rule_name}</span>
-                    {rule.detail && rule.detail !== rule.rule_name && <span className="ml-2 opacity-75">— {rule.detail}</span>}
-                  </div>
-                ))}
-              </div>
-            </div>
-          )}
-
-          {/* 综合分析 */}
-          <div className="bg-white dark:bg-gray-900 rounded-xl p-4 shadow-sm">
-            <h3 className="font-semibold mb-2">综合分析</h3>
-            <p className="text-sm text-gray-600 dark:text-gray-400 whitespace-pre-wrap leading-relaxed">
-              {result?.analysis || ''}
-              {isAnalyzing && <span className="inline-block w-0.5 h-4 bg-purple-500 ml-0.5 animate-pulse align-middle" />}
-            </p>
-          </div>
-
-          {/* 操作建议 */}
-          {(result?.suggestion || isAnalyzing) && (
-            <div className="bg-white dark:bg-gray-900 rounded-xl p-4 shadow-sm border-l-4 border-purple-500">
-              <h3 className="font-semibold mb-2 text-purple-700 dark:text-purple-300">操作建议</h3>
-              <p className="text-sm text-gray-600 dark:text-gray-400 whitespace-pre-wrap leading-relaxed">
-                {result?.suggestion || ''}
-                {isAnalyzing && !result?.suggestion && <span className="inline-block w-0.5 h-4 bg-purple-500 ml-0.5 animate-pulse align-middle" />}
-              </p>
-            </div>
-          )}
+      {/* 波段评分结果 */}
+      {result && (
+        <div className="mb-6">
+          <TScorePanel result={result} isRunning={isAnalyzing} />
         </div>
       )}
 
@@ -1178,7 +1020,7 @@ export default function AiPage() {
       <AnalysisHistory history={history} />
 
       {/* 空状态 */}
-      {!result && !streamingText && !isAnalyzing && !deepResult && !isDeepAnalyzing && !error && (
+      {!result && !isAnalyzing && !deepResult && !isDeepAnalyzing && !error && (
         <div className="text-center py-16 text-gray-400">
           <Brain className="w-16 h-16 mx-auto mb-4 opacity-20" />
           <p className="text-lg">选择股票开始AI分析</p>

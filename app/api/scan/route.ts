@@ -27,6 +27,8 @@
  *   rsiMin    - RSI 下限（可选，RSI ≥ 此值）
  *   rsiMax    - RSI 上限（可选，RSI ≤ 此值，如 30 筛超卖）
  *   board     - 板块过滤：all(默认)/main(主板)/gem(创业板)/star(科创板)/bjse(北交所)，按 ts_code 前缀
+ *   filterMv  - 是否启用流通市值下限过滤（默认 false）
+ *   minMv     - 流通市值下限（亿元，默认 100；仅 filterMv=true 时生效，取最新交易日 circ_mv）
  *   limit     - 返回数量（默认 50，上限 200）
  */
 export async function GET(request: Request) {
@@ -49,6 +51,9 @@ export async function GET(request: Request) {
   const rsiMin = searchParams.get("rsiMin");
   const rsiMax = searchParams.get("rsiMax");
   const board = searchParams.get("board") || "all";
+  const filterMv = searchParams.get("filterMv") === "true";
+  const minMvRaw = parseFloat(searchParams.get("minMv") || "100");
+  const minMv = Number.isFinite(minMvRaw) ? Math.max(0, minMvRaw) : 100; // 流通市值下限（亿元）
   const limit = Math.min(parseInt(searchParams.get("limit") || "50"), 200);
 
   if (![20, 60, 120, 250].includes(period)) {
@@ -79,57 +84,51 @@ export async function GET(request: Request) {
     start.setDate(start.getDate() - (vcp ? 400 : 120));
     const startDate = start.toISOString().slice(0, 10).replace(/-/g, "");
 
-    // 动态 WHERE 拼接
-    const params: any[] = [latestRps.calcDate, startDate];
-    const where: string[] = [`s.is_active = true`];
+    // ---- 候选股预筛（非信号类硬过滤：RPS/行业/板块/ROE）----
+    // 先剔除不满足硬条件的标的，再进重窗口函数 CTE，避免对全市场 ~5000 只算 MA/金叉信号。
+    // 此前对全市场算完信号才过滤，过滤型查询（如 RPS+金叉）会很慢，用户长时间看到空白以为筛不出来。
+    // 候选集 ⊇ 最终结果集（信号类过滤 gc/ma55/vcp/rsi 仍在最终 WHERE），故结果不变。
+    const candParams: (string | number)[] = [];
+    const candWhere: string[] = [`s.is_active = true`];
+    if (filterRps) { candParams.push(minRps); candWhere.push(`r.${rpsCol} >= $${candParams.length}`); }
+    if (industry) { candParams.push(industry); candWhere.push(`s.ts_code IN (SELECT member_code FROM sw_index_member WHERE index_level = '${industryLevel}' AND index_name = $${candParams.length})`); }
+    if (board === "main") candWhere.push(`s.ts_code ~ '^(600|601|603|605|000|001|002|003)'`);
+    else if (board === "gem") candWhere.push(`s.ts_code ~ '^(300|301)'`);
+    else if (board === "star") candWhere.push(`s.ts_code ~ '^(688|689)'`);
+    else if (board === "bjse") candWhere.push(`s.ts_code ~ '\\.BJ$'`);
+    if (filterRoe) { candParams.push(minRoe); candWhere.push(`f.roe >= $${candParams.length}`); }
+    // 流通市值下限：取最新交易日的 circ_mv（万元），minMv 亿元换算为万元。NULL circ_mv 自动排除。
+    if (filterMv && latestBar) {
+      candParams.push(latestBar.tradeDate);
+      const dateIdx = candParams.length;
+      candParams.push(minMv * 10000);
+      const mvIdx = candParams.length;
+      candWhere.push(`s.ts_code IN (SELECT "tsCode" FROM daily_bars WHERE "tradeDate" = $${dateIdx} AND circ_mv >= $${mvIdx})`);
+    }
 
-    if (filterRps) {
-      params.push(minRps);
-      where.push(`r.${rpsCol} >= $${params.length}`);
-    }
-    if (industry) {
-      params.push(industry);
-      where.push(`s.ts_code IN (SELECT member_code FROM sw_index_member WHERE index_level = '${industryLevel}' AND index_name = $${params.length})`);
-    }
+    // 全局参数顺序：$1=calcDate, $2=startDate, $3..=candParams, 然后 rsi 参数, 最后 limit
+    const params: any[] = [latestRps.calcDate, startDate, ...candParams];
+    // cand CTE 内占位符需偏移 +2（前面已有 calcDate=$1、startDate=$2）
+    const candWhereShifted = candWhere.map((w) => w.replace(/\$(\d+)/g, (_, n) => `$${Number(n) + 2}`));
+    const candCte = `cand AS (
+        SELECT s.ts_code
+        FROM stocks s
+        JOIN rps_scores r ON r."tsCode" = s.ts_code AND r."calcDate" = $1
+        LEFT JOIN stock_fundamentals f ON f.ts_code = s.ts_code
+        WHERE ${candWhereShifted.join(" AND ")}
+      )`;
+
+    // 信号类过滤（依赖 CTE 算出的 gc/ma55/vcp/rsi），留在最终 WHERE
+    const where: string[] = [];
     if (goldenCross) {
-      if (gcDays === 0) {
-        // 即将金叉：MA5<MA13 但差距<2% 且 MA5在涨
-        where.push(`sig.gc_approaching = true`);
-      } else {
-        // 近 N 日内上穿过 且 当前仍 MA5>MA13（排除金叉后立即反转的伪信号）
-        where.push(`sig.gc_fresh = true AND sig.gc_state = true`);
-      }
+      where.push(gcDays === 0 ? `sig.gc_approaching = true` : `sig.gc_fresh = true AND sig.gc_state = true`);
     }
-    if (ma55Up) {
-      where.push(`sig.ma55_up = true`);
-    }
-    if (filterRoe) {
-      params.push(minRoe);
-      where.push(`f.roe >= $${params.length}`);
-    }
-    if (vcp) {
-      where.push(`vf.vcp = true`);
-    }
-    // 板块过滤（按 ts_code 6 位前缀；ts_code 形如 "600000.SH"/"000001.SZ"/"830799.BJ"）
-    if (board === "main") {
-      where.push(`s.ts_code ~ '^(600|601|603|605|000|001|002|003)'`);
-    } else if (board === "gem") {
-      where.push(`s.ts_code ~ '^(300|301)'`);
-    } else if (board === "star") {
-      where.push(`s.ts_code ~ '^(688|689)'`);
-    } else if (board === "bjse") {
-      where.push(`s.ts_code ~ '\\.BJ$'`);
-    }
+    if (ma55Up) where.push(`sig.ma55_up = true`);
+    if (vcp) where.push(`vf.vcp = true`);
     if (filterRsi) {
       const rsiExpr = `(CASE WHEN sig.rsi_al_now IS NULL OR sig.rsi_al_now = 0 THEN 100 ELSE 100 - 100 / (1 + sig.rsi_ag_now / sig.rsi_al_now) END)`;
-      if (rsiMin != null && rsiMin !== "") {
-        params.push(Number(rsiMin));
-        where.push(`${rsiExpr} >= $${params.length}`);
-      }
-      if (rsiMax != null && rsiMax !== "") {
-        params.push(Number(rsiMax));
-        where.push(`${rsiExpr} <= $${params.length}`);
-      }
+      if (rsiMin != null && rsiMin !== "") { params.push(Number(rsiMin)); where.push(`${rsiExpr} >= $${params.length}`); }
+      if (rsiMax != null && rsiMax !== "") { params.push(Number(rsiMax)); where.push(`${rsiExpr} <= $${params.length}`); }
     }
     params.push(limit);
 
@@ -198,7 +197,8 @@ export async function GET(request: Request) {
       : "";
 
     const query = `
-      WITH recent AS (
+      WITH ${candCte},
+      recent AS (
         SELECT "tsCode", "tradeDate", close,
           AVG(close) OVER w5  AS ma5,
           AVG(close) OVER w13 AS ma13,
@@ -206,7 +206,7 @@ export async function GET(request: Request) {
           ROW_NUMBER() OVER (PARTITION BY "tsCode" ORDER BY "tradeDate" DESC) AS rn
         FROM daily_bars
         WHERE "tradeDate" >= $2
-          AND "tsCode" IN (SELECT ts_code FROM stocks WHERE is_active = true)
+          AND "tsCode" IN (SELECT ts_code FROM cand)
         WINDOW
           w5  AS (PARTITION BY "tsCode" ORDER BY "tradeDate" ROWS BETWEEN 4 PRECEDING AND CURRENT ROW),
           w13 AS (PARTITION BY "tsCode" ORDER BY "tradeDate" ROWS BETWEEN 12 PRECEDING AND CURRENT ROW),
@@ -252,7 +252,7 @@ export async function GET(request: Request) {
         WHERE "tsCode" = sig."tsCode" AND "tradeDate" <= $1
         ORDER BY "tradeDate" DESC LIMIT 1
       ) db ON true
-      WHERE ${where.join(" AND ")}
+      WHERE ${where.length ? where.join(" AND ") : "true"}
       ORDER BY r.${rpsCol} DESC NULLS LAST
       LIMIT $${params.length}
     `;

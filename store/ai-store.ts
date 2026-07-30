@@ -22,6 +22,17 @@ export interface AiAnalysisRecord {
   supportPrice: string;
   resistancePrice: string;
   createdAt: number;
+  // 波段评分扩展字段（可选；旧记录无这些字段，向后兼容）
+  buyScore?: number;
+  sellScore?: number | null;
+  buyAdjust?: number;
+  sellAdjust?: number | null;
+  buyReason?: string;
+  sellReason?: string | null;
+  buyFactorsJson?: string;
+  sellFactorsJson?: string | null;
+  intradayJson?: string;
+  llmAdjusted?: boolean;
 }
 
 interface AiStoreState {

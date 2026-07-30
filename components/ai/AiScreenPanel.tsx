@@ -61,7 +61,6 @@ export function AiScreenPanel({ currentProfile }: { currentProfile: AiProfile })
   const [sector, setSector] = useState('');
   const [level, setLevel] = useState<'L1' | 'L2'>('L1');
   const [board, setBoard] = useState('all');
-  const [displayCount, setDisplayCount] = useState(10);
 
   const refresh = useCallback(async () => {
     try {
@@ -103,12 +102,7 @@ export function AiScreenPanel({ currentProfile }: { currentProfile: AiProfile })
       if (data.error) {
         toast.error(data.error);
       } else {
-        // POST 默认回入选 top-10;若用户要展示更多,按 displayCount 重新拉取
-        if (displayCount > 10 && data.run?.id) {
-          await loadRun(data.run.id, '', 'L1', 'all', displayCount);
-        } else {
-          setLastRun(data.run, data.picks);
-        }
+        setLastRun(data.run, data.picks);
         toast.success(`筛选完成：${data.picks.length} 只入选`);
         refresh();
       }
@@ -119,12 +113,11 @@ export function AiScreenPanel({ currentProfile }: { currentProfile: AiProfile })
     }
   };
 
-  const loadRun = async (runId: string, s = sector, l = level, b = board, dc = displayCount) => {
+  const loadRun = async (runId: string, s = sector, l = level, b = board) => {
     try {
       const qs = new URLSearchParams();
       if (s) { qs.set('sector', s); qs.set('level', l); }
       if (b && b !== 'all') qs.set('board', b);
-      qs.set('limit', String(dc));
       const res = await fetch(`/api/ai-screen/${runId}?${qs}`);
       const data = await res.json();
       if (data.error) toast.error(data.error);
@@ -243,12 +236,6 @@ export function AiScreenPanel({ currentProfile }: { currentProfile: AiProfile })
               <option value="gem">创业板</option>
               <option value="star">科创板</option>
               <option value="bjse">北交所</option>
-            </select>
-            <span className="text-gray-500 ml-1">展示</span>
-            <select value={displayCount} onChange={(e) => { setDisplayCount(Number(e.target.value)); if (lastRun) loadRun(lastRun.id, sector, level, board, Number(e.target.value)); }} className="px-2 py-1 rounded border border-gray-200 dark:border-gray-700 bg-transparent text-gray-700 dark:text-gray-300">
-              <option value={10}>10</option>
-              <option value={20}>20</option>
-              <option value={30}>30</option>
             </select>
             <button onClick={applyFilter} className="px-2 py-1 rounded bg-purple-600 text-white hover:bg-purple-700">应用</button>
             {(sector || board !== 'all') && (

@@ -46,6 +46,8 @@ export default function ScannerPage() {
     rsiMin, setRsiMin,
     rsiMax, setRsiMax,
     board, setBoard,
+    filterMv, setFilterMv,
+    minMv, setMinMv,
   } = useScannerStore();
 
   // 仅本组件内的瞬态 UI 状态
@@ -98,6 +100,7 @@ export default function ScannerPage() {
         if (st.rsiMin != null) params.set('rsiMin', String(st.rsiMin));
         if (st.rsiMax != null) params.set('rsiMax', String(st.rsiMax));
       }
+      if (st.filterMv) { params.set('filterMv', 'true'); params.set('minMv', String(st.minMv)); }
       if (st.board !== 'all') params.set('board', st.board);
       const res = await fetch(`/api/scan?${params}`);
       const data = await res.json();
@@ -134,6 +137,7 @@ export default function ScannerPage() {
   if (goldenCross) condParts.push(gcDays === 0 ? '5/13即将金叉' : `5/13金叉(近${gcDays}日)`);
   if (ma55Up) condParts.push('股价在55日线上方');
   if (filterRoe) condParts.push(`ROE≥${minRoe}%`);
+  if (filterMv) condParts.push(`流通市值≥${minMv}亿`);
   if (vcp) condParts.push('VCP收缩');
   if (filterRsi) {
     const lo = rsiMin != null ? `≥${rsiMin}` : '';
@@ -348,6 +352,27 @@ export default function ScannerPage() {
             )}
           </div>
 
+          {/* 流通市值 */}
+          <div className="flex flex-wrap items-center gap-3">
+            <label className="flex items-center gap-2 text-sm font-medium cursor-pointer">
+              <input type="checkbox" checked={filterMv} onChange={e => setFilterMv(e.target.checked)} className="w-4 h-4 rounded accent-blue-600" />
+              流通市值 ≥
+            </label>
+            {filterMv && (
+              <>
+                <select value={minMv} onChange={e => setMinMv(Number(e.target.value))}
+                  className="px-3 py-1.5 border border-gray-200 dark:border-gray-700 rounded-lg bg-white dark:bg-gray-800 text-sm">
+                  {[30, 50, 100, 200, 500, 1000].map(n => <option key={n} value={n}>{n}亿</option>)}
+                </select>
+                <input type="number" min={0} value={minMv}
+                  onChange={e => setMinMv(Math.max(0, Number(e.target.value) || 0))}
+                  className="w-20 px-2 py-1.5 border border-gray-200 dark:border-gray-700 rounded-lg bg-white dark:bg-gray-800 text-sm" />
+                <span className="text-sm text-gray-500">亿</span>
+                <span className="text-xs text-gray-400">过滤小市值标的</span>
+              </>
+            )}
+          </div>
+
           {/* RSI */}
           <div className="flex flex-wrap items-center gap-3">
             <label className="flex items-center gap-2 text-sm font-medium cursor-pointer">
@@ -493,6 +518,13 @@ export default function ScannerPage() {
               </tbody>
             </table>
           </div>
+        </div>
+      )}
+
+      {loading && rpsResults.length === 0 && (
+        <div className="text-center py-16 text-gray-400">
+          <Loader2 className="w-8 h-8 mx-auto mb-3 animate-spin" />
+          <p className="text-sm">正在扫描全市场，请稍候…</p>
         </div>
       )}
 

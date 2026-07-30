@@ -45,6 +45,8 @@ interface ScannerState {
   rsiMin: number | null;
   rsiMax: number | null;
   board: Board;
+  filterMv: boolean;
+  minMv: number; // 流通市值下限（亿元）
 
   setSelectedSectors: (updater: string[] | ((prev: string[]) => string[])) => void;
   setRpsPeriod: (n: number) => void;
@@ -64,6 +66,8 @@ interface ScannerState {
   setRsiMin: (v: number | null) => void;
   setRsiMax: (v: number | null) => void;
   setBoard: (v: Board) => void;
+  setFilterMv: (v: boolean) => void;
+  setMinMv: (n: number) => void;
   clearResults: () => void;
 }
 
@@ -91,6 +95,8 @@ export const useScannerStore = create<ScannerState>()(
       rsiMin: null,
       rsiMax: 30,
       board: 'all',
+      filterMv: false,
+      minMv: 100,
 
       setSelectedSectors: (updater) => set((s) => ({ selectedSectors: resolve(updater, s.selectedSectors) })),
       setRpsPeriod: (rpsPeriod) => set({ rpsPeriod }),
@@ -110,11 +116,13 @@ export const useScannerStore = create<ScannerState>()(
       setRsiMin: (rsiMin) => set({ rsiMin }),
       setRsiMax: (rsiMax) => set({ rsiMax }),
       setBoard: (board) => set({ board }),
+      setFilterMv: (filterMv) => set({ filterMv }),
+      setMinMv: (minMv) => set({ minMv }),
       clearResults: () => set({ rpsResults: [] }),
     }),
     {
       name: 'scanner-store',
-      version: 6,
+      version: 7,
       partialize: (s) => ({
         selectedSectors: s.selectedSectors,
         rpsPeriod: s.rpsPeriod,
@@ -134,8 +142,10 @@ export const useScannerStore = create<ScannerState>()(
         rsiMin: s.rsiMin,
         rsiMax: s.rsiMax,
         board: s.board,
+        filterMv: s.filterMv,
+        minMv: s.minMv,
       }),
-      // v1→v2：丢弃已删除的 rules 模式字段；v2→v3：新增 vcp；v4→v5：新增 board；v5→v6：新增 RSI 过滤字段（缺省由默认值兜底）
+      // v1→v2：丢弃已删除的 rules 模式字段；v2→v3：新增 vcp；v4→v5：新增 board；v5→v6：新增 RSI 过滤字段；v6→v7：新增市值过滤字段（缺省由默认值兜底）
       migrate: (persisted: unknown) => {
         const p = persisted as Record<string, unknown> | undefined;
         if (!p) return p as any;

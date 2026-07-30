@@ -10,10 +10,12 @@ import { Send, Trash } from 'lucide-react';
 import { ReasoningPanel } from '@/components/ai/ReasoningPanel';
 
 interface QuickResult {
-  riskLevel: string;
+  finalBuy: number;
+  finalSell: number;
+  buyAdjust: number;
   analysis: string;
-  supportPrice: string;
-  resistancePrice: string;
+  buyReason: string;
+  sellReason: string;
 }
 
 interface DeepStructured {
@@ -111,7 +113,8 @@ export function AiChat({ currentProfile, selectedCode, watchlist, result, deepSt
 
           if (attachAnalysisResult) {
             if (result) {
-              stockContext += `\n\n最新心姐分析结论：风险${result.riskLevel}，支撑${result.supportPrice}，压力${result.resistancePrice}\n${result.analysis}`;
+              stockContext += `\n\n最新波段评分：买点 ${result.finalBuy} 分${result.buyAdjust ? `（LLM微调${result.buyAdjust > 0 ? '+' : ''}${result.buyAdjust}）` : ''}，卖点 ${result.finalSell} 分`;
+              if (result.analysis) stockContext += `\n${result.analysis}`;
             }
             if (deepStructured?.action) {
               stockContext += `\n\n最新深度分析结论：${deepStructured.action} | 风险${deepStructured.riskLevel} | 信心${deepStructured.confidence}% | 仓位${deepStructured.position} | 目标${deepStructured.targetLow}-${deepStructured.targetHigh} | 止损${deepStructured.stopLoss}`;

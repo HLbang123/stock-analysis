@@ -50,8 +50,8 @@ export async function GET(request: NextRequest, { params }: { params: Promise<{ 
       return NextResponse.json({ error: '运行记录不存在' }, { status: 404 });
     }
 
-    // 展示数量:用户可自选(10/15/20/30),默认=入选数;上限 30(LLM 只重排 topK=30,超出部分无 LLM 分)
-    const limit = Math.min(Math.max(Number.isFinite(limitRaw) && limitRaw > 0 ? limitRaw : run.pickCount || 10, 1), 30);
+    // 展示数量:默认=入选数(每策略 maxOutput=20);limit 查询参数仅作安全上限兜底
+    const limit = Math.min(Math.max(Number.isFinite(limitRaw) && limitRaw > 0 ? limitRaw : run.pickCount || 20, 1), 30);
 
     let picks = run.picks as any[];
     if (filtered) {
