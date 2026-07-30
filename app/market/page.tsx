@@ -213,18 +213,16 @@ export default function MarketPage() {
           {/* 5. 北向资金 */}
           <Card className="p-4">
             <h3 className="font-medium mb-1">北向资金（亿元）</h3>
-            <p className="text-xs text-gray-500 mb-2">日净流入（柱）+ 累计余额（线）</p>
+            <p className="text-xs text-gray-500 mb-2">日净流入（柱）</p>
             <div className="h-56">
               {northbound.length > 0 ? (
                 <EChart option={{
                   tooltip: { trigger: 'axis' },
-                  legend: { data: ['日净流入', '累计余额'], top: 0 },
-                  grid: { left: 45, right: 45, top: 25, bottom: 25 },
+                  grid: { left: 45, right: 15, top: 15, bottom: 25 },
                   xAxis: { type: 'category', data: northbound.map(n => md(n.date)), axisLabel: { fontSize: 10 } },
-                  yAxis: [{ type: 'value', name: '净流入', scale: true }, { type: 'value', name: '累计', scale: true }],
+                  yAxis: { type: 'value', name: '净流入', scale: true },
                   series: [
                     { name: '日净流入', type: 'bar', data: northbound.map(n => yi(n.northMoney)), itemStyle: { color: (p: any) => (p.value >= 0 ? '#ef4444' : '#22c55e') } },
-                    { name: '累计余额', type: 'line', yAxisIndex: 1, data: northbound.map(n => yi(n.northTotal)), smooth: true, showSymbol: false },
                   ],
                 }} />
               ) : <Empty />}

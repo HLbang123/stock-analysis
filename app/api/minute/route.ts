@@ -1,6 +1,14 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { normalizeMarketCode } from '@/lib/api-helpers';
 
+// 短 TTL 内存缓存 + 在途请求去重
+// 自选页一次性并发拉同一只票时，复用同一份结果，避免对腾讯突发打多份请求。
+// TTL 8s：做 T 5 分粒度下足够新鲜；8~120s 内拉空时降级到上一份缓存。
+const MINUTE_TTL = 8_000;
+const MINUTE_MAX_AGE = 120_000;
+const minuteCache = new Map<string, { data: any[]; ts: number }>();
+const minuteInflight = new Map<string, Promise<any[]>>();
+
 export async function GET(request: NextRequest) {
   const code = request.nextUrl.searchParams.get('code');
   if (!code) {
@@ -10,10 +18,53 @@ export async function GET(request: NextRequest) {
   const parsed = normalizeMarketCode(code) ?? { market: 'sh', pureCode: code };
   const { market, pureCode } = parsed;
 
+  const points = await getMinuteCached(market, pureCode);
+  return NextResponse.json(points);
+}
+
+/**
+ * 带短 TTL 缓存 + 在途去重的分时获取
+ */
+async function getMinuteCached(market: string, pureCode: string): Promise<any[]> {
+  const key = `${market}${pureCode}`;
+  const now = Date.now();
+
+  // 1. 新鲜缓存 → 直接返回
+  const entry = minuteCache.get(key);
+  if (entry && now - entry.ts < MINUTE_TTL) {
+    return entry.data;
+  }
+
+  // 2. 已有在途请求 → 复用同一 Promise（并发去重）
+  const existing = minuteInflight.get(key);
+  if (existing) return existing;
+
+  // 3. 发起新请求
+  const p = (async () => {
+    const fresh = await fetchMinute(market, pureCode);
+    if (fresh.length > 0) {
+      minuteCache.set(key, { data: fresh, ts: Date.now() });
+      return fresh;
+    }
+    // 拉空 → 降级到未过期(stale)缓存
+    if (entry && now - entry.ts < MINUTE_MAX_AGE) return entry.data;
+    return fresh;
+  })().finally(() => {
+    minuteInflight.delete(key);
+  });
+
+  minuteInflight.set(key, p);
+  return p;
+}
+
+/**
+ * 实际拉取分时：方案1 腾讯分时 → 方案2 5分K回退
+ */
+async function fetchMinute(market: string, pureCode: string): Promise<any[]> {
   // 方案1: 腾讯分钟线
   try {
     const points = await tryTencentMinuteOnline(market, pureCode);
-    if (points && points.length > 0) return NextResponse.json(points);
+    if (points && points.length > 0) return points;
   } catch (e: any) {
     console.log(`[minute] Tencent minute error: ${e.message}`);
   }
@@ -21,12 +72,12 @@ export async function GET(request: NextRequest) {
   // 方案2: 5分钟K线
   try {
     const points = await tryM5KLine(market, pureCode);
-    if (points && points.length > 0) return NextResponse.json(points);
+    if (points && points.length > 0) return points;
   } catch (e: any) {
     console.log(`[minute] M5 K-line error: ${e.message}`);
   }
 
-  return NextResponse.json([]);
+  return [];
 }
 
 async function tryTencentMinuteOnline(market: string, pureCode: string) {

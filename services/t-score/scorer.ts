@@ -2,9 +2,10 @@
  * 波段评分 — 确定性因子打分
  *
  * 镜像 services/ai-screen/scorer.ts 的 curve 打分模式，但单标的、无 cross-sectional rank。
- * 买入分 6 因子 + 卖出分 6 因子（均恒算；仓位信息仅作 LLM 上下文，不影响是否算卖点），各 curve 0-100，加权求和。
+ * 买入分 7 因子 + 卖出分 7 因子（均恒算；仓位信息仅作 LLM 上下文，不影响是否算卖点），各 curve 0-100，加权求和。
  * 因子信号尽量不相交：分时类读 IntradayContext，日级类读 ai-screen/indicators 派生量，
  * 信号类读 alertRules 触发结果。signalScore 类复合指标不喂因子（防泄漏）。
+ * 做 T 规则（5分放量高抛 / 15分支撑低吸）权重 0.08，数据不足时因子取中性 50。
  */
 
 import type { KLineData, RuleCheckResult } from '@/types';
@@ -140,24 +141,32 @@ export const DEFAULT_TSCORE_PROFILE: Record<string, number> = {
   // 卖·卖出信号触发
   sell_signal_base: 60,
   sell_signal_sell_bonus: 25,
+  // 买·15分K支撑位低吸（做T规则，低权重）
+  buy_m15_slope: 20,           // 离支撑越近越高：dist=0→100, dist=2→60
+  buy_m15_breakdown: 25,       // 跌破支撑兜底
+  // 卖·5分K放大量高抛（做T规则，低权重）
+  sell_m5_base: 45,
+  sell_m5_surge_slope: 30,     // 放量倍数(r-1)加分：r=2→75, r=3→100
 };
 
 const BUY_WEIGHTS: Record<string, number> = {
-  intradayPullbackToVwap: 0.22,
+  intradayPullbackToVwap: 0.18,   // 0.22→0.18，让 0.04 给做T规则
   intradayRangeLow: 0.18,
   pullbackVolumeContraction: 0.15,
   intradayMomentum: 0.10,
-  dailyTrendUp: 0.20,
+  dailyTrendUp: 0.16,             // 0.20→0.16，让 0.04 给做T规则
   noStrongSellSignal: 0.15,
+  intradayM15Support: 0.08,       // 做T·15分K支撑位低吸（低权重）
 };
 
 const SELL_WEIGHTS: Record<string, number> = {
-  intradayExtensionAboveVwap: 0.22,
+  intradayExtensionAboveVwap: 0.18,   // 0.22→0.18
   intradayRangeHigh: 0.18,
   riseVolumeSurge: 0.15,
   intradayMomentum: 0.10,
-  dailyOverheatNearResistance: 0.20,
+  dailyOverheatNearResistance: 0.16,  // 0.20→0.16
   strongSellSignalTriggered: 0.15,
+  intradayM5VolSurge: 0.08,           // 做T·5分K放大量高抛（低权重）
 };
 
 const clip = (v: number, lo = 0, hi = 100) => Math.max(lo, Math.min(hi, v));
@@ -253,6 +262,14 @@ function buyNoSellSignal(engineResults: RuleCheckResult[], p: typeof DEFAULT_TSC
   return s;
 }
 
+// 买·15分K支撑位低吸（做T规则）：15分K收盘贴近前期15分低点=回踩支撑→低吸
+function buyM15Support(ctx: IntradayContext, p: typeof DEFAULT_TSCORE_PROFILE): number {
+  const d = ctx.m15SupportDistPct;
+  if (d == null) return 50; // 15分K根数不足，中性
+  if (d < 0) return p.buy_m15_breakdown; // 跌破支撑，不低吸
+  return clip(100 - d * p.buy_m15_slope); // 0=贴支撑→100，越远越低
+}
+
 // ===== 卖出因子 =====
 
 function sellExtensionAboveVwap(ctx: IntradayContext, p: typeof DEFAULT_TSCORE_PROFILE): number {
@@ -309,6 +326,15 @@ function sellStrongSignal(engineResults: RuleCheckResult[], p: typeof DEFAULT_TS
   return clip(s);
 }
 
+// 卖·5分K放大量高抛（做T规则）：最新5分K量显著放大且收阳=放量冲高→高抛
+function sellM5VolSurge(ctx: IntradayContext, p: typeof DEFAULT_TSCORE_PROFILE): number {
+  const r = ctx.m5VolSurgeRatio;
+  if (r <= 0) return 50; // 5分K根数不足，中性
+  let s = p.sell_m5_base;
+  if (ctx.m5LastUp && r > 1) s += (r - 1) * p.sell_m5_surge_slope;
+  return clip(s);
+}
+
 /** 主入口：算买入分 + 卖出分（均恒算；仓位信息仅作 LLM 上下文，不影响是否算卖点）。分时不足 → degraded。 */
 export function computeTScore(input: TScoreInput): TScoreResult {
   const { intraday: ctx, engineResults, chip, kLines } = input;
@@ -330,6 +356,7 @@ export function computeTScore(input: TScoreInput): TScoreResult {
     { name: '分时动量', score: buyMomentum(ctx, p), weight: BUY_WEIGHTS.intradayMomentum, raw: { mom15: ctx.mom15 } },
     { name: '日级趋势', score: buyDailyTrend(closes, highs, p), weight: BUY_WEIGHTS.dailyTrendUp, raw: {} },
     { name: '无卖出信号', score: buyNoSellSignal(engineResults, p), weight: BUY_WEIGHTS.noStrongSellSignal, raw: {} },
+    { name: '15分支撑低吸', score: buyM15Support(ctx, p), weight: BUY_WEIGHTS.intradayM15Support, raw: { m15SupportDistPct: ctx.m15SupportDistPct ?? NaN } },
   ];
   // 买入分（权重存在各因子 weight 字段，直接归一）
   const buyWsum = buyFactors.reduce((a, f) => a + f.weight, 0);
@@ -343,6 +370,7 @@ export function computeTScore(input: TScoreInput): TScoreResult {
     { name: '分时动量', score: sellMomentum(ctx, p), weight: SELL_WEIGHTS.intradayMomentum, raw: { mom15: ctx.mom15 } },
     { name: '日级过热', score: sellDailyOverheat(closes, highs, chip, p), weight: SELL_WEIGHTS.dailyOverheatNearResistance, raw: {} },
     { name: '卖出信号', score: sellStrongSignal(engineResults, p), weight: SELL_WEIGHTS.strongSellSignalTriggered, raw: {} },
+    { name: '5分放量高抛', score: sellM5VolSurge(ctx, p), weight: SELL_WEIGHTS.intradayM5VolSurge, raw: { m5VolSurgeRatio: ctx.m5VolSurgeRatio, m5LastUp: ctx.m5LastUp ? 1 : 0 } },
   ];
   const sellWsum = sellFactors.reduce((a, f) => a + f.weight, 0);
   const sellScore = clip(sellFactors.reduce((acc, f) => acc + f.score * (f.weight / sellWsum), 0));
