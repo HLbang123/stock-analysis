@@ -190,7 +190,8 @@ model AiScreenRun {
   candidateCount    Int     @map("candidate_count")
   pickCount         Int     @map("pick_count")
   llmReranked       Boolean @default(false) @map("llm_reranked")
-  llmRescued        Boolean @default(false) @map("llm_rescued") // 降级后是否已尝试用后续用户 token 补救（熔断，每天最多1次）
+  llmRescued        Boolean @default(false) @map("llm_rescued") // 历史标记：此 run 是否曾由后续用户 token 补救升级成功（不再作熔断门控）
+  llmRescuedAt      String? @map("llm_rescued_at") @db.VarChar(32) // 上次补救尝试时间(ISO)，10分钟冷却窗口用；null 表示从未试过补救
   llmModel          String? @map("llm_model") @db.VarChar(80)
   llmMarketView     String? @map("llm_market_view") @db.VarChar(300)
   llmSelectionLogic String? @map("llm_selection_logic") @db.VarChar(400)
@@ -301,4 +302,45 @@ model AiScreenEval {
   @@unique([pickId, nDays])
   @@index([nDays])
   @@map("ai_screen_evals")
+}
+
+/// 深度分析建议快照（全局匿名，按 股票+交易日+建议 去重，回测用）
+model DeepAnalysisRecord {
+  id          String  @id @default(uuid()) @db.VarChar(36)
+  stockCode   String  @map("stock_code") @db.VarChar(12)
+  stockName   String  @map("stock_name") @db.VarChar(40)
+  entryDate   String  @map("entry_date") @db.VarChar(8) // YYYYMMDD 交易日
+  entryPrice  Float                                            // 用户跑时实时价（参考）
+  action      String  @db.VarChar(8)                          // 买入/持有/卖出
+  targetLow   Float?
+  targetHigh  Float?
+  stopLoss    Float?
+  position    Float?
+  confidence  Int?
+  reasoning   String? @db.VarChar(500)
+  createdAt   String  @map("created_at") @db.VarChar(32) // ISO
+  evals       DeepAnalysisEval[]
+
+  @@unique([stockCode, entryDate, action])
+  @@index([entryDate])
+  @@map("deep_analysis_records")
+}
+
+/// 深度分析 T+N 回测结果（仿 AiScreenEval）
+model DeepAnalysisEval {
+  id              String  @id @default(uuid()) @db.VarChar(36)
+  recordId        String  @map("record_id") @db.VarChar(36)
+  nDays           Int     @map("n_days") // 5 / 10 / 20
+  exitPrice       Float?  @map("exit_price")
+  exitDate        String? @map("exit_date") @db.VarChar(8)
+  returnPct       Float?  @map("return_pct") // (exitClose/entryClose - 1)*100 - cost
+  maxDrawdownPct  Float?  @map("max_drawdown_pct")
+  maxRunupPct     Float?  @map("max_runup_pct")
+  pathStatus      String? @map("path_status") @db.VarChar(24)
+
+  record DeepAnalysisRecord @relation(fields: [recordId], references: [id], onDelete: Cascade)
+
+  @@unique([recordId, nDays])
+  @@index([nDays])
+  @@map("deep_analysis_evals")
 }

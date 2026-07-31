@@ -166,48 +166,61 @@ export async function POST(request: NextRequest) {
       if (!preset.llmRerank || existing.llmReranked) {
         return NextResponse.json({ run: serializeRun(existing), picks: displayPicks(existing.picks) });
       }
-      // 降级结果 + 未补救过 + 调用方是 DeepSeek → 用调用方 token 补救一次
-      // （非 DeepSeek 模型不够格补救，直接看降级结果，等 DeepSeek 用户来升级）
-      if (!existing.llmRescued && cfg && isPreferredModel(cfg.model)) {
-        const idByCode = new Map(existing.picks.map((p) => [p.tsCode, p.id]));
-        const dbPicks = existing.picks.map(dbPickToAiPick);
-        const outcome = await rescueRun(dbPicks, preset, cfg);
-        if (outcome) {
-          // 补救成功：更新 Run + 清空全部候选的 selected/rank + 重标 top-N
-          await prisma.$transaction([
-            prisma.aiScreenRun.update({
+      // 降级结果 + 调用方是 DeepSeek + 过了 10 分钟冷却 → 用调用方 token 补救一次
+      // 冷却窗口防止偶发超时后每个用户都干等 1-4 分钟生成 + 烧 token；CAS 抢占防并发补救写库竞争
+      const RESCUE_COOLDOWN_MS = 10 * 60 * 1000;
+      const nowIso = new Date().toISOString();
+      const tooSoon =
+        !!existing.llmRescuedAt &&
+        Date.now() - new Date(existing.llmRescuedAt).getTime() < RESCUE_COOLDOWN_MS;
+      if (cfg && isPreferredModel(cfg.model) && !tooSoon) {
+        // CAS 抢占：只有 llmRescuedAt 仍是旧值/null 的请求能继续，并发请求 count===0 直接返回
+        const claimed = await prisma.aiScreenRun.updateMany({
+          where: { id: existing.id, llmRescuedAt: existing.llmRescuedAt },
+          data: { llmRescuedAt: nowIso },
+        });
+        if (claimed.count === 1) {
+          const idByCode = new Map(existing.picks.map((p) => [p.tsCode, p.id]));
+          const dbPicks = existing.picks.map(dbPickToAiPick);
+          const outcome = await rescueRun(dbPicks, preset, cfg);
+          if (outcome) {
+            // 补救成功：更新 Run + 清空全部候选的 selected/rank + 重标 top-N
+            await prisma.$transaction([
+              prisma.aiScreenRun.update({
+                where: { id: existing.id },
+                data: {
+                  llmReranked: true,
+                  llmRescued: true,
+                  llmModel: cfg.model,
+                  llmMarketView: outcome.marketView || null,
+                  llmSelectionLogic: outcome.selectionLogic || null,
+                  llmPortfolioRisk: outcome.portfolioRisk || null,
+                  llmCoverage: outcome.coverage,
+                  degradation: [...(existing.degradation ?? []), ...outcome.degradation, 'rescued_by_later_token'],
+                },
+              }),
+              prisma.aiScreenPick.updateMany({
+                where: { runId: existing.id },
+                data: { selected: false, rank: null },
+              }),
+              ...outcome.picks
+                .map((k) => ({ id: idByCode.get(k.tsCode), data: pickToUpdate(k) }))
+                .filter((u): u is { id: string; data: any } => !!u.id)
+                .map((u) => prisma.aiScreenPick.update({ where: { id: u.id }, data: u.data })),
+            ]);
+            const refreshed = await prisma.aiScreenRun.findUnique({
               where: { id: existing.id },
-              data: {
-                llmReranked: true,
-                llmRescued: true,
-                llmModel: cfg.model,
-                llmMarketView: outcome.marketView || null,
-                llmSelectionLogic: outcome.selectionLogic || null,
-                llmPortfolioRisk: outcome.portfolioRisk || null,
-                llmCoverage: outcome.coverage,
-                degradation: [...(existing.degradation ?? []), ...outcome.degradation, 'rescued_by_later_token'],
-              },
-            }),
-            prisma.aiScreenPick.updateMany({
-              where: { runId: existing.id },
-              data: { selected: false, rank: null },
-            }),
-            ...outcome.picks
-              .map((k) => ({ id: idByCode.get(k.tsCode), data: pickToUpdate(k) }))
-              .filter((u): u is { id: string; data: any } => !!u.id)
-              .map((u) => prisma.aiScreenPick.update({ where: { id: u.id }, data: u.data })),
-          ]);
-          const refreshed = await prisma.aiScreenRun.findUnique({
-            where: { id: existing.id },
-            include: { picks: { orderBy: { rank: 'asc' } } },
-          });
-          return NextResponse.json({ run: serializeRun(refreshed), picks: displayPicks(refreshed!.picks) });
+              include: { picks: { orderBy: { rank: 'asc' } } },
+            });
+            return NextResponse.json({ run: serializeRun(refreshed), picks: displayPicks(refreshed!.picks) });
+          }
+          // 补救仍失败：llmRescuedAt 已在 CAS 时置为 nowIso，10 分钟冷却已开启，返回降级结果（不再永久熔断，10 分钟后可再试）
+          return NextResponse.json({ run: serializeRun({ ...existing, llmRescuedAt: nowIso }), picks: displayPicks(existing.picks) });
         }
-        // 补救仍失败：熔断，标记已补救避免后续用户继续烧 token
-        await prisma.aiScreenRun.update({ where: { id: existing.id }, data: { llmRescued: true } });
-        return NextResponse.json({ run: serializeRun({ ...existing, llmRescued: true }), picks: displayPicks(existing.picks) });
+        // 没抢到（并发被别的请求抢先补救）：返回当前结果
+        return NextResponse.json({ run: serializeRun(existing), picks: displayPicks(existing.picks) });
       }
-      // 已补救过或无 token → 返回现有降级结果
+      // 冷却中 / 无 token / 非 DeepSeek → 返回现有降级结果
       return NextResponse.json({ run: serializeRun(existing), picks: displayPicks(existing.picks) });
     }
 

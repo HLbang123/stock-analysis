@@ -84,8 +84,8 @@ function FactorTable({ factors }: { factors: TFactorScore[] }) {
           <div className="flex-1 h-1.5 bg-gray-100 dark:bg-gray-800 rounded-full overflow-hidden">
             <div className="h-full bg-purple-400 rounded-full" style={{ width: `${f.score}%` }} />
           </div>
-          <span className="w-8 text-right text-gray-600 dark:text-gray-300 font-medium">{f.score}</span>
-          <span className="w-10 text-right text-gray-400">{(f.weight * 100).toFixed(0)}%</span>
+          <span className="w-10 shrink-0 text-right text-gray-600 dark:text-gray-300 font-medium tabular-nums whitespace-nowrap">{f.score.toFixed(1)}</span>
+          <span className="w-10 shrink-0 text-right text-gray-400 tabular-nums whitespace-nowrap">{(f.weight * 100).toFixed(0)}%</span>
         </div>
       ))}
     </div>

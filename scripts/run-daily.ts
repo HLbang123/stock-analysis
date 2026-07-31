@@ -18,6 +18,8 @@ const STEPS: { name: string; cmd: string; fatal?: boolean }[] = [
   { name: "融资融券", cmd: "npx tsx scripts/sync-margin.ts" },
   // AI 筛选 T+N 回测回填(纯分析,失败不阻断日任务)
   { name: "AI筛选T+N回填", cmd: "npx tsx scripts/backfill-ai-screen-eval.ts", fatal: false },
+  // 深度分析 T+N 回测回填(纯分析,失败不阻断日任务)
+  { name: "深度分析T+N回填", cmd: "npx tsx scripts/backfill-deep-analysis-eval.ts", fatal: false },
   // 基本面(ROE) + 申万成分股 不进每日——按需手动跑
 ];
 

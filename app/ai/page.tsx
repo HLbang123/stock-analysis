@@ -1,6 +1,6 @@
 'use client';
 
-import { useState, useCallback, useRef } from 'react';
+import { useState, useCallback, useRef, useEffect } from 'react';
 import { useStockStore } from '@/store';
 import { useAiStore, AiProfile } from '@/store/ai-store';
 import { getRealtimeQuote, getKLineSina, getRealtimeQuoteCached, getKLineSinaCached, getIndustry, fetchMarketStatusNote, getChipData, getMinuteDataCached } from '@/services/stockApi';
@@ -13,6 +13,7 @@ import {
   buildVerdictSystemPrompt, buildVerdictUserPrompt,
   buildReflectionContext, buildDebateDataPrompt,
 } from '@/services/deepAnalysisPrompt';
+import { computeKeyLevels, formatLevelsForPrompt, type TradeLevels, type MarketRegime } from '@/services/deep-analysis/levels';
 import { calculateIndicators, formatIndicatorsForPrompt } from '@/lib/indicators';
 import { isETF } from '@/lib/identify';
 import { cn } from '@/lib/utils';
@@ -28,6 +29,7 @@ import { AiChat } from '@/components/ai/AiChat';
 import { ReasoningPanel } from '@/components/ai/ReasoningPanel';
 import { AiScreenPanel } from '@/components/ai/AiScreenPanel';
 import { TScorePanel, type TScorePanelResult } from '@/components/ai/TScorePanel';
+import { TermTooltip } from '@/components/ui/TermTooltip';
 import { generateId } from '@/components/ai/shared';
 
 /** 波段评分结果（客户端算的因子分 + 路由返回的 LLM 微调合并） */
@@ -42,9 +44,9 @@ export default function AiPage() {
   const [showAddProfile, setShowAddProfile] = useState(false);
   const [mode, setMode] = useState<'analyze' | 'screen'>('analyze');
   const [editingProfile, setEditingProfile] = useState<AiProfile | null>(null);
-  const [selectedCode, setSelectedCode] = useState<string>('');
+  const [selectedCode, setSelectedCode] = useState<string>(aiStore.lastSession?.selectedCode ?? '');
   const [isAnalyzing, setIsAnalyzing] = useState(false);
-  const [result, setResult] = useState<TScoreResult | null>(null);
+  const [result, setResult] = useState<TScoreResult | null>((aiStore.lastSession?.result as TScoreResult | null) ?? null);
   const [error, setError] = useState<string | null>(null);
   const abortRef = useRef<AbortController | null>(null);
 
@@ -61,25 +63,37 @@ export default function AiPage() {
     verdictError?: string;
     structured: {
       action: string;
+      oneLiner?: string;
       riskLevel: string;
       confidence: number;
-      targetLow: string;
-      targetHigh: string;
-      stopLoss: string;
-      position: string;
+      targetLow: number;
+      targetHigh: number;
+      stopLoss: number;
+      position: number;
       reasoning: string;
       plan: string;
       riskNote: string;
       confidenceScore?: number;
+      clamped?: string[];
       keyPoints?: string[];
     } | null;
-  } | null>(null);
+  } | null>((aiStore.lastSession?.deepResult as any) ?? null);
   const deepAbortRef = useRef<AbortController | null>(null);
   // 断点续传：记录已完成阶段的输出文本 { analyst, tech, risk, ... }
   const [deepCompleted, setDeepCompleted] = useState<Record<string, string>>({});
   // 用户看法（加入辩论，降低权重，防AI迎合）
-  const [userView, setUserView] = useState<string>('');
-  const [userViewReason, setUserViewReason] = useState<string>('');
+  const [userView, setUserView] = useState<string>(aiStore.lastSession?.userView ?? '');
+  const [userViewReason, setUserViewReason] = useState<string>(aiStore.lastSession?.userViewReason ?? '');
+
+  // 轻量 state 同步到 lastSession（result/deepResult 流式频繁，在完成回调里单独同步，避免每 token 写 localStorage）
+  useEffect(() => {
+    aiStore.updateLastSession({ selectedCode, userView, userViewReason });
+  }, [selectedCode, userView, userViewReason]);
+
+  // 波段评分 result 非流式（一次性算完），直接 useEffect 同步，覆盖 set 与清空
+  useEffect(() => {
+    aiStore.updateLastSession({ result });
+  }, [result]);
 
   const currentProfile = profiles.find(p => p.id === currentProfileId);
 
@@ -95,9 +109,10 @@ export default function AiPage() {
     setShowAddProfile(true);
   };
 
-  // 从阶段三输出中解析结构化决策字段
-  const parseVerdictContent = useCallback((text: string) => {
+  // 从阶段三输出中解析结构化决策字段。levels 传入时对目标价/止损/仓位做越界夹紧。
+  const parseVerdictContent = useCallback((text: string, levels?: TradeLevels | null) => {
     const actionMatch = text.match(/ACTION:(.+)/);
+    const oneLinerMatch = text.match(/ONE_LINER:(.+)/);
     const riskMatch = text.match(/RISK_LEVEL:(.+)/);
     const confMatch = text.match(/CONFIDENCE:\s*(\d+)/);
     const confValue = confMatch ? parseInt(confMatch[1]) : 0;
@@ -111,7 +126,7 @@ export default function AiPage() {
     const bodySplit = text.split(/^---[\r\n]+/m);
     let body = bodySplit.length > 1 ? bodySplit.slice(1).join('---\n') : text;
     // 去掉结构化头字段（已在上方卡片展示，不重复出现在决策理由里）
-    body = body.replace(/^(ACTION|RISK_LEVEL|CONFIDENCE(_SCORE)?|TARGET_LOW|TARGET_HIGH|STOP_LOSS|POSITION|KEY_POINTS):.*$/gm, '').replace(/\n{3,}/g, '\n\n').trim();
+    body = body.replace(/^(ONE_LINER|ACTION|RISK_LEVEL|CONFIDENCE(_SCORE)?|TARGET_LOW|TARGET_HIGH|STOP_LOSS|POSITION|KEY_POINTS):.*$/gm, '').replace(/\n{3,}/g, '\n\n').trim();
 
     let reasoning = body, plan = '', riskNote = '';
     const planIdx = body.indexOf('### 操作计划');
@@ -129,16 +144,41 @@ export default function AiPage() {
       reasoning = body.replace(/^###\s*决策理由\s*\n?/m, '').trim();
     }
 
+    // 数字解析 + 越界夹紧（数字分工：LLM 必须在候选区间内定夺）
+    const clamped: string[] = [];
+    const toNum = (raw: string | undefined): number => {
+      const v = parseFloat((raw || '').replace(/[^\d.]/g, ''));
+      return Number.isFinite(v) ? v : NaN;
+    };
+    const clamp = (v: number, lo: number, hi: number, label: string): number => {
+      if (!Number.isFinite(v)) return lo;
+      if (v < lo) { clamped.push(`${label}:${v.toFixed(2)}→${lo.toFixed(2)}`); return lo; }
+      if (v > hi) { clamped.push(`${label}:${v.toFixed(2)}→${hi.toFixed(2)}`); return hi; }
+      return v;
+    };
+
+    const tLow = toNum(targetLowMatch?.[1]);
+    const tHigh = toNum(targetHighMatch?.[1]);
+    const stop = toNum(stopMatch?.[1]);
+    const pos = toNum(posMatch?.[1]);
+    const tR = levels?.targetRange, sR = levels?.stopLossRange, pR = levels?.positionRange;
+    const targetLow = tR ? clamp(tLow, tR.low, tR.high, 'target_low') : tLow;
+    const targetHigh = tR ? clamp(tHigh, tR.low, tR.high, 'target_high') : tHigh;
+    const stopLoss = sR ? clamp(stop, sR.low, sR.high, 'stop_loss') : stop;
+    const position = pR ? clamp(pos, pR.low, pR.high, 'position') : pos;
+
     return {
       action: actionMatch?.[1]?.trim() || '',
+      oneLiner: oneLinerMatch?.[1]?.trim() || '',
       riskLevel: riskMatch?.[1]?.trim() || '',
       confidence: parseInt(confMatch?.[1]?.trim() || '0'),
-      targetLow: targetLowMatch?.[1]?.trim() || '--',
-      targetHigh: targetHighMatch?.[1]?.trim() || '--',
-      stopLoss: stopMatch?.[1]?.trim() || '--',
-      position: posMatch?.[1]?.trim() || '--',
+      targetLow,
+      targetHigh,
+      stopLoss,
+      position,
       reasoning, plan, riskNote,
       confidenceScore: confScoreValue,
+      clamped,
       keyPoints: keyPointsMatch
         ? keyPointsMatch[1].split('|').map(p => p.trim()).filter(p => p.length > 0)
         : [],
@@ -308,7 +348,7 @@ export default function AiPage() {
 
     try {
       // 获取数据（K线取60根，比波段评分更多）
-      const [quote, kLines, tushareData, rpsRes] = await Promise.all([
+      const [quote, kLines, tushareData, rpsRes, breadthRes] = await Promise.all([
         getRealtimeQuoteCached(selectedCode),
         getKLineSinaCached(selectedCode, 240, 120),
         fetchTushareData(selectedCode).catch(async () => {
@@ -317,9 +357,21 @@ export default function AiPage() {
           return fetchTushareData(selectedCode).catch(() => null);
         }),
         fetch(`/api/stock/rps?code=${selectedCode}`).then(r => r.ok ? r.json() : null).catch(() => null),
+        fetch('/api/market/breadth?days=1').then(r => r.ok ? r.json() : null).catch(() => null),
       ]);
 
       if (!quote) throw new Error('获取行情失败');
+
+      // 市场状态判定（用于仓位联动）：breadth 最新日的涨跌比 + 站上55日线比例
+      const breadthLatest = breadthRes?.items?.[0];
+      let marketRegime: MarketRegime = 'neutral';
+      if (breadthLatest) {
+        const ad = (breadthLatest.advance || 0) + (breadthLatest.decline || 0);
+        const adRatio = ad > 0 ? (breadthLatest.advance || 0) / ad : 0.5;
+        const aboveRatio = typeof breadthLatest.aboveMa55Ratio === 'number' ? breadthLatest.aboveMa55Ratio : 0.5;
+        const score = adRatio * 0.5 + aboveRatio * 0.5;
+        marketRegime = score >= 0.6 ? 'strong' : score <= 0.4 ? 'weak' : 'neutral';
+      }
 
       // Tushare 部分接口失败/数据异常时，提示用户但不中断分析
       const tushareIssues = [
@@ -350,10 +402,27 @@ export default function AiPage() {
       const klineSummary = kLines.slice(-60).map(k =>
         `${k.date} ${k.open} ${k.high} ${k.low} ${k.close} ${k.volume}`
       ).join('\n');
+      // 辩手用的近20日K线（精简，控制 token；60日给 stage1）
+      const klineSummary20 = kLines.slice(-20).map(k =>
+        `${k.date} ${k.open} ${k.high} ${k.low} ${k.close} ${k.volume}`
+      ).join('\n');
 
       // 计算技术指标
       const indicatorResult = calculateIndicators(updatedKLines);
       const indicatorBlock = formatIndicatorsForPrompt(indicatorResult);
+
+      // 数字分工：结构化候选价位（止损/目标/仓位区间），verdict 在区间内定夺
+      const tradeLevels = computeKeyLevels({
+        kLines: updatedKLines,
+        indicators: indicatorResult,
+        chip,
+        engineResults,
+        quote,
+        rps250: rpsRes && !rpsRes.error ? rpsRes.rps250 : null,
+        positionPercent: stock.positionPercent,
+        marketRegime,
+      });
+      const levelsText = formatLevelsForPrompt(tradeLevels);
 
       // 反思上下文（历史分析回顾）
       const reflectionBlock = buildReflectionContext(
@@ -393,7 +462,7 @@ export default function AiPage() {
         userPrompt: marketStatusNote + rpsNote + etfHoldingsNote + chipNote + buildAnalystUserPrompt(selectedCode, stock.name, quoteJson, klineSummary, engineSummary, indicatorBlock, reflectionBlock, positionNote, etf, tushareBlock, getIndustry(selectedCode)),
       };
       // Stage 2 辩论数据（路由自行处理角色分配和调用）
-      const debateDataPrompt = buildDebateDataPrompt(selectedCode, stock.name, quoteJson, indicatorBlock, marketStatusNote);
+      const debateDataPrompt = buildDebateDataPrompt(selectedCode, stock.name, quoteJson, indicatorBlock, marketStatusNote, engineSummary, klineSummary20, chipNote);
       const stage2 = {
         systemPrompt: '', // 路由不再使用，自行构建角色 prompt
         userPrompt: debateDataPrompt,
@@ -403,7 +472,7 @@ export default function AiPage() {
       const compactQuote = `当前价 ${quote.price} 元，涨跌 ${quote.changePercent.toFixed(2)}%（昨收 ${quote.preClose}，开盘 ${quote.open}，最高 ${quote.high}，最低 ${quote.low}）`;
       const stage3 = {
         systemPrompt: buildVerdictSystemPrompt(),
-        userPrompt: buildVerdictUserPrompt(selectedCode, stock.name, '', '', compactQuote, positionNoteVerdict),
+        userPrompt: buildVerdictUserPrompt(selectedCode, stock.name, '', '', compactQuote, positionNoteVerdict, engineSummary, levelsText),
       };
 
       // SSE 流式调用深度分析
@@ -513,7 +582,7 @@ export default function AiPage() {
               if (msg.text !== undefined) {
                 verdictText += msg.text;
                 setDeepStage('verdict');
-                const parsed = parseVerdictContent(verdictText);
+                const parsed = parseVerdictContent(verdictText, tradeLevels);
                 setDeepResult(prev => ({
                   ...(prev || { analyst: analystText, debate: debateText, verdict: '', structured: null }),
                   verdict: verdictText,
@@ -546,7 +615,7 @@ export default function AiPage() {
       }
 
       // 保存深度分析历史 —— 提取关键结论
-      const finalStructured = parseVerdictContent(verdictText);
+      const finalStructured = parseVerdictContent(verdictText, tradeLevels);
 
       // 提取辩论的综合评判
       let debateConclusion = '';
@@ -563,6 +632,8 @@ export default function AiPage() {
       }
       if (finalStructured.reasoning) summaryParts.push(`📝 ${finalStructured.reasoning}`);
 
+      const deepEntryDate = breadthLatest?.date || rpsRes?.calcDate || new Date().toISOString().slice(0, 10).replace(/-/g, '');
+
       aiStore.addHistory({
         id: generateId(),
         stockCode: selectedCode,
@@ -572,12 +643,47 @@ export default function AiPage() {
         riskLevel: finalStructured.action || '深度分析',
         analysis: summaryParts.join('\n\n') || analystText.slice(0, 500).trim(),
         suggestion: finalStructured.action
-          ? `仓位:${finalStructured.position} | 目标:${finalStructured.targetLow}-${finalStructured.targetHigh} | 止损:${finalStructured.stopLoss}`
+          ? `仓位:${Number.isFinite(finalStructured.position) ? finalStructured.position.toFixed(0) : '--'}% | 目标:${Number.isFinite(finalStructured.targetLow) ? finalStructured.targetLow.toFixed(2) : '--'}-${Number.isFinite(finalStructured.targetHigh) ? finalStructured.targetHigh.toFixed(2) : '--'} | 止损:${Number.isFinite(finalStructured.stopLoss) ? finalStructured.stopLoss.toFixed(2) : '--'}`
           : '见详细报告',
         triggeredRulesJson: JSON.stringify([]),
-        supportPrice: finalStructured.targetLow,
-        resistancePrice: finalStructured.targetHigh,
+        supportPrice: String(finalStructured.targetLow ?? ''),
+        resistancePrice: String(finalStructured.targetHigh ?? ''),
         createdAt: Date.now(),
+        entryDate: deepEntryDate,
+      });
+
+      // 全局回测落库（匿名，按 股票+交易日+建议 去重；失败不阻断分析）
+      try {
+        await fetch('/api/ai/deep-eval', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            stockCode: selectedCode, stockName: stock.name,
+            entryDate: deepEntryDate, entryPrice: quote.price,
+            action: finalStructured.action,
+            targetLow: Number.isFinite(finalStructured.targetLow) ? finalStructured.targetLow : null,
+            targetHigh: Number.isFinite(finalStructured.targetHigh) ? finalStructured.targetHigh : null,
+            stopLoss: Number.isFinite(finalStructured.stopLoss) ? finalStructured.stopLoss : null,
+            position: Number.isFinite(finalStructured.position) ? finalStructured.position : null,
+            confidence: finalStructured.confidence,
+            reasoning: finalStructured.reasoning,
+          }),
+        });
+      } catch (e) {
+        console.warn('[Deep Analysis] 回测落库失败', e);
+      }
+
+      // 持久化最终深度分析结果（用闭包变量构造，避开 state 异步；流式中间态不写 localStorage）
+      aiStore.updateLastSession({
+        deepResult: {
+          analyst: analystText,
+          analystReasoning: analystReasoning || undefined,
+          debate: debateText,
+          debateReasoning: debateReasoning || undefined,
+          verdict: verdictText,
+          verdictReasoning: verdictReasoning || undefined,
+          structured: finalStructured,
+        },
       });
 
       toast.success('深度分析完成');
@@ -911,30 +1017,36 @@ export default function AiPage() {
                   deepResult.structured.action === '卖出' ? "bg-green-50 dark:bg-green-950 border border-green-200" :
                   "bg-gray-50 dark:bg-gray-950 border border-gray-200"
                 )}>
+                  {deepResult.structured.oneLiner && (
+                    <p className={cn(
+                      "text-base font-semibold mb-3 leading-relaxed",
+                      deepResult.structured.action === '买入' ? "text-red-600 dark:text-red-400" :
+                      deepResult.structured.action === '卖出' ? "text-green-600 dark:text-green-400" :
+                      "text-gray-600 dark:text-gray-300"
+                    )}>
+                      💬 {deepResult.structured.oneLiner}
+                    </p>
+                  )}
                   <div className="grid grid-cols-2 gap-3 text-sm">
                     <div>
                       <span className="text-gray-500 text-xs">操作</span>
                       <p className="text-xl font-bold">{deepResult.structured.action}</p>
                     </div>
                     <div>
-                      <span className="text-gray-500 text-xs">风险等级</span>
+                      <span className="text-gray-500 text-xs"><TermTooltip term="风险等级" explain="综合技术面、基本面、仓位给出的整体风险评级：高/中/低。" /></span>
                       <p className="text-lg font-semibold">{deepResult.structured.riskLevel}</p>
                     </div>
                     <div>
-                      <span className="text-gray-500 text-xs">信心指数</span>
-                      <p className="text-lg font-semibold">{deepResult.structured.confidence}%</p>
+                      <span className="text-gray-500 text-xs"><TermTooltip term="建议仓位" explain="建议投入总资金的比例。加仓场景下为加仓后的总仓位目标。" /></span>
+                      <p className="text-lg font-semibold">{Number.isFinite(deepResult.structured.position) ? `${deepResult.structured.position.toFixed(0)}%` : '--'}</p>
                     </div>
                     <div>
-                      <span className="text-gray-500 text-xs">建议仓位</span>
-                      <p className="text-lg font-semibold">{deepResult.structured.position}</p>
+                      <span className="text-gray-500 text-xs"><TermTooltip term="目标价位" explain="预期上涨到的价格区间，到达后可考虑减仓兑现。基于前高/压力位推算。" /></span>
+                      <p className="font-medium"><span className="text-green-600">{Number.isFinite(deepResult.structured.targetLow) ? deepResult.structured.targetLow.toFixed(2) : '--'}</span> - <span className="text-red-600">{Number.isFinite(deepResult.structured.targetHigh) ? deepResult.structured.targetHigh.toFixed(2) : '--'}</span></p>
                     </div>
                     <div>
-                      <span className="text-gray-500 text-xs">目标价位</span>
-                      <p className="font-medium"><span className="text-green-600">{deepResult.structured.targetLow}</span> - <span className="text-red-600">{deepResult.structured.targetHigh}</span></p>
-                    </div>
-                    <div>
-                      <span className="text-gray-500 text-xs">止损位</span>
-                      <p className="text-red-600 font-medium">{deepResult.structured.stopLoss}</p>
+                      <span className="text-gray-500 text-xs"><TermTooltip term="止损位" explain="跌破此价止损离场，控制亏损。基于支撑位和波动率推算。" /></span>
+                      <p className="text-red-600 font-medium">{Number.isFinite(deepResult.structured.stopLoss) ? deepResult.structured.stopLoss.toFixed(2) : '--'}</p>
                     </div>
                   </div>
 
@@ -942,7 +1054,7 @@ export default function AiPage() {
                   {deepResult.structured.confidenceScore !== undefined && (
                     <div className="mt-3 pt-3 border-t border-gray-200/60 dark:border-gray-700/60">
                       <div className="flex items-center gap-2">
-                        <span className="text-gray-500 text-xs w-16 shrink-0">信心指数</span>
+                        <span className="text-gray-500 text-xs w-16 shrink-0"><TermTooltip term="信心指数" explain="AI 对此判断的把握程度，越高越自信。≥70% 较确定，40-70% 有一定把握，<40% 不确定。" /></span>
                         <div className="flex-1 h-2.5 bg-gray-200 dark:bg-gray-700 rounded-full overflow-hidden">
                           <div
                             className={cn(

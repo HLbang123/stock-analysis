@@ -334,7 +334,7 @@ function RunResult({
                 <th className="px-3 py-2 text-right">综合分</th>
                 <th className="px-3 py-2 text-right">规则/LLM</th>
                 <th className="px-3 py-2 text-right">涨跌</th>
-                <th className="px-3 py-2">理由 / 风险</th>
+                <th className="px-3 py-2 min-w-[220px]">理由 / 风险</th>
               </tr>
             </thead>
             <tbody>
@@ -360,7 +360,7 @@ function RunResult({
                       {k.latestChange != null ? `${k.latestChange >= 0 ? '+' : ''}${k.latestChange.toFixed(2)}%` : '--'}
                     </td>
                     <td className="px-3 py-2.5 text-xs">
-                      <div className="text-gray-700 dark:text-gray-300 line-clamp-1">{k.rankingReason || k.llmThesis || '--'}</div>
+                      <div className="text-gray-700 dark:text-gray-300 break-words">{k.rankingReason || k.llmThesis || '--'}</div>
                       <div className="flex gap-1 mt-1 flex-wrap">
                         {k.riskLevel !== 'low' && <span className={cn('px-1 py-0.5 rounded', k.riskLevel === 'high' ? 'bg-red-100 text-red-700' : 'bg-amber-100 text-amber-700')}>风险{k.riskLevel === 'high' ? '高' : '中'}</span>}
                         {k.llmTags.slice(0, 2).map((t) => (

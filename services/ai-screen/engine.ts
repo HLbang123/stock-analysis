@@ -258,7 +258,7 @@ export interface RescueOutcome {
 
 /**
  * 补救重排：对已保存的降级 Run（LLM 失败回退纯规则），用后续用户的 token 重跑 LLM。
- * 成功返回 RescueOutcome；仍失败返回 null（调用方应设 llmRescued=true 熔断）。
+ * 成功返回 RescueOutcome；仍失败返回 null（调用方据此进入 10 分钟冷却窗口，不再永久熔断）。
  */
 export async function rescueRun(
   dbPicks: AiPick[],

@@ -142,34 +142,43 @@ interface IndexDataItem {
 }
 
 /**
- * 按 section 校验 tushare 数据合理性，丢弃损坏的 section（保留正常的）。
- * token 错误/接口异常时，某些 section（典型如 margin）会返回市场总量级别的离谱大数
- * 或重复行，塞进 prompt 会触发中转站安全风控（400 安全拦截）。
- * 任一数值字段为 NaN/Infinity 或绝对值 > 1e11 → 该 section 整体丢弃。
- * （1e11 宽松上界：个股市值~1e8万元、北向持股~1e9股、工行净利润~4e7万元，均远低于此；
- *  而市场总量级垃圾值如 1.4e12 会被准确拦下。）
+ * 按 section 校验 tushare 数据合理性，剔除异常字段（保留正常字段与 section）。
+ * token 错误/接口异常时，某些 section（典型如 margin）会返回市场总量级别的离谱大数；
+ * 大盘金融股的 finaIndicator 绝对值字段（净利润/净资产）正常可达千亿万亿（1e11~1e13）。
+ * 任一数值字段为 NaN/Infinity 或绝对值超阈值 → 剔除该字段（不写入），保留其余字段。
+ * 阈值：默认 1e11（个股市值~1e8万元、北向~1e9股、工行净利润~4e7万元均远低于此；
+ *  市场总量级垃圾值如 1.4e12 会被剔除）；finaIndicator 放宽到 1e13（容纳大行绝对值）。
  */
 function sanitizeTushareData(data: TushareData): TushareData {
   const MAX = 1e11;
+  const MAX_FIN = 1e13; // 财务指标含大盘金融股绝对值（净利润/净资产可达千亿万亿）
   const warnings: string[] = [];
-  const check = <T,>(recs: T[] | undefined, name: string): T[] | undefined => {
+  const check = <T,>(recs: T[] | undefined, name: string, max = MAX): T[] | undefined => {
     if (!recs || recs.length === 0) return recs;
-    for (const rec of recs) {
-      for (const v of Object.values(rec as Record<string, unknown>)) {
-        if (typeof v === 'number' && (!Number.isFinite(v) || Math.abs(v) > MAX)) {
-          const msg = `${name} 数据异常（含离谱大数 ${v}），已丢弃该 section`;
-          console.warn(`[Tushare] ${msg}:`, rec);
-          warnings.push(msg);
-          return undefined;
+    let warned = false;
+    const cleaned = recs.map((rec) => {
+      const out: Record<string, unknown> = {};
+      for (const [k, v] of Object.entries(rec as Record<string, unknown>)) {
+        if (typeof v === 'number' && (!Number.isFinite(v) || Math.abs(v) > max)) {
+          if (!warned) {
+            const msg = `${name} 含异常字段 ${k}（值 ${v}），已剔除该字段`;
+            console.warn(`[Tushare] ${msg}:`, rec);
+            warnings.push(msg);
+            warned = true;
+          }
+          // 异常字段不写入：下游 ?. 与 != null 均跳过
+        } else {
+          out[k] = v;
         }
       }
-    }
-    return recs;
+      return out as T;
+    });
+    return cleaned;
   };
   const sanitized: TushareData = {
     ...data,
     dailyBasic: check(data.dailyBasic, 'dailyBasic'),
-    finaIndicator: check(data.finaIndicator, 'finaIndicator'),
+    finaIndicator: check(data.finaIndicator, 'finaIndicator', MAX_FIN),
     moneyflow: check(data.moneyflow, 'moneyflow'),
     holderNumber: check(data.holderNumber, 'holderNumber'),
     margin: check(data.margin, 'margin'),

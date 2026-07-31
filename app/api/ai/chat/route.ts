@@ -37,7 +37,7 @@ export async function POST(request: NextRequest) {
 
     let systemContent = CHAT_SYSTEM_PROMPT;
     if (stockContext) {
-      systemContent += `\n\n## 当前附带的股票数据\n${stockContext}`;
+      systemContent += `\n\n## 当前附带的股票数据\n（可能包含多只股票，用于对比分析；请按用户问题横向对比或分别分析）\n${stockContext}`;
     }
 
     const allMessages: any[] = [{ role: 'system', content: systemContent }, ...messages];
