@@ -41,17 +41,18 @@ export function AnalysisHistory({ history }: Props) {
     }).catch(() => {});
   }, [showHistory]);
 
-  // 展开某条记录时拉取该股该日回测
+  // 展开某条记录时拉取该股该日回测（失败也置空，避免卡在"加载中"）
   const loadEval = async (record: AiAnalysisRecord) => {
     if (!record.entryDate || !record.stockCode) return;
     const key = `${record.stockCode}|${record.entryDate}`;
     if (evalMap[key]) return;
     try {
       const res = await fetch(`/api/ai/deep-eval?stockCode=${record.stockCode}&entryDate=${record.entryDate}`);
-      if (!res.ok) return;
-      const data = await res.json();
-      setEvalMap(prev => ({ ...prev, [key]: data.records || [] }));
-    } catch {}
+      const data = res.ok ? await res.json() : null;
+      setEvalMap(prev => ({ ...prev, [key]: data?.records || [] }));
+    } catch {
+      setEvalMap(prev => ({ ...prev, [key]: [] }));
+    }
   };
 
   if (history.length === 0) return null;

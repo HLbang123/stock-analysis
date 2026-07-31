@@ -8,8 +8,9 @@ import { ALERT_RULES, checkAllRules, isBuyRule, REFERENCE_RULE_IDS } from '@/ser
 import { AlertRecord } from '@/types';
 import { formatTime, cn, getAlertLevelColor } from '@/lib/utils';
 import { buildUpdatedKLines } from '@/lib/stock-helpers';
-import { AlertTriangle, RefreshCw, Trash2 } from 'lucide-react';
+import { AlertTriangle, RefreshCw, Trash2, BookOpen } from 'lucide-react';
 import { UpdateLog } from '@/components/UpdateLog';
+import { AlertRulesModal } from '@/components/AlertRulesModal';
 
 export default function HomePage() {
   const router = useRouter();
@@ -17,6 +18,7 @@ export default function HomePage() {
 
   const [resultMessage, setResultMessage] = useState<string | null>(null);
   const [buyExpanded, setBuyExpanded] = useState<Set<string>>(new Set());
+  const [showRules, setShowRules] = useState(false);
   const toggleBuyExpand = (code: string) => {
     setBuyExpanded(prev => {
       const next = new Set(prev);
@@ -187,6 +189,14 @@ export default function HomePage() {
           <h1 className="text-xl font-bold text-gray-900 dark:text-white">预警</h1>
         </div>
         <div className="flex items-center gap-2">
+            <button
+              onClick={() => setShowRules(true)}
+              className="flex items-center gap-1 px-3 py-1.5 text-sm text-gray-600 dark:text-gray-300 hover:bg-gray-100 dark:hover:bg-gray-800 rounded-lg transition"
+              title="查看预警规则说明"
+            >
+              <BookOpen className="w-4 h-4" />
+              规则说明
+            </button>
             {alerts.length > 0 && (
               <button
                 onClick={() => clearAllAlerts()}
@@ -329,6 +339,8 @@ export default function HomePage() {
             ))}
           </div>
         )}
+
+      {showRules && <AlertRulesModal onClose={() => setShowRules(false)} />}
     </div>
   );
 }
