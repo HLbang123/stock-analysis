@@ -7,7 +7,7 @@ import { getRealtimeQuote, parseStockCode, searchStocks } from '@/services/stock
 import { isETF, validateStockCode } from '@/lib/identify';
 import { RealtimeQuote } from '@/types';
 import { formatPrice, formatChange, formatVolume, cn } from '@/lib/utils';
-import { Plus, Search, Trash2, TrendingUp, ScanLine, Upload, Camera, X } from 'lucide-react';
+import { Plus, Search, Trash2, TrendingUp, ScanLine, Upload, Camera, X, Check } from 'lucide-react';
 import { toast } from 'sonner';
 import { Button } from '@/components/ui/button';
 
@@ -178,7 +178,11 @@ export default function WatchlistPage() {
                     <span className="font-medium text-sm">{quote.name}</span>
                     <span className="text-xs text-gray-500 ml-2">{quote.code}</span>
                   </div>
-                  {!isInWatchlist(quote.code) && (
+                  {isInWatchlist(quote.code) ? (
+                    <span className="p-1.5 text-green-600" title="已在自选中">
+                      <Check className="w-4 h-4" />
+                    </span>
+                  ) : (
                     <button
                       onClick={() => handleAddStock(quote)}
                       className="p-1.5 bg-blue-100 text-blue-600 rounded-lg hover:bg-blue-200 transition"

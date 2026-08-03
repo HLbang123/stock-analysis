@@ -6,7 +6,7 @@ import { useStockStore } from '@/store';
 import { useScannerStore, type Board } from '@/store/scanner-store';
 import { cn } from '@/lib/utils';
 import { Card } from '@/components/ui/card';
-import { Filter, Loader2, ChevronDown, ChevronUp, Plus, BarChart3, Info } from 'lucide-react';
+import { Filter, Loader2, ChevronDown, ChevronUp, Plus, Check, BarChart3, Info } from 'lucide-react';
 import { toast } from 'sonner';
 
 const RPS_PERIODS = [
@@ -506,7 +506,11 @@ export default function ScannerPage() {
                       </div>
                     </td>
                     <td className="px-3 py-2.5 text-center" onClick={e => e.stopPropagation()}>
-                      {!isInWatchlist(item.tsCode.replace(/\.(SH|SZ|BJ)$/, '')) && (
+                      {isInWatchlist(item.tsCode.replace(/\.(SH|SZ|BJ)$/, '')) ? (
+                        <span className="inline-flex items-center gap-1 px-2 py-1 text-xs text-green-600" title="已在自选中">
+                          <Check className="w-3 h-3" /> 已加自选
+                        </span>
+                      ) : (
                         <button onClick={() => addWatch(item.tsCode, item.name)}
                           className="px-2 py-1 text-xs bg-gray-100 text-gray-500 rounded hover:bg-gray-200 transition">
                           <Plus className="w-3 h-3 inline" /> 加自选

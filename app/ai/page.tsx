@@ -18,13 +18,14 @@ import { calculateIndicators, formatIndicatorsForPrompt } from '@/lib/indicators
 import { isETF } from '@/lib/identify';
 import { cn } from '@/lib/utils';
 import { buildUpdatedKLines } from '@/lib/stock-helpers';
-import { Brain, Settings, Loader2, Sparkles } from 'lucide-react';
+import { Brain, Settings, Loader2, Sparkles, Send, History, BarChart3 } from 'lucide-react';
 import { fetchTushareData, formatTushareForPrompt } from '@/services/tushareData';
 import { toast } from 'sonner';
 import { Button } from '@/components/ui/button';
 import { ProfileSettingsModal } from '@/components/ai/ProfileSettingsModal';
 import { ProfileFormModal } from '@/components/ai/ProfileFormModal';
 import { AnalysisHistory } from '@/components/ai/AnalysisHistory';
+import { DeepAnalysisStats } from '@/components/ai/DeepAnalysisStats';
 import { AiChat } from '@/components/ai/AiChat';
 import { ReasoningPanel } from '@/components/ai/ReasoningPanel';
 import { AiScreenPanel } from '@/components/ai/AiScreenPanel';
@@ -43,6 +44,8 @@ export default function AiPage() {
   const [showSettings, setShowSettings] = useState(false);
   const [showAddProfile, setShowAddProfile] = useState(false);
   const [mode, setMode] = useState<'analyze' | 'screen'>('analyze');
+  // 底部平级切换：AI 对话 / 历史分析 / 胜率复盘
+  const [deepTab, setDeepTab] = useState<'chat' | 'history' | 'stats'>('chat');
   const [editingProfile, setEditingProfile] = useState<AiProfile | null>(null);
   const [selectedCode, setSelectedCode] = useState<string>(aiStore.lastSession?.selectedCode ?? '');
   const [isAnalyzing, setIsAnalyzing] = useState(false);
@@ -1160,9 +1163,6 @@ export default function AiPage() {
         </div>
       )}
 
-      {/* 历史记录 */}
-      <AnalysisHistory history={history} />
-
       {/* 空状态 */}
       {!result && !isAnalyzing && !deepResult && !isDeepAnalyzing && !error && (
         <div className="text-center py-16 text-gray-400">
@@ -1172,8 +1172,39 @@ export default function AiPage() {
         </div>
       )}
 
+      {/* 底部平级切换：AI 对话 / 历史分析 / 胜率复盘 */}
+      <div className="flex gap-1 p-1 bg-gray-100 dark:bg-gray-800/50 rounded-lg w-fit mb-4">
+        <button
+          onClick={() => setDeepTab('chat')}
+          className={cn(
+            'px-3 py-1.5 rounded-md text-sm font-medium flex items-center gap-1 transition',
+            deepTab === 'chat' ? 'bg-white dark:bg-gray-900 text-blue-600 shadow-sm' : 'text-gray-500 hover:text-gray-700'
+          )}
+        >
+          <Send className="w-3.5 h-3.5" /> AI 对话
+        </button>
+        <button
+          onClick={() => setDeepTab('history')}
+          className={cn(
+            'px-3 py-1.5 rounded-md text-sm font-medium flex items-center gap-1 transition',
+            deepTab === 'history' ? 'bg-white dark:bg-gray-900 text-purple-600 shadow-sm' : 'text-gray-500 hover:text-gray-700'
+          )}
+        >
+          <History className="w-3.5 h-3.5" /> 历史分析
+        </button>
+        <button
+          onClick={() => setDeepTab('stats')}
+          className={cn(
+            'px-3 py-1.5 rounded-md text-sm font-medium flex items-center gap-1 transition',
+            deepTab === 'stats' ? 'bg-white dark:bg-gray-900 text-purple-600 shadow-sm' : 'text-gray-500 hover:text-gray-700'
+          )}
+        >
+          <BarChart3 className="w-3.5 h-3.5" /> 胜率复盘
+        </button>
+      </div>
+
       {/* AI 对话 */}
-      {currentProfile && (
+      {deepTab === 'chat' && currentProfile && (
         <AiChat
           currentProfile={currentProfile}
           selectedCode={selectedCode}
@@ -1181,6 +1212,16 @@ export default function AiPage() {
           result={result}
           deepStructured={deepResult?.structured ?? null}
         />
+      )}
+
+      {/* 历史记录 */}
+      {deepTab === 'history' && (
+        <AnalysisHistory history={history} />
+      )}
+
+      {/* 胜率复盘 */}
+      {deepTab === 'stats' && (
+        <DeepAnalysisStats />
       )}
 
       </>
