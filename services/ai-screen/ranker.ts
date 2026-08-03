@@ -4,6 +4,8 @@
  * 译自 alphasift ranker.py：覆盖率门控 + JSON 容错解析 + 失败回退到规则分排序。
  * 融合公式：final = screen_score * (1 - rankWeight) + llm_score * rankWeight（rankWeight 默认 0.4）。
  * 不用 response_format（兼容各家中转模型），靠 prompt 约束 + 容错解析兜底。
+ * 思考型模型（deepseek-v4-flash）会吐 reasoning_content：content 与 reasoning 分开取，
+ * content 优先做 JSON 源，reasoning 只作最后兜底（08-03 18 候选曾因 8192 token 被思考烧光而全降级纯规则）。
  */
 
 import { buildChatUrl, buildLLMHeaders, createTimeoutSignal } from '@/lib/llm-client';
@@ -14,9 +16,12 @@ import { buildRankingPrompt } from './prompt';
 const RANK_WEIGHT = 0.4;
 const MIN_COVERAGE = 0.6;
 const MAX_RETRIES = 2;
-// 非流式单层超时：覆盖中转慢生成整段耗时（07-30 非流式 90s 曾超时，放宽到 240s）
-const LLM_TIMEOUT_MS = 240_000;
-const LLM_MAX_TOKENS = 8192; // 20 只候选×12 字段(含 thesis/reason/risk 散文+5 数组)约 4.7k token，8192 留足余量
+// 非流式单层超时：覆盖中转慢生成整段耗时（07-30 非流式 90s 曾超时，放宽到 300s）
+const LLM_TIMEOUT_MS = 300_000;
+// 思考型模型（deepseek-v4-flash 会先吐 reasoning_content）会把生成预算烧在思考上，
+// 候选越多思考越长：18 只时 8192 曾让 content 为空/只剩前奏 → 3 次 json_parse_failed 全降级纯规则。
+// 16384 = 18 只候选 JSON(≈4.5k token) + 思考余量；中转若把 max_tokens 卡得更小会 400，callLlm 内自动降级重试 8192。
+const LLM_MAX_TOKENS = 16384;
 
 export interface RankResult {
   picks: AiPick[];
@@ -180,17 +185,59 @@ function extractPartialItems(s: string): RankedItem[] {
   return items;
 }
 
+/** LLM 非流式返回：content 正文 + reasoning 思考过程分开读，避免思考文本污染 JSON 解析 */
+interface LlmTextResult {
+  content: string;
+  reasoning: string;
+}
+
+/** chat/completions 返回的 message 字段（只取用到的键，其余不关心） */
+interface LlmResponseMessage {
+  content?: unknown;
+  reasoning_content?: unknown;
+  reasoning?: unknown;
+}
+
+interface ChatCompletionResponse {
+  choices?: Array<{ message?: LlmResponseMessage }>;
+}
+
+/** 兼容 content 为字符串或 OpenAI 多段 parts 数组的取法 */
+function extractContent(content: unknown): string {
+  if (typeof content === 'string') return content;
+  if (Array.isArray(content)) {
+    let out = '';
+    for (const p of content) {
+      if (typeof p === 'string') out += p;
+      else if (p && typeof p === 'object' && 'text' in p && typeof (p as { text: unknown }).text === 'string') {
+        out += (p as { text: string }).text;
+      }
+    }
+    return out;
+  }
+  return '';
+}
+
+/** 取 message.reasoning（兼容 reasoning_content / reasoning 两种字段名） */
+function extractReasoning(msg?: LlmResponseMessage): string {
+  if (typeof msg?.reasoning_content === 'string') return msg.reasoning_content;
+  if (typeof msg?.reasoning === 'string') return msg.reasoning;
+  return '';
+}
+
 /**
  * 调 LLM（非流式，取完整文本）。
  * 曾改流式（commit 9642955）后中转在流式下不吐 content，全部 empty_response 回退；
- * 改回非流式（07-30 生产数据验证能拿到内容），单层 240s 超时覆盖慢中转整段生成。
- * content 为空时兜底读 reasoning_content/reasoning（个别思考型中转把答案放思考通道）。
+ * 改回非流式（07-30 生产数据验证能拿到内容），单层 300s 超时覆盖慢中转整段生成。
+ * content 与 reasoning_content 分开返回：reasoning 只是思考过程，不直接作为 JSON 源；
+ * 个别思考型中转把答案放思考通道时，由 rankCandidates 把 reasoning 当最后兜底去解析。
+ * 中转把 max_tokens 卡得比 LLM_MAX_TOKENS 小时会 400，自动降级用 8192 重试一次。
  */
-async function callLlm(prompt: string, cfg: LlmConfig): Promise<string> {
+async function callLlm(prompt: string, cfg: LlmConfig): Promise<LlmTextResult> {
   const url = buildChatUrl(cfg.baseUrl);
   const headers = buildLLMHeaders(cfg.apiKey);
   const { signal, clear } = createTimeoutSignal(LLM_TIMEOUT_MS);
-  try {
+  const post = async (maxTokens: number) => {
     const res = await fetch(url, {
       method: 'POST',
       headers,
@@ -198,7 +245,7 @@ async function callLlm(prompt: string, cfg: LlmConfig): Promise<string> {
         model: cfg.model,
         messages: [{ role: 'user', content: prompt }],
         temperature: 0.2,
-        max_tokens: LLM_MAX_TOKENS,
+        max_tokens: maxTokens,
         stream: false,
       }),
       signal,
@@ -207,20 +254,28 @@ async function callLlm(prompt: string, cfg: LlmConfig): Promise<string> {
       const text = await res.text().catch(() => '');
       throw new Error(formatAiError(res.status, text));
     }
-    const data = await res.json();
+    return res.json();
+  };
+  try {
+    let data: ChatCompletionResponse | null = null;
+    try {
+      data = (await post(LLM_MAX_TOKENS)) as ChatCompletionResponse;
+    } catch (e: unknown) {
+      const msg = e instanceof Error ? e.message : String(e);
+      // 400 且错误含 max_tokens 字样（厂商卡上限）→ 用 8192 重试，避免把「可降级」变成「调用失败」
+      if (/400|max[_ -]?tokens?|max completion/i.test(msg)) {
+        data = (await post(8192)) as ChatCompletionResponse;
+      } else {
+        throw e;
+      }
+    }
     const msg = data?.choices?.[0]?.message;
-    const content = typeof msg?.content === 'string' ? msg.content : '';
-    const reasoning =
-      typeof msg?.reasoning_content === 'string'
-        ? msg.reasoning_content
-        : typeof msg?.reasoning === 'string'
-          ? msg.reasoning
-          : '';
-    return content || reasoning;
-  } catch (e: any) {
-    const isAbort = e.name === 'AbortError' || /abort/i.test(e.message || '');
-    if (isAbort) throw new Error('LLM 重排超时（240s）');
-    throw new Error(formatNetworkError(e));
+    return { content: extractContent(msg?.content), reasoning: extractReasoning(msg) };
+  } catch (e: unknown) {
+    const err = e instanceof Error ? e : new Error(String(e));
+    const isAbort = err.name === 'AbortError' || /abort/i.test(err.message || '');
+    if (isAbort) throw new Error(`LLM 重排超时（${LLM_TIMEOUT_MS / 1000}s）`);
+    throw new Error(formatNetworkError(err));
   } finally {
     clear();
   }
@@ -306,21 +361,29 @@ export async function rankCandidates(
 
   for (let attempt = 0; attempt <= MAX_RETRIES; attempt++) {
     if (attempt > 0) {
-      prompt += `\n\n上一次输出覆盖率不足（ranked 数组缺少候选）。本次必须返回全部 ${candidates.length} 个候选的排序结果——ranked 数组长度必须等于 ${candidates.length}，每个 code 必须与下方候选列表完全一致，不得遗漏任何一个，不得编造候选池外的代码。`;
+      prompt += `\n\n上一次输出不是合法 JSON 或 ranked 数组缺少候选。本次必须只返回严格 JSON：ranked 数组长度必须等于 ${candidates.length}，每个 code 必须与下方候选列表完全一致，不得遗漏任何一个，不得编造候选池外的代码。`;
     }
-    let raw: string;
+    let result: LlmTextResult;
     try {
-      raw = await callLlm(prompt, cfg);
-    } catch (e: any) {
-      degradation.push(`llm_call_failed:${e.message}`);
-      return fallback(picks, preset, degradation, `LLM 调用失败：${e.message}`);
+      result = await callLlm(prompt, cfg);
+    } catch (e: unknown) {
+      const msg = e instanceof Error ? e.message : String(e);
+      degradation.push(`llm_call_failed:${msg}`);
+      return fallback(picks, preset, degradation, `LLM 调用失败：${msg}`);
     }
-    if (!raw.trim()) {
+    // content 优先；个别中转把答案放思考通道时，reasoning 作最后兜底（但那是散文，多半解析失败，靠 max_tokens 余量治本）
+    const raw = result.content.trim() || result.reasoning.trim();
+    if (!raw) {
       degradation.push('empty_response');
       continue;
     }
+    if (!result.content.trim()) {
+      degradation.push('reasoning_content_fallback');
+    }
     payload = parseJsonLenient(raw);
     if (!payload) {
+      // 记录原始输出前 300 字，下次再失败时能定位 LLM 实际吐了什么
+      console.error(`[ai-screen/ranker] json_parse_failed attempt${attempt + 1}/${MAX_RETRIES + 1} candidates=${candidates.length}:`, JSON.stringify(raw.slice(0, 300)));
       degradation.push('json_parse_failed');
       continue;
     }

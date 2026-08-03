@@ -33,6 +33,10 @@ yarn-error.log*
 # env files (can opt-in for committing if needed)
 .env*
 
+# claude code local tooling config（本机环境相关，不提交）
+/.claude/settings.json
+/.claude/settings.local.json
+
 # project temp files
 .tmp/
 
