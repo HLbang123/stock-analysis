@@ -65,7 +65,7 @@ export async function getMinuteData(code: string): Promise<{ time: string; price
 
 /**
  * 获取筹码分布（通过 /api/chip 服务端取 daily_bars 换手率转移模型结果）
- * 失败/数据不足返回 null（调用方按 chip=null 处理，R18/R19 不触发）
+ * 失败/数据不足返回 null（调用方按 chip=null 处理，R14/R15 不触发）
  */
 export async function getChipData(code: string, days = 90): Promise<ChipDistribution | null> {
   try {

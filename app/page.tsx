@@ -4,13 +4,27 @@ import { useMemo, useState } from 'react';
 import { useRouter } from 'next/navigation';
 import { useStockStore } from '@/store';
 import { getRealtimeQuote, getKLineSina, getChipData } from '@/services/stockApi';
-import { ALERT_RULES, checkAllRules, isBuyRule, REFERENCE_RULE_IDS } from '@/services/alertRules';
+import { ALERT_RULES, checkAllRules, isBuyRule, REFERENCE_RULE_IDS, buyRuleWeight } from '@/services/alertRules';
 import { AlertRecord } from '@/types';
 import { formatTime, cn, getAlertLevelColor } from '@/lib/utils';
 import { buildUpdatedKLines } from '@/lib/stock-helpers';
 import { AlertTriangle, RefreshCw, Trash2, BookOpen } from 'lucide-react';
 import { UpdateLog } from '@/components/UpdateLog';
 import { AlertRulesModal } from '@/components/AlertRulesModal';
+
+/** 买入共振强度档位：按买入信号加权分(A级=2/B级=1)映射到情绪档位 */
+const buyTier = (score: number) => {
+  if (score >= 4) return { label: '强烈共振', emoji: '🚀', cls: 'bg-green-600 text-white border-green-600' };
+  if (score === 3) return { label: '较强看多', emoji: '🟢', cls: 'bg-green-100 text-green-700 border-green-300 dark:bg-green-950 dark:text-green-400 dark:border-green-800' };
+  if (score === 2) return { label: '温和看多', emoji: '🟢', cls: 'bg-green-50 text-green-600 border-green-200 dark:bg-green-950/60 dark:text-green-400 dark:border-green-900' };
+  return { label: '弱观察', emoji: '🟡', cls: 'bg-amber-50 text-amber-600 border-amber-200 dark:bg-amber-950/60 dark:text-amber-400 dark:border-amber-900' };
+};
+
+/** 该条买入预警是否为"放量确认"（读 extraData 的 volConfirmed，R05/R06/R09/R10/R11/R12/R13 写入） */
+const hasVolumeConfirmed = (a: AlertRecord): boolean => {
+  if (!a.extraData) return false;
+  try { return JSON.parse(a.extraData)?.volConfirmed === true; } catch { return false; }
+};
 
 export default function HomePage() {
   const router = useRouter();
@@ -49,6 +63,10 @@ export default function HomePage() {
       const buyAlerts = stockAlerts.filter(a => isBuyRule(a.ruleId) && !REFERENCE_RULE_IDS.has(a.ruleId));
       const sellAlerts = stockAlerts.filter(a => !isBuyRule(a.ruleId) && !REFERENCE_RULE_IDS.has(a.ruleId));
       const referenceAlerts = stockAlerts.filter(a => REFERENCE_RULE_IDS.has(a.ruleId));
+      const buyScore = buyAlerts.reduce((s, a) => s + buyRuleWeight(a.ruleId), 0);
+      // 量能维度：至少一条买入信号为"放量确认" → 档位 +1
+      const buyVolumeBoost = buyAlerts.some(hasVolumeConfirmed) ? 1 : 0;
+      const tierScore = buyScore + buyVolumeBoost;
       return {
         stockCode,
         stockName: stockAlerts[0].stockName,
@@ -57,6 +75,9 @@ export default function HomePage() {
         sellAlerts,
         referenceAlerts,
         buyResonance: buyAlerts.length >= 2,
+        buyScore,
+        buyVolumeBoost,
+        buyTier: tierScore > 0 ? buyTier(tierScore) : null,
         worstLevel,
         latestTime: Math.max(...stockAlerts.map(a => a.triggeredAt))
       };
@@ -119,7 +140,7 @@ export default function HomePage() {
 
         const updatedKLines = buildUpdatedKLines(quote, kLines);
 
-        // 筹码分布（DB 取数，失败返回 null，R18/R19 不触发）
+        // 筹码分布（DB 取数，失败返回 null，R14/R15 不触发）
         const chip = await getChipData(stock.code);
 
         // 检查规则
@@ -283,6 +304,14 @@ export default function HomePage() {
                       <p className="text-sm opacity-75">{group.stockCode}</p>
                     </div>
                     <div className="flex items-center gap-2">
+                      {group.buyTier && (
+                        <span
+                          title={group.buyVolumeBoost ? `买入强度：含放量确认 +1档` : '买入强度'}
+                          className={cn('text-xs px-1.5 py-0.5 rounded border whitespace-nowrap', group.buyTier.cls)}
+                        >
+                          {group.buyTier.emoji} {group.buyTier.label}
+                        </span>
+                      )}
                       <span className="text-sm opacity-75">{group.alerts.length}条预警</span>
                       <button
                         onClick={() => clearAlerts(group.stockCode)}
@@ -299,7 +328,7 @@ export default function HomePage() {
                     {/* 卖出/风险信号：保持原样平铺 */}
                     {group.sellAlerts.map(alert => renderAlertRow(alert))}
 
-                    {/* 参考级弱提醒（R18/R19 筹码峰）：平铺，不计入共振 */}
+                    {/* 参考级弱提醒（R14/R15 筹码峰）：平铺，不计入共振 */}
                     {group.referenceAlerts.map(alert => renderAlertRow(alert))}
 
                     {/* 买入信号：≥2 条聚合成"共振"，可展开看明细；否则平铺 */}

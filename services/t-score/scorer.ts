@@ -71,8 +71,22 @@ function breakout20dPct(closes: number[], highs: number[]): number | null {
   return ((closes[n - 1] - hi) / hi) * 100;
 }
 
-/** CRITICAL 级卖出规则（R02/R04/R08），触发时买入分兜底 */
-const CRITICAL_SELL_IDS = new Set(['R02', 'R04', 'R08']);
+/** CRITICAL 级卖出规则（R01/R02/R04），触发时买入分兜底 */
+const CRITICAL_SELL_IDS = new Set(['R01', 'R02', 'R04']);
+
+/** 日级趋势（做T信号可信度门控：升势信底背离/超卖，降势信顶背离/超买） */
+function dailyTrend(closes: number[]): 'up' | 'down' | 'sideways' {
+  const mab = maBullish(closes);
+  const macd = macdStatus(closes);
+  if (mab === true && macd !== 'bearish') return 'up';
+  if (mab === false && macd !== 'bullish') return 'down';
+  return 'sideways';
+}
+
+/** 尾盘判定（做T均值回归信号打折） */
+function isLateDay(ctx: IntradayContext, p: typeof DEFAULT_TSCORE_PROFILE): boolean {
+  return ctx.minuteOfDay >= p.late_day_minute;
+}
 
 /** curve 参数（初始占位，后续可按 T+N 回测迭代） */
 export const DEFAULT_TSCORE_PROFILE: Record<string, number> = {
@@ -147,26 +161,53 @@ export const DEFAULT_TSCORE_PROFILE: Record<string, number> = {
   // 卖·5分K放大量高抛（做T规则，低权重）
   sell_m5_base: 45,
   sell_m5_surge_slope: 30,     // 放量倍数(r-1)加分：r=2→75, r=3→100
+  // 做T增强·15分RSI超买超卖（趋势门控：降势超卖钝化/升势超买钝化）
+  buy_rsi_oversold_th: 20,
+  buy_rsi_oversold_slope: 3,
+  buy_rsi_oversold_trend_cap: 50,   // 降势中超卖可信度上限（钝化）
+  sell_rsi_overbought_th: 80,
+  sell_rsi_overbought_slope: 3,
+  sell_rsi_overbought_trend_cap: 60, // 升势中超买可信度上限（钝化）
+  // 做T增强·15分MACD水上下叉
+  buy_macd_water_golden: 85,   // 水下金叉（强买）
+  buy_macd_above_golden: 65,   // 水上金叉（弱买）
+  sell_macd_water_death: 85,   // 水上死叉（强卖）
+  sell_macd_below_death: 65,   // 水下死叉（弱卖）
+  // 做T增强·盘中M头
+  sell_mhead_base: 75,
+  sell_mhead_conf_slope: 20,
+  // 做T增强·RSI背离（趋势门控：升势信底背离/降势信顶背离）
+  buy_rsi_bull_divergence: 85,
+  sell_rsi_bear_divergence: 85,
+  // 做T增强·5分冲高（放量/缩量/回落）
+  sell_m5_shrink_bonus: 15,    // 缩量冲高（没量上去，滞涨弱反弹）
+  sell_m5_fade_bonus: 15,      // 冲高回落（收在K线下半部）
+  // 做T增强·尾盘/量价
+  late_day_minute: 870,        // 14:30 后为尾盘
+  late_day_scale: 0.6,         // 尾盘均值回归信号（RSI超买超卖/M头）打折
+  buy_m15_reclaim_bonus: 15,   // 15分支撑二次探底不破+收回加分
 };
 
 const BUY_WEIGHTS: Record<string, number> = {
-  intradayPullbackToVwap: 0.18,   // 0.22→0.18，让 0.04 给做T规则
-  intradayRangeLow: 0.18,
-  pullbackVolumeContraction: 0.15,
+  intradayPullbackToVwap: 0.15,
+  intradayRangeLow: 0.12,
+  pullbackVolumeContraction: 0.12,
   intradayMomentum: 0.10,
-  dailyTrendUp: 0.16,             // 0.20→0.16，让 0.04 给做T规则
-  noStrongSellSignal: 0.15,
-  intradayM15Support: 0.08,       // 做T·15分K支撑位低吸（低权重）
+  dailyTrendUp: 0.11,
+  noStrongSellSignal: 0.10,
+  buyBottomDip: 0.20,          // 做T复合：回踩支撑+RSI超卖+底背离
+  intradayMacdWaterGolden: 0.10,
 };
 
 const SELL_WEIGHTS: Record<string, number> = {
-  intradayExtensionAboveVwap: 0.18,   // 0.22→0.18
-  intradayRangeHigh: 0.18,
-  riseVolumeSurge: 0.15,
+  intradayExtensionAboveVwap: 0.15,
+  intradayRangeHigh: 0.12,
+  riseVolumeSurge: 0.12,
   intradayMomentum: 0.10,
-  dailyOverheatNearResistance: 0.16,  // 0.20→0.16
-  strongSellSignalTriggered: 0.15,
-  intradayM5VolSurge: 0.08,           // 做T·5分K放大量高抛（低权重）
+  dailyOverheatNearResistance: 0.11,
+  strongSellSignalTriggered: 0.10,
+  sellSellOff: 0.20,           // 做T复合：5分冲高+RSI超买+M头+顶背离
+  intradayMacdWaterDeath: 0.10,
 };
 
 const clip = (v: number, lo = 0, hi = 100) => Math.max(lo, Math.min(hi, v));
@@ -262,12 +303,44 @@ function buyNoSellSignal(engineResults: RuleCheckResult[], p: typeof DEFAULT_TSC
   return s;
 }
 
-// 买·15分K支撑位低吸（做T规则）：15分K收盘贴近前期15分低点=回踩支撑→低吸
+// 买·15分K支撑位低吸（做T规则）：回踩前期15分低点；二次探底不破+收回 → 加档
 function buyM15Support(ctx: IntradayContext, p: typeof DEFAULT_TSCORE_PROFILE): number {
   const d = ctx.m15SupportDistPct;
   if (d == null) return 50; // 15分K根数不足，中性
   if (d < 0) return p.buy_m15_breakdown; // 跌破支撑，不低吸
-  return clip(100 - d * p.buy_m15_slope); // 0=贴支撑→100，越远越低
+  let s = clip(100 - d * p.buy_m15_slope); // 0=贴支撑→100，越远越低
+  if (ctx.m15SupportHeld) s += p.buy_m15_reclaim_bonus; // 二次探底不破+收回 → 加档
+  return clip(s);
+}
+
+// 买·15分RSI超卖低吸（做T子信号，被「底部低吸」复合调用）：RSI(6)<20 超卖；降势钝化（可信度上限）
+function buyRsiOversold(ctx: IntradayContext, trend: 'up' | 'down' | 'sideways', p: typeof DEFAULT_TSCORE_PROFILE): number {
+  const r = ctx.rsi6;
+  if (r == null) return 50;
+  let s = 50 + (p.buy_rsi_oversold_th - r) * p.buy_rsi_oversold_slope;
+  if (trend === 'down') s = Math.min(s, p.buy_rsi_oversold_trend_cap); // 降势超卖钝化
+  return clip(s);
+}
+
+// 买·15分MACD水下金叉（做T）：DIF 上穿 DEA 且在水下 → 强买
+function buyMacdWaterGolden(ctx: IntradayContext, p: typeof DEFAULT_TSCORE_PROFILE): number {
+  if (ctx.macdDiff == null) return 50; // 5分K不足（早盘）
+  if (!ctx.macdCrossUp) return 50;
+  return ctx.macdAboveZero === false ? p.buy_macd_water_golden : p.buy_macd_above_golden;
+}
+
+// 买·15分RSI底背离（做T子信号，被「底部低吸」复合调用）：价新低 + RSI抬高；降势钝化
+function buyRsiBullDivergence(ctx: IntradayContext, trend: 'up' | 'down' | 'sideways', p: typeof DEFAULT_TSCORE_PROFILE): number {
+  if (!ctx.rsiBullDivergence) return 50;
+  if (trend === 'down') return 50; // 降势底背离钝化
+  return p.buy_rsi_bull_divergence;
+}
+
+// 买·底部低吸（做T复合因子）：回踩支撑(50%) + RSI超卖(35%) + 底背离(15%)；趋势门控 + 尾盘打折
+function buyBottomDip(ctx: IntradayContext, trend: 'up' | 'down' | 'sideways', p: typeof DEFAULT_TSCORE_PROFILE): number {
+  let s = 0.5 * clip(buyM15Support(ctx, p)) + 0.35 * clip(buyRsiOversold(ctx, trend, p)) + 0.15 * clip(buyRsiBullDivergence(ctx, trend, p));
+  if (isLateDay(ctx, p)) s *= p.late_day_scale; // 尾盘均值回归打折
+  return clip(s);
 }
 
 // ===== 卖出因子 =====
@@ -326,12 +399,50 @@ function sellStrongSignal(engineResults: RuleCheckResult[], p: typeof DEFAULT_TS
   return clip(s);
 }
 
-// 卖·5分K放大量高抛（做T规则）：最新5分K量显著放大且收阳=放量冲高→高抛
+// 卖·5分K冲高信号（做T）：放量冲高 / 缩量冲高滞涨 / 冲高回落
 function sellM5VolSurge(ctx: IntradayContext, p: typeof DEFAULT_TSCORE_PROFILE): number {
   const r = ctx.m5VolSurgeRatio;
-  if (r <= 0) return 50; // 5分K根数不足，中性
   let s = p.sell_m5_base;
-  if (ctx.m5LastUp && r > 1) s += (r - 1) * p.sell_m5_surge_slope;
+  if (r <= 0) return 50; // 5分K根数不足，中性
+  if (ctx.m5LastUp && r > 1) s += (r - 1) * p.sell_m5_surge_slope; // 放量冲高
+  if (ctx.m5UpShrink) s += p.sell_m5_shrink_bonus; // 缩量冲高（没量上去）
+  if (ctx.m5Faded) s += p.sell_m5_fade_bonus; // 冲高回落（上影砸回）
+  return clip(s);
+}
+
+// 卖·15分RSI超买高抛（做T子信号，被「冲高衰竭」复合调用）：RSI(6)>80 超买；升势钝化
+function sellRsiOverbought(ctx: IntradayContext, trend: 'up' | 'down' | 'sideways', p: typeof DEFAULT_TSCORE_PROFILE): number {
+  const r = ctx.rsi6;
+  if (r == null) return 50;
+  let s = 50 + (r - p.sell_rsi_overbought_th) * p.sell_rsi_overbought_slope;
+  if (trend === 'up') s = Math.min(s, p.sell_rsi_overbought_trend_cap); // 升势超买钝化
+  return clip(s);
+}
+
+// 卖·15分MACD水上死叉（做T）：DIF 下穿 DEA 且在水上 → 强卖
+function sellMacdWaterDeath(ctx: IntradayContext, p: typeof DEFAULT_TSCORE_PROFILE): number {
+  if (ctx.macdDiff == null) return 50; // 5分K不足（早盘）
+  if (!ctx.macdCrossDown) return 50;
+  return ctx.macdAboveZero === true ? p.sell_macd_water_death : p.sell_macd_below_death;
+}
+
+// 卖·盘中M头（做T子信号，被「冲高衰竭」复合调用）：二次冲高未过前高 + MACD红柱缩短
+function sellMHead(ctx: IntradayContext, p: typeof DEFAULT_TSCORE_PROFILE): number {
+  if (!ctx.mHead) return 50;
+  return clip(p.sell_mhead_base + ctx.mHeadConf * p.sell_mhead_conf_slope);
+}
+
+// 卖·15分RSI顶背离（做T子信号，被「冲高衰竭」复合调用）：价新高 + RSI走低；升势钝化
+function sellRsiBearDivergence(ctx: IntradayContext, trend: 'up' | 'down' | 'sideways', p: typeof DEFAULT_TSCORE_PROFILE): number {
+  if (!ctx.rsiBearDivergence) return 50;
+  if (trend === 'up') return 50; // 升势顶背离钝化
+  return p.sell_rsi_bear_divergence;
+}
+
+// 卖·冲高衰竭（做T复合因子）：5分冲高(40%) + RSI超买(30%) + M头(20%) + 顶背离(10%)；趋势门控 + 尾盘打折
+function sellSellOff(ctx: IntradayContext, trend: 'up' | 'down' | 'sideways', p: typeof DEFAULT_TSCORE_PROFILE): number {
+  let s = 0.4 * clip(sellM5VolSurge(ctx, p)) + 0.3 * clip(sellRsiOverbought(ctx, trend, p)) + 0.2 * clip(sellMHead(ctx, p)) + 0.1 * clip(sellRsiBearDivergence(ctx, trend, p));
+  if (isLateDay(ctx, p)) s *= p.late_day_scale; // 尾盘均值回归打折
   return clip(s);
 }
 
@@ -347,6 +458,8 @@ export function computeTScore(input: TScoreInput): TScoreResult {
 
   const closes = kLines.map((k) => k.close).filter((x) => Number.isFinite(x));
   const highs = kLines.map((k) => k.high).filter((x) => Number.isFinite(x));
+  // 日级趋势（做T信号可信度门控）
+  const trend = dailyTrend(closes);
 
   // 买入分
   const buyFactors: TFactorScore[] = [
@@ -356,7 +469,8 @@ export function computeTScore(input: TScoreInput): TScoreResult {
     { name: '分时动量', score: buyMomentum(ctx, p), weight: BUY_WEIGHTS.intradayMomentum, raw: { mom15: ctx.mom15 } },
     { name: '日级趋势', score: buyDailyTrend(closes, highs, p), weight: BUY_WEIGHTS.dailyTrendUp, raw: {} },
     { name: '无卖出信号', score: buyNoSellSignal(engineResults, p), weight: BUY_WEIGHTS.noStrongSellSignal, raw: {} },
-    { name: '15分支撑低吸', score: buyM15Support(ctx, p), weight: BUY_WEIGHTS.intradayM15Support, raw: { m15SupportDistPct: ctx.m15SupportDistPct ?? NaN } },
+    { name: '底部低吸', score: buyBottomDip(ctx, trend, p), weight: BUY_WEIGHTS.buyBottomDip, raw: { m15SupportDistPct: ctx.m15SupportDistPct ?? NaN, rsi6: ctx.rsi6 ?? NaN, m15SupportHeld: ctx.m15SupportHeld ? 1 : 0, bullDiv: ctx.rsiBullDivergence ? 1 : 0 } },
+    { name: '15分MACD水下金叉', score: buyMacdWaterGolden(ctx, p), weight: BUY_WEIGHTS.intradayMacdWaterGolden, raw: { macdAboveZero: ctx.macdAboveZero == null ? NaN : ctx.macdAboveZero ? 1 : 0 } },
   ];
   // 买入分（权重存在各因子 weight 字段，直接归一）
   const buyWsum = buyFactors.reduce((a, f) => a + f.weight, 0);
@@ -370,7 +484,8 @@ export function computeTScore(input: TScoreInput): TScoreResult {
     { name: '分时动量', score: sellMomentum(ctx, p), weight: SELL_WEIGHTS.intradayMomentum, raw: { mom15: ctx.mom15 } },
     { name: '日级过热', score: sellDailyOverheat(closes, highs, chip, p), weight: SELL_WEIGHTS.dailyOverheatNearResistance, raw: {} },
     { name: '卖出信号', score: sellStrongSignal(engineResults, p), weight: SELL_WEIGHTS.strongSellSignalTriggered, raw: {} },
-    { name: '5分放量高抛', score: sellM5VolSurge(ctx, p), weight: SELL_WEIGHTS.intradayM5VolSurge, raw: { m5VolSurgeRatio: ctx.m5VolSurgeRatio, m5LastUp: ctx.m5LastUp ? 1 : 0 } },
+    { name: '冲高衰竭', score: sellSellOff(ctx, trend, p), weight: SELL_WEIGHTS.sellSellOff, raw: { m5VolSurgeRatio: ctx.m5VolSurgeRatio, rsi6: ctx.rsi6 ?? NaN, mHeadConf: ctx.mHeadConf, m5UpShrink: ctx.m5UpShrink ? 1 : 0, m5Faded: ctx.m5Faded ? 1 : 0, bearDiv: ctx.rsiBearDivergence ? 1 : 0 } },
+    { name: '15分MACD水上死叉', score: sellMacdWaterDeath(ctx, p), weight: SELL_WEIGHTS.intradayMacdWaterDeath, raw: { macdAboveZero: ctx.macdAboveZero == null ? NaN : ctx.macdAboveZero ? 1 : 0 } },
   ];
   const sellWsum = sellFactors.reduce((a, f) => a + f.weight, 0);
   const sellScore = clip(sellFactors.reduce((acc, f) => acc + f.score * (f.weight / sellWsum), 0));

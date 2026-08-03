@@ -6,6 +6,7 @@ import { useStockStore } from '@/store';
 import { getRealtimeQuote, getKLineSina, getMinuteData, getChipData } from '@/services/stockApi';
 import { isETF, parseCode } from '@/lib/identify';
 import { ALERT_RULES, checkAllRules } from '@/services/alertRules';
+import { computeSupportResistance, type SupportResistance } from '@/services/deep-analysis/levels';
 import { RealtimeQuote, KLineData, RuleCheckResult } from '@/types';
 import { formatPrice, formatChange, formatVolume, cn, getAlertLevelColor } from '@/lib/utils';
 import { buildUpdatedKLines } from '@/lib/stock-helpers';
@@ -37,6 +38,7 @@ export default function StockDetailPage() {
   const [fundLoading, setFundLoading] = useState(false);
   const [anomaly, setAnomaly] = useState<any>(null);
   const [fundInfo, setFundInfo] = useState<any>(null);
+  const [srData, setSrData] = useState<SupportResistance | null>(null);
 
   const stock = watchlist.find(s => s.code === code);
   const stockName = quote?.name || stock?.name || code;
@@ -72,6 +74,7 @@ export default function StockDetailPage() {
         const updatedKLines = buildUpdatedKLines(quoteData, kLineData);
         const chip = await getChipData(code).catch(() => null);
         const results = checkAllRules(updatedKLines, quoteData, ALERT_RULES.filter(r => r.isEnabled), chip);
+        setSrData(computeSupportResistance(updatedKLines, chip));
 
         setRuleResults(results);
       }
@@ -159,12 +162,12 @@ export default function StockDetailPage() {
     return ruleResults.map((result, i) => {
       let index = minuteData.length - 1; // 默认最后一点
       const ruleId = result.ruleId || '';
-      if (ruleId === 'R02') {
+      if (ruleId === 'R01') {
         // 见顶阶梯 → 最高价位置
         let maxIdx = 0; let maxPrice = 0;
         minuteData.forEach((p, idx) => { if (p.price > maxPrice) { maxPrice = p.price; maxIdx = idx; } });
         index = maxIdx;
-      } else if (['R11', 'R12', 'R13', 'R14', 'R15', 'R17'].includes(ruleId)) {
+      } else if (['R07', 'R08', 'R09', 'R10', 'R11', 'R13'].includes(ruleId)) {
         // 见底/企稳形态 → 最低价位置
         let minIdx = 0; let minPrice = Infinity;
         minuteData.forEach((p, idx) => { if (p.price < minPrice) { minPrice = p.price; minIdx = idx; } });
@@ -406,6 +409,10 @@ export default function StockDetailPage() {
                     ? (ALERT_RULES.find(r => r.id === ruleResults[number - 1].ruleId)?.level || 'INFO')
                     : 'INFO',
                 }))}
+                levels={srData ? [
+                  ...srData.supports.map(l => ({ price: l.price, color: '#16a34a', title: `支撑·${l.label}` })),
+                  ...srData.resistances.map(l => ({ price: l.price, color: '#dc2626', title: `压力·${l.label}` })),
+                ] : []}
               />
             </Card>
           )}
@@ -446,6 +453,40 @@ export default function StockDetailPage() {
                   </div>
                 </div>
               )}
+            </Card>
+          )}
+
+          {/* 支撑压力位（结构位 + 黄金分割回撤） */}
+          {srData && (srData.supports.length > 0 || srData.resistances.length > 0) && (
+            <Card className="p-4 mb-4">
+              <div className="flex items-center justify-between mb-3">
+                <h2 className="font-semibold text-sm">支撑压力位</h2>
+                <span className="text-xs text-gray-400">现价 <span className="font-mono text-gray-600 dark:text-gray-300">{srData.current.toFixed(2)}</span></span>
+              </div>
+              <div className="grid grid-cols-2 gap-3 text-xs">
+                <div>
+                  <p className="text-green-600 font-medium mb-1.5">支撑位（下方）</p>
+                  <div className="space-y-1">
+                    {srData.supports.map(l => (
+                      <div key={`s-${l.label}-${l.price}`} className="flex items-center justify-between bg-green-50/60 dark:bg-green-950/30 rounded px-2 py-1">
+                        <span className="text-gray-500">{l.label}</span>
+                        <span className="font-mono font-medium text-green-700 dark:text-green-400">{l.price.toFixed(2)}</span>
+                      </div>
+                    ))}
+                  </div>
+                </div>
+                <div>
+                  <p className="text-red-600 font-medium mb-1.5">压力位（上方）</p>
+                  <div className="space-y-1">
+                    {srData.resistances.map(l => (
+                      <div key={`r-${l.label}-${l.price}`} className="flex items-center justify-between bg-red-50/60 dark:bg-red-950/30 rounded px-2 py-1">
+                        <span className="text-gray-500">{l.label}</span>
+                        <span className="font-mono font-medium text-red-700 dark:text-red-400">{l.price.toFixed(2)}</span>
+                      </div>
+                    ))}
+                  </div>
+                </div>
+              </div>
             </Card>
           )}
 

@@ -24,11 +24,70 @@ export interface TradeLevels {
   targetRange: PriceRange;
   positionRange: PriceRange; // 百分比 0-100
   marketRegime: MarketRegime;
+  supports: PriceLevel[];     // 下方支撑（近→远）
+  resistances: PriceLevel[];  // 上方压力（近→远）
   rationale: string;
 }
 
 const ATR_PERIOD = 14;
 const round2 = (n: number) => Math.round(n * 100) / 100;
+
+export interface PriceLevel { price: number; label: string; }
+export interface SupportResistance { current: number; supports: PriceLevel[]; resistances: PriceLevel[]; }
+
+function smaCloses(kLines: KLineData[], n: number): number | null {
+  if (kLines.length < n) return null;
+  const seg = kLines.slice(-n);
+  return seg.reduce((s, k) => s + k.close, 0) / n;
+}
+
+/** 黄金分割回撤位（经典三档 0.382/0.5/0.618），基于最近 window 日 high/low 波段 */
+export function fibonacciLevels(kLines: KLineData[], window = 60): PriceLevel[] {
+  if (kLines.length < window) return [];
+  const seg = kLines.slice(-window);
+  const high = Math.max(...seg.map(k => k.high));
+  const low = Math.min(...seg.map(k => k.low));
+  if (!(high > low)) return [];
+  const range = high - low;
+  return [0.382, 0.5, 0.618].map(r => ({
+    price: Math.round((high - range * r) * 100) / 100,
+    label: `${(r * 100).toFixed(1).replace(/\.0$/, '')}%回撤`,
+  }));
+}
+
+/** 轻量支撑/压力位（结构位 + 黄金分割），供个股页支撑压力位卡片 / K线叠加线 */
+export function computeSupportResistance(kLines: KLineData[], chip?: ChipDistribution | null): SupportResistance {
+  const current = kLines[kLines.length - 1]?.close ?? 0;
+  const last20 = kLines.slice(-20);
+  const last60 = kLines.slice(-60);
+  const low20 = last20.length ? Math.min(...last20.map(k => k.low)) : current;
+  const high20 = last20.length ? Math.max(...last20.map(k => k.high)) : current;
+  const low60 = last60.length ? Math.min(...last60.map(k => k.low)) : low20;
+  const high60 = last60.length ? Math.max(...last60.map(k => k.high)) : high20;
+  const ma20 = smaCloses(kLines, 20);
+  const ma55 = smaCloses(kLines, 55);
+
+  const candidates: PriceLevel[] = [
+    ...(ma20 != null ? [{ price: ma20, label: 'MA20' }] : []),
+    ...(ma55 != null ? [{ price: ma55, label: 'MA55' }] : []),
+    { price: low20, label: '近20日低' },
+    { price: high20, label: '近20日高' },
+    ...(last60.length ? [{ price: low60, label: '近60日低' }, { price: high60, label: '近60日高' }] : []),
+    ...(chip?.dominantPeak && chip.dominantPeak > 0 ? [{ price: chip.dominantPeak, label: '筹码主峰' }] : []),
+    ...(chip?.peaks && chip.peaks.length > 0 ? chip.peaks.slice(0, 3).map((p, i) => ({ price: p, label: `筹码峰${i + 1}` })) : []),
+    ...fibonacciLevels(kLines, 60),
+  ];
+
+  const dedup = (arr: PriceLevel[]): PriceLevel[] => {
+    const seen = new Set<number>();
+    return arr.filter(l => { const key = Math.round(l.price * 100); if (seen.has(key)) return false; seen.add(key); return true; });
+  };
+  return {
+    current,
+    supports: dedup(candidates.filter(l => l.price < current)).sort((a, b) => b.price - a.price).slice(0, 4),
+    resistances: dedup(candidates.filter(l => l.price > current)).sort((a, b) => a.price - b.price).slice(0, 4),
+  };
+}
 
 /** ATR(14)：TR = max(high-low, |high-prevClose|, |low-prevClose|)，SMA(14) */
 function calcATR(kLines: KLineData[]): number {
@@ -47,10 +106,10 @@ function calcATR(kLines: KLineData[]): number {
   return slice.reduce((a, b) => a + b, 0) / slice.length;
 }
 
-/** 从 engineResults 解析 R15 箱体上沿 */
+/** 从 engineResults 解析 R11 箱体上沿 */
 function extractBoxHigh(engineResults: RuleCheckResult[]): number | null {
   for (const r of engineResults) {
-    if (!r.triggered || r.ruleId !== 'R15' || !r.extraData) continue;
+    if (!r.triggered || r.ruleId !== 'R11' || !r.extraData) continue;
     try {
       const d = JSON.parse(r.extraData);
       if (d.type === 'breakout' && typeof d.boxHigh === 'number') return d.boxHigh;
@@ -61,7 +120,7 @@ function extractBoxHigh(engineResults: RuleCheckResult[]): number | null {
 
 /** 买入类规则触发数（仓位基准用） */
 function countBuySignals(engineResults: RuleCheckResult[]): number {
-  const buyIds = new Set(['R10', 'R13', 'R14', 'R15', 'R16', 'R17']);
+  const buyIds = new Set(['R05', 'R06', 'R09', 'R10', 'R11', 'R12', 'R13']);
   return engineResults.filter(r => r.triggered && r.ruleId && buyIds.has(r.ruleId)).length;
 }
 
@@ -107,6 +166,11 @@ export function computeKeyLevels(params: {
   }
   if (indicators.bollinger.upper > price) resistances.push({ price: indicators.bollinger.upper, label: `布林上轨${round2(indicators.bollinger.upper)}` });
 
+  // 黄金分割回撤位（60日波段，经典三档）并入候选
+  const fib = fibonacciLevels(kLines, 60);
+  supports.push(...fib.filter(l => l.price < price));
+  resistances.push(...fib.filter(l => l.price > price));
+
   // --- 止损区间 [远端(容错大), 近端(止损小)]，落在支撑附近、1~2 ATR ---
   const stopFar = Math.max(recentLow > 0 ? recentLow : price - 2 * effAtr, price - 2 * effAtr);
   const stopNearRaw = Math.min(low5 > 0 ? low5 : price - effAtr, price - effAtr);
@@ -151,7 +215,19 @@ export function computeKeyLevels(params: {
     `仓位区间 [${positionRange.low}%, ${positionRange.high}%] —— 买入类信号 ${buyCount} 条，RPS250 ${rps250 ?? '--'}，基准 ${Math.round(base)}%`,
   ].join('\n');
 
-  return { currentPrice: round2(price), atr: round2(atr), atrPct, stopLossRange, targetRange, positionRange, marketRegime, rationale };
+  // 展示用：去重 + 按距现价排序（支撑近→远降序、压力近→远升序），每侧最多 4 个
+  const dedupSort = (arr: { price: number; label: string }[], desc: boolean): PriceLevel[] => {
+    const seen = new Set<number>();
+    const uniq = arr.filter(l => { const key = Math.round(l.price * 100); if (seen.has(key)) return false; seen.add(key); return true; });
+    return (desc ? uniq.sort((a, b) => b.price - a.price) : uniq.sort((a, b) => a.price - b.price)).slice(0, 4);
+  };
+
+  return {
+    currentPrice: round2(price), atr: round2(atr), atrPct, stopLossRange, targetRange, positionRange, marketRegime,
+    supports: dedupSort(supports, true),
+    resistances: dedupSort(resistances, false),
+    rationale,
+  };
 }
 
 /** 渲染成注入 verdict 的文本块（拼在 ## 分析师报告 之前，route 切分保留） */

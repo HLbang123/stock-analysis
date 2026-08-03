@@ -10,6 +10,7 @@ import {
   LineSeries,
   Time,
   ColorType,
+  LineStyle,
 } from 'lightweight-charts';
 import { KLineData } from '@/types';
 import { useTheme } from '@/components/providers/theme-provider';
@@ -20,11 +21,18 @@ interface AlertMarker {
   level: string;
 }
 
+interface PriceLine {
+  price: number;
+  color?: string;
+  title?: string;
+}
+
 interface KLineChartProps {
   data: KLineData[];
   height?: number;
   showVolume?: boolean;
   alertMarkers?: AlertMarker[];
+  levels?: PriceLine[]; // 支撑/压力水平线
   onBarClick?: (index: number) => void;
 }
 
@@ -33,6 +41,7 @@ export function KLineChart({
   height = 400,
   showVolume = true,
   alertMarkers = [],
+  levels = [],
   onBarClick,
 }: KLineChartProps) {
   const containerRef = useRef<HTMLDivElement>(null);
@@ -102,6 +111,18 @@ export function KLineChart({
     });
 
     candleSeries.setData(candleData);
+
+    // 支撑/压力水平线（createPriceLine 虚线）
+    levels.forEach(lv => {
+      candleSeries.createPriceLine({
+        price: lv.price,
+        color: lv.color ?? '#3b82f6',
+        lineWidth: 1,
+        lineStyle: LineStyle.Dashed,
+        axisLabelVisible: true,
+        title: lv.title ?? '',
+      });
+    });
 
     // 成交量
     if (showVolume) {
@@ -188,7 +209,7 @@ export function KLineChart({
     chart.timeScale().fitContent();
     chartRef.current = chart;
     return chart;
-  }, [data, showVolume, height, onBarClick, resolvedTheme, alertMarkers]);
+  }, [data, showVolume, height, onBarClick, resolvedTheme, alertMarkers, levels]);
 
   useEffect(() => {
     const chart = initChart();

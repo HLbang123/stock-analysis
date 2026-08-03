@@ -7,7 +7,7 @@
  *   - 缺 turnover_rate 的历史行降级为固定衰减 γ=0.97（路线 A 混合），保证回填未完成时不报错
  *   - totalShares 标量归一化掉（设相对单位），峰形/获利盘/集中度 scale-invariant
  *
- * 派生 4 子维度（AI 筛选 chip 因子 + R18/R19 预警用）：
+ * 派生 4 子维度（AI 筛选 chip 因子 + R14/R15 预警用）：
  *   concentration90 / profitRatio / peakPos / peakDrift
  *
  * 数据从 DB daily_bars（含 turnover_rate）取，不走实时 K 线（实时路径无换手率）。

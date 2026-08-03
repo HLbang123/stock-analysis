@@ -57,6 +57,9 @@ function fmtIntraday(ctx: IntradayContext): string {
     `现价 ${ctx.last.toFixed(2)} | 开盘 ${ctx.open.toFixed(2)} | 日内高 ${ctx.high.toFixed(2)} | 低 ${ctx.low.toFixed(2)}`,
     `VWAP ${ctx.vwap.toFixed(2)} | 偏离 VWAP ${ctx.vwapDevPct.toFixed(2)}% | 日内位置 ${ctx.rangePosPct.toFixed(0)}%(0=最低 100=最高)`,
     `近${ctx.windowLen}分钟动量 ${ctx.mom15.toFixed(2)} bps/分(负=回调) | 下跌分钟量占比 ${(ctx.downVolRatio * 100).toFixed(0)}% | 尾盘均量/全日 ${(ctx.last5VolRatio).toFixed(2)}`,
+    ...(ctx.rsi6 != null ? [`15分RSI6 ${ctx.rsi6.toFixed(0)}${ctx.rsi6 < 20 ? '(超卖)' : ctx.rsi6 > 80 ? '(超买)' : ''} | RSI12 ${ctx.rsi12?.toFixed(0) ?? '--'}${ctx.rsiBullDivergence ? ' | 底背离' : ''}${ctx.rsiBearDivergence ? ' | 顶背离' : ''}`] : []),
+    ...(ctx.macdDiff != null ? [`5分MACD DIF ${ctx.macdDiff.toFixed(3)}${ctx.macdAboveZero ? '(水上)' : '(水下)'}${ctx.macdCrossUp ? ' 金叉' : ''}${ctx.macdCrossDown ? ' 死叉' : ''}${ctx.mHead ? ` | 盘中M头(conf ${ctx.mHeadConf.toFixed(2)})` : ''}`] : []),
+    `5分K放量比 ${ctx.m5VolSurgeRatio.toFixed(1)}${ctx.m5UpShrink ? ' 缩量冲高' : ''}${ctx.m5Faded ? ' 冲高回落' : ''}${ctx.m15SupportHeld ? ' | 15分支撑探底回升' : ''} | ${ctx.minuteOfDay >= 870 ? '尾盘' : '盘中'}`,
   ].join('\n');
 }
 

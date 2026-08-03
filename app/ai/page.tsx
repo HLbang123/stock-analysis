@@ -61,6 +61,11 @@ export default function AiPage() {
     verdict: string;
     verdictReasoning?: string;
     verdictError?: string;
+    levels?: {
+      current: number;
+      supports: { price: number; label: string }[];
+      resistances: { price: number; label: string }[];
+    } | null;
     structured: {
       action: string;
       oneLiner?: string;
@@ -586,6 +591,7 @@ export default function AiPage() {
                 setDeepResult(prev => ({
                   ...(prev || { analyst: analystText, debate: debateText, verdict: '', structured: null }),
                   verdict: verdictText,
+                  levels: { current: tradeLevels.currentPrice, supports: tradeLevels.supports, resistances: tradeLevels.resistances },
                   structured: parsed,
                 }));
               }
@@ -682,6 +688,7 @@ export default function AiPage() {
           debateReasoning: debateReasoning || undefined,
           verdict: verdictText,
           verdictReasoning: verdictReasoning || undefined,
+          levels: { current: tradeLevels.currentPrice, supports: tradeLevels.supports, resistances: tradeLevels.resistances },
           structured: finalStructured,
         },
       });
@@ -1049,6 +1056,31 @@ export default function AiPage() {
                       <p className="text-red-600 font-medium">{Number.isFinite(deepResult.structured.stopLoss) ? deepResult.structured.stopLoss.toFixed(2) : '--'}</p>
                     </div>
                   </div>
+
+                  {/* 支撑压力位（结构位 + 黄金分割回撤） */}
+                  {deepResult.levels && (deepResult.levels.supports.length > 0 || deepResult.levels.resistances.length > 0) && (
+                    <div className="mt-3 pt-3 border-t border-gray-200/60 dark:border-gray-700/60">
+                      <p className="text-xs text-gray-500 mb-1.5">支撑压力位 <span className="text-gray-400">（现价 {deepResult.levels.current.toFixed(2)}）</span></p>
+                      <div className="grid grid-cols-2 gap-3 text-xs">
+                        <div>
+                          <p className="text-green-600 font-medium mb-1">支撑位</p>
+                          <div className="flex flex-wrap gap-1.5">
+                            {deepResult.levels.supports.map(l => (
+                              <span key={`s-${l.label}-${l.price}`} className="px-1.5 py-0.5 rounded bg-green-50 dark:bg-green-950/30 text-green-700 dark:text-green-400 font-mono text-[11px]">{l.label}</span>
+                            ))}
+                          </div>
+                        </div>
+                        <div>
+                          <p className="text-red-600 font-medium mb-1">压力位</p>
+                          <div className="flex flex-wrap gap-1.5">
+                            {deepResult.levels.resistances.map(l => (
+                              <span key={`r-${l.label}-${l.price}`} className="px-1.5 py-0.5 rounded bg-red-50 dark:bg-red-950/30 text-red-700 dark:text-red-400 font-mono text-[11px]">{l.label}</span>
+                            ))}
+                          </div>
+                        </div>
+                      </div>
+                    </div>
+                  )}
 
                   {/* 信心指数进度条 */}
                   {deepResult.structured.confidenceScore !== undefined && (

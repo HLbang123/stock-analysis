@@ -58,6 +58,7 @@ ${ctxText}
   const footer = `\n## 输出要求
 只返回 JSON，不要 Markdown，不要解释 JSON 以外的文本。
 **ranked 数组必须包含上方候选列表的全部候选——每个 code 必须与候选列表一致，不得遗漏任何一个，不得编造候选池外的代码。若候选有 N 个，ranked 数组长度必须为 N。**
+**散文字段（thesis/reason/risk/theme/style_fit）每项 ≤30 字；数组字段（catalysts/risk_flags/tags/watch_items/invalidators）每项最多 2 个、每个 ≤8 字。输出越精炼越好。**
 格式：
 {
   "market_view": "一句话概括当前候选池和市场背景是否适合该策略",

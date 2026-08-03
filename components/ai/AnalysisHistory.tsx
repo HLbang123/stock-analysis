@@ -3,9 +3,10 @@
 import { useState, useEffect } from 'react';
 import { AiAnalysisRecord, useAiStore } from '@/store/ai-store';
 import { cn } from '@/lib/utils';
-import { ChevronDown, ChevronRight, Trash2 } from 'lucide-react';
+import { ChevronDown, ChevronRight, Trash2, BarChart3 } from 'lucide-react';
 import { toast } from 'sonner';
 import { TermTooltip } from '@/components/ui/TermTooltip';
+import { DeepAnalysisStats } from '@/components/ai/DeepAnalysisStats';
 
 interface Props {
   history: AiAnalysisRecord[];
@@ -14,12 +15,7 @@ interface Props {
 interface EvalItem { nDays: number; returnPct: number | null; }
 interface RecordRow { id: string; action: string; entryPrice: number; evals: EvalItem[]; }
 
-interface StatGroup {
-  action: string;
-  byN: { nDays: number; count: number; wins: number; winRate: number; avgReturn: number }[];
-}
-
-/** 胜负判定：买入看涨、卖出看跌、持有看震荡 */
+/** 胜负判定：买入看涨、卖出看跌、持有看震荡（与复盘面板同口径） */
 function isWin(action: string, returnPct: number): boolean {
   if (action === '买入') return returnPct > 0;
   if (action === '卖出') return returnPct < 0;
@@ -29,17 +25,9 @@ function isWin(action: string, returnPct: number): boolean {
 export function AnalysisHistory({ history }: Props) {
   const aiStore = useAiStore();
   const [showHistory, setShowHistory] = useState(false);
+  const [view, setView] = useState<'list' | 'stats'>('list');
   const [expandedHistory, setExpandedHistory] = useState<Set<string>>(new Set());
   const [evalMap, setEvalMap] = useState<Record<string, RecordRow[]>>({});
-  const [stats, setStats] = useState<StatGroup[] | null>(null);
-
-  // 顶部胜率面板（全局）
-  useEffect(() => {
-    if (!showHistory) return;
-    fetch('/api/ai/deep-eval/stats').then(r => r.ok ? r.json() : null).then(d => {
-      if (d?.stats) setStats(d.stats);
-    }).catch(() => {});
-  }, [showHistory]);
 
   // 展开某条记录时拉取该股该日回测（失败也置空，避免卡在"加载中"）
   const loadEval = async (record: AiAnalysisRecord) => {
@@ -55,46 +43,36 @@ export function AnalysisHistory({ history }: Props) {
     }
   };
 
-  if (history.length === 0) return null;
+  // 无本地历史也渲染（胜率复盘是全局数据），列表态显示空提示
 
   return (
     <div className="bg-white dark:bg-gray-900 rounded-xl p-4 shadow-sm">
-      <button
-        onClick={() => setShowHistory(!showHistory)}
-        className="flex items-center gap-2 hover:bg-gray-50 dark:hover:bg-gray-800 rounded-lg p-1 -m-1 transition"
-      >
-        {showHistory ? <ChevronDown className="w-5 h-5" /> : <ChevronRight className="w-5 h-5" />}
-        <h3 className="font-semibold">历史分析 ({history.length})</h3>
-      </button>
-      {showHistory && (
-        <>
-          {/* 全局胜率面板 */}
-          {stats && stats.length > 0 && (
-            <div className="mt-3 p-3 rounded-lg bg-gray-50 dark:bg-gray-800 border border-gray-100 dark:border-gray-700">
-              <p className="text-xs font-medium text-gray-500 mb-2">
-                <TermTooltip term="回测胜率" explain="深度分析建议后 T+N 个交易日的实际收益验证。买入看涨、卖出看跌、持有看震荡。全局匿名聚合，跨用户共享。" />（全局）
-              </p>
-              <div className="space-y-1.5">
-                {stats.map(g => (
-                  <div key={g.action} className="flex items-center gap-2 text-xs">
-                    <span className={cn(
-                      "w-12 shrink-0 font-medium",
-                      g.action === '买入' ? "text-red-600" : g.action === '卖出' ? "text-green-600" : "text-gray-500"
-                    )}>{g.action}</span>
-                    <div className="flex-1 flex flex-wrap gap-3">
-                      {g.byN.sort((a, b) => a.nDays - b.nDays).map(s => (
-                        <span key={s.nDays} className="text-gray-600 dark:text-gray-400">
-                          T+{s.nDays}: <span className={cn("font-semibold", s.winRate >= 50 ? "text-green-600" : "text-red-600")}>{s.winRate}%</span>
-                          <span className="text-gray-400"> ({s.count}样本, 均{s.avgReturn > 0 ? '+' : ''}{s.avgReturn}%)</span>
-                        </span>
-                      ))}
-                    </div>
-                  </div>
-                ))}
-              </div>
-            </div>
-          )}
+      <div className="flex items-center justify-between gap-2">
+        <button
+          onClick={() => setShowHistory(!showHistory)}
+          className="flex items-center gap-2 hover:bg-gray-50 dark:hover:bg-gray-800 rounded-lg p-1 -m-1 transition"
+        >
+          {showHistory ? <ChevronDown className="w-5 h-5" /> : <ChevronRight className="w-5 h-5" />}
+          <h3 className="font-semibold">历史分析 ({history.length})</h3>
+        </button>
+        {showHistory && (
+          <div className="flex gap-1 p-1 bg-gray-100 dark:bg-gray-800/50 rounded-lg w-fit">
+            <button onClick={() => setView('list')} className={cn('px-3 py-1 rounded-md text-xs font-medium', view === 'list' ? 'bg-white dark:bg-gray-900 text-purple-600 shadow-sm' : 'text-gray-500')}>
+              历史列表
+            </button>
+            <button onClick={() => setView('stats')} className={cn('px-3 py-1 rounded-md text-xs font-medium flex items-center gap-1', view === 'stats' ? 'bg-white dark:bg-gray-900 text-purple-600 shadow-sm' : 'text-gray-500')}>
+              <BarChart3 className="w-3.5 h-3.5" /> 胜率复盘
+            </button>
+          </div>
+        )}
+      </div>
 
+      {showHistory && (view === 'stats' ? (
+        <div className="mt-3">
+          <DeepAnalysisStats />
+        </div>
+      ) : (
+        <>
           <div className="flex justify-end mb-2 mt-2">
             <button
               onClick={() => { aiStore.clearHistory(); toast.success('已清空全部历史'); }}
@@ -103,6 +81,9 @@ export function AnalysisHistory({ history }: Props) {
               清空全部
             </button>
           </div>
+          {history.length === 0 ? (
+            <p className="text-center text-gray-400 text-sm py-6">暂无历史分析，跑一次深度分析后这里会列出</p>
+          ) : (
           <div className="space-y-2">
             {history.slice(0, 20).map(record => {
               const isExpanded = expandedHistory.has(record.id);
@@ -148,7 +129,9 @@ export function AnalysisHistory({ history }: Props) {
                       {/* 回测结果 */}
                       {record.entryDate && (
                         <div className="text-xs">
-                          <p className="text-gray-500 mb-1">回测验证（入场日 {record.entryDate}）：</p>
+                          <p className="text-gray-500 mb-1">
+                            <TermTooltip term="回测验证" explain="深度分析建议后 T+N 个交易日的实际收益。买入看涨、卖出看跌、持有看震荡。入场日 {record.entryDate}，按当日收盘价基准。" />（入场日 {record.entryDate}）：
+                          </p>
                           {evals === undefined ? (
                             <p className="text-gray-400">加载中...</p>
                           ) : evals.length === 0 ? (
@@ -177,8 +160,9 @@ export function AnalysisHistory({ history }: Props) {
               );
             })}
           </div>
+          )}
         </>
-      )}
+      ))}
     </div>
   );
 }

@@ -6,7 +6,7 @@
  * 不用 response_format（兼容各家中转模型），靠 prompt 约束 + 容错解析兜底。
  */
 
-import { buildChatUrl, buildLLMHeaders } from '@/lib/llm-client';
+import { buildChatUrl, buildLLMHeaders, createTimeoutSignal } from '@/lib/llm-client';
 import { formatAiError, formatNetworkError } from '@/lib/ai-error';
 import type { AiPick, LlmConfig, StrategyPreset } from './types';
 import { buildRankingPrompt } from './prompt';
@@ -14,10 +14,9 @@ import { buildRankingPrompt } from './prompt';
 const RANK_WEIGHT = 0.4;
 const MIN_COVERAGE = 0.6;
 const MAX_RETRIES = 2;
-// 流式双层超时：只要模型持续吐字就不会因整体超时被砍
-const LLM_IDLE_TIMEOUT_MS = 30_000; // 两个 chunk 之间静默超过 30s 才 abort
-const LLM_HARD_TIMEOUT_MS = 180_000; // 整体硬上限，兜底极端慢请求
-const LLM_MAX_TOKENS = 8192; // 30 只候选×12 字段(含 thesis/reason/risk 散文+5 数组)约 7k token,4096 会截断丢项触发覆盖率回退
+// 非流式单层超时：覆盖中转慢生成整段耗时（07-30 非流式 90s 曾超时，放宽到 240s）
+const LLM_TIMEOUT_MS = 240_000;
+const LLM_MAX_TOKENS = 8192; // 20 只候选×12 字段(含 thesis/reason/risk 散文+5 数组)约 4.7k token，8192 留足余量
 
 export interface RankResult {
   picks: AiPick[];
@@ -182,27 +181,15 @@ function extractPartialItems(s: string): RankedItem[] {
 }
 
 /**
- * 调 LLM（流式，逐 chunk 拼接完整文本）。
- * 流式下用"空闲超时 + 硬上限"双层超时：模型持续吐字就不算超时，避免非流式下 7k token 生成撞 90s 整体超时。
+ * 调 LLM（非流式，取完整文本）。
+ * 曾改流式（commit 9642955）后中转在流式下不吐 content，全部 empty_response 回退；
+ * 改回非流式（07-30 生产数据验证能拿到内容），单层 240s 超时覆盖慢中转整段生成。
+ * content 为空时兜底读 reasoning_content/reasoning（个别思考型中转把答案放思考通道）。
  */
 async function callLlm(prompt: string, cfg: LlmConfig): Promise<string> {
   const url = buildChatUrl(cfg.baseUrl);
   const headers = buildLLMHeaders(cfg.apiKey);
-  const controller = new AbortController();
-  let idleTimer: ReturnType<typeof setTimeout> | null = null;
-  let hardTimer: ReturnType<typeof setTimeout> | null = null;
-  const resetIdle = () => {
-    if (idleTimer) clearTimeout(idleTimer);
-    idleTimer = setTimeout(() => controller.abort(), LLM_IDLE_TIMEOUT_MS);
-  };
-  const clearAll = () => {
-    if (idleTimer) clearTimeout(idleTimer);
-    if (hardTimer) clearTimeout(hardTimer);
-    idleTimer = null;
-    hardTimer = null;
-  };
-  hardTimer = setTimeout(() => controller.abort(), LLM_HARD_TIMEOUT_MS);
-  resetIdle();
+  const { signal, clear } = createTimeoutSignal(LLM_TIMEOUT_MS);
   try {
     const res = await fetch(url, {
       method: 'POST',
@@ -212,51 +199,30 @@ async function callLlm(prompt: string, cfg: LlmConfig): Promise<string> {
         messages: [{ role: 'user', content: prompt }],
         temperature: 0.2,
         max_tokens: LLM_MAX_TOKENS,
-        stream: true,
+        stream: false,
       }),
-      signal: controller.signal,
+      signal,
     });
     if (!res.ok) {
       const text = await res.text().catch(() => '');
       throw new Error(formatAiError(res.status, text));
     }
-    if (!res.body) throw new Error('LLM 响应无 body');
-    const reader = res.body.getReader();
-    const decoder = new TextDecoder();
-    let buf = '';
-    let full = '';
-    while (true) {
-      const { done, value } = await reader.read();
-      if (done) break;
-      resetIdle();
-      buf += decoder.decode(value, { stream: true });
-      // 按 SSE 行解析：每行 `data: {json}`，结尾 `data: [DONE]`
-      let nl: number;
-      while ((nl = buf.indexOf('\n')) >= 0) {
-        const line = buf.slice(0, nl).trim();
-        buf = buf.slice(nl + 1);
-        if (!line || !line.startsWith('data:')) continue;
-        const data = line.slice(5).trim();
-        if (data === '[DONE]') {
-          clearAll();
-          return full;
-        }
-        try {
-          const json = JSON.parse(data);
-          const delta = json?.choices?.[0]?.delta?.content;
-          if (typeof delta === 'string' && delta) full += delta;
-        } catch {
-          // 跨 chunk 的不完整 JSON 行，忽略，等下一块补齐
-        }
-      }
-    }
-    return full;
+    const data = await res.json();
+    const msg = data?.choices?.[0]?.message;
+    const content = typeof msg?.content === 'string' ? msg.content : '';
+    const reasoning =
+      typeof msg?.reasoning_content === 'string'
+        ? msg.reasoning_content
+        : typeof msg?.reasoning === 'string'
+          ? msg.reasoning
+          : '';
+    return content || reasoning;
   } catch (e: any) {
     const isAbort = e.name === 'AbortError' || /abort/i.test(e.message || '');
-    if (isAbort) throw new Error('LLM 重排超时（空闲30s/整体180s）');
+    if (isAbort) throw new Error('LLM 重排超时（240s）');
     throw new Error(formatNetworkError(e));
   } finally {
-    clearAll();
+    clear();
   }
 }
 
@@ -327,8 +293,8 @@ export async function rankCandidates(
     return emptyFallback(picks, preset, degradation);
   }
 
-  // 送 LLM 的候选数：maxOutput 的 3 倍封顶 30，控制成本
-  const topK = Math.min(Math.max(preset.maxOutput * 3, 10), 30, picks.length);
+  // 送 LLM 的候选数 = maxOutput(20)。旧版 3 倍封顶 30 让输出逼近 max_tokens 触发覆盖率回退，降到 20 保证可靠交付
+  const topK = Math.min(Math.max(preset.maxOutput, 10), picks.length);
   const candidates = [...picks].sort((a, b) => b.screenScore - a.screenScore).slice(0, topK);
   const candidateMap = new Map(candidates.map((k) => [normalizeCode(k.tsCode), k]));
   // 池外候选先按规则分排好，作为 LLM 命中后的尾部
