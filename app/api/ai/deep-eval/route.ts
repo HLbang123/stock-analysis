@@ -13,6 +13,7 @@ export async function POST(request: NextRequest) {
     const {
       stockCode, stockName, entryDate, entryPrice, action,
       targetLow, targetHigh, stopLoss, position, confidence, reasoning,
+      marketRegime,
     } = body;
 
     if (!stockCode || !entryDate || !action || typeof entryPrice !== 'number') {
@@ -29,11 +30,12 @@ export async function POST(request: NextRequest) {
         stopLoss: stopLoss ?? null,
         position: position ?? null,
         confidence: confidence ?? null,
+        marketRegime: marketRegime ?? null,
         reasoning: (reasoning || '').slice(0, 500) || null,
         createdAt: new Date().toISOString(),
       },
       update: {
-        // 覆盖分析内容（保留 recordId，已算的 eval 不动）
+        // 覆盖分析内容（保留 recordId，已算的 eval 不动；marketRegime 同日重跑以最新为准）
         stockName: stockName || stockCode,
         entryPrice,
         targetLow: targetLow ?? null,
@@ -41,6 +43,7 @@ export async function POST(request: NextRequest) {
         stopLoss: stopLoss ?? null,
         position: position ?? null,
         confidence: confidence ?? null,
+        marketRegime: marketRegime ?? null,
         reasoning: (reasoning || '').slice(0, 500) || null,
       },
     });

@@ -240,15 +240,33 @@ function checkTopPattern(kLines: KLineData[], quote: RealtimeQuote | null, rule:
   const threshold = rule.thresholdValue ?? 1.20;
 
   // 量能信号
-  const maxYear = Math.max(...kLines.map(k => k.volume));
-  const max5 = calculateMaxVolume(kLines.slice(0, -1), 5);
+  const avg20 = calculateAvgVolume(kLines.slice(0, -1), 20);
+  // 位置门槛："巨量见顶"必须先有"顶"——收盘在60日高点92%以内，或近期连续上涨。
+  // 否则低位/横盘放量（可能是底部启动）也报"见顶"，且行情热时全市场普涨量会集体误报。
+  const high60 = Math.max(...kLines.slice(-60).map(k => k.high));
+  const atTop = (high60 > 0 && today.close >= high60 * 0.92) || uptrend;
   let secondWave = false;
   if (kLines.length >= 60) {
     const firstWaveMax = Math.max(...kLines.slice(0, -1).map(k => k.volume));
     const recentMax = Math.max(...kLines.slice(-10).map(k => k.volume));
     if (firstWaveMax > 0 && recentMax >= firstWaveMax * 0.9) secondWave = true;
   }
-  const isPeak = effVol >= maxYear * 0.95 || (max5 > 0 && effVol > max5 * 1.2);
+  // 量能极端度：今日量(等效全日)在过去120日的分位数 ≥95% 且 对20日均量 ≥2 倍。
+  // 分位数口径对每支票自身历史分布自适应，冷门票/热门票公平，行情热时基线同步抬升；
+  // 旧口径"超5日最高量×1.2 / 区间天量×0.95"基准窗太短且会自己锚定自己，已废。
+  const volHistory = kLines.map(k => k.volume);
+  const volPctRank = volHistory.filter(v => v <= effVol).length / volHistory.length;
+  const volRatio20 = avg20 > 0 ? effVol / avg20 : 0;
+  const volExtreme = volPctRank >= 0.95 && volRatio20 >= 2.0;
+  // 派发确认：天量必须"没换来价"才算见顶——滞涨(|涨跌幅|<2%) / 阴线 / 长上影(≥2%) 三选一。
+  // 放量大阳线/涨停是启动不是派发，交给突破类规则(R09/箱体)报，R01 不两头喊。
+  const dayChgPct = prev1.close > 0 ? ((today.close - prev1.close) / prev1.close) * 100 : 0;
+  const stagnant = Math.abs(dayChgPct) < 2;
+  const bearishCandle = today.close < today.open;
+  const rejection = shape.upperShadowPct >= 2;
+  const distribution = stagnant || bearishCandle || rejection;
+  // 高位 + 量能罕见 + 派发痕迹，三条件各管一件事：在哪、量多大、价怎么回应
+  const isPeak = atTop && volExtreme && distribution;
   const isVolumeAbnormal = avg5 > 0 && effVol > avg5 * threshold;
 
   // [severity, label, message]
@@ -262,7 +280,11 @@ function checkTopPattern(kLines: KLineData[], quote: RealtimeQuote | null, rule:
   }
   // 巨量见顶 / 第二波见顶
   if (isPeak) {
-    triggered.push([4, '巨量见顶', `🔴 巨量见顶：成交量 ${today.volume}，5日最高 ${max5}，年最高 ${maxYear}，天量大概率见顶，止盈减仓`]);
+    const traces: string[] = [];
+    if (stagnant) traces.push(`放量滞涨(涨跌幅 ${dayChgPct.toFixed(1)}%)`);
+    if (bearishCandle) traces.push('阴线');
+    if (rejection) traces.push(`上影 ${shape.upperShadowPct.toFixed(1)}%`);
+    triggered.push([4, '巨量见顶', `🔴 巨量见顶：高位天量(量比 ${volRatio20.toFixed(1)}，120日分位 ${(volPctRank * 100).toFixed(0)}%)+${traces.join('、')}，派发嫌疑，止盈减仓`]);
   }
   if (secondWave) {
     triggered.push([4, '第二波见顶', `🔴 第二波见顶：近期量能接近第一波高潮，资金兑现出逃，止盈`]);

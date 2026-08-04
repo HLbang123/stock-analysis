@@ -29,6 +29,7 @@ import { AiChat } from '@/components/ai/AiChat';
 import { ReasoningPanel } from '@/components/ai/ReasoningPanel';
 import { AiScreenPanel } from '@/components/ai/AiScreenPanel';
 import { TScorePanel, type TScorePanelResult } from '@/components/ai/TScorePanel';
+import { StockTrackStrip, VerdictCalibrationNote } from '@/components/ai/DeepCalibration';
 import { TermTooltip } from '@/components/ui/TermTooltip';
 import { generateId } from '@/components/ai/shared';
 import {
@@ -349,6 +350,7 @@ export default function AiPage() {
         stockCode: selectedCode, stockName: stock.name,
         entryDate: ctx.entryDate, entryPrice: ctx.quote.price,
         structured: finalResult.structured,
+        marketRegime: ctx.marketRegime,
       });
 
       // 持久化最终结果（避开 state 异步；流式中间态不写 localStorage）
@@ -532,6 +534,9 @@ export default function AiPage() {
         <p className="text-xs text-[var(--color-warning)] mb-1">
           深度分析耗时约1-3分钟，消耗较多Token
         </p>
+
+        {/* P1：本票历史战绩条（有深度分析落库记录才显示） */}
+        <StockTrackStrip stockCode={selectedCode} />
 
         {/* 用户看法（加入辩论，AI会验证但不迎合） */}
         <div className="flex flex-wrap items-center gap-2 mb-1 text-xs">
@@ -762,6 +767,13 @@ export default function AiPage() {
                       <p className="text-red-600 font-medium">{Number.isFinite(deepResult.structured.stopLoss) ? deepResult.structured.stopLoss.toFixed(2) : '--'}</p>
                     </div>
                   </div>
+
+                  {/* P0：同类建议历史校准（数据在决策时刻出现） */}
+                  <VerdictCalibrationNote
+                    stockCode={selectedCode}
+                    action={deepResult.structured.action}
+                    confidence={deepResult.structured.confidence}
+                  />
 
                   {/* 支撑压力位（结构位 + 黄金分割回撤） */}
                   {deepResult.levels && (deepResult.levels.supports.length > 0 || deepResult.levels.resistances.length > 0) && (

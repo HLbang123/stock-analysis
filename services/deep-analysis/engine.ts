@@ -134,6 +134,7 @@ export function parseVerdictContent(text: string, levels?: TradeLevels | null): 
 
 // ── 数据准备（抓行情/K线/筹码 + 算指标 + 拼三阶段 prompt）──────────────
 export interface DeepContext {
+  stockCode: string;
   stage1: { systemPrompt: string; userPrompt: string };
   stage2: { systemPrompt: string; userPrompt: string };
   stage3: { systemPrompt: string; userPrompt: string };
@@ -248,7 +249,7 @@ export async function prepareDeepContext(
 
   const entryDate = breadthLatest?.date || (rpsRes as any)?.calcDate || new Date().toISOString().slice(0, 10).replace(/-/g, '');
 
-  return { stage1, stage2, stage3, tradeLevels, marketRegime, tushareIssues, entryDate, quote };
+  return { stockCode: selectedCode, stage1, stage2, stage3, tradeLevels, marketRegime, tushareIssues, entryDate, quote };
 }
 
 // ── SSE 流式调用 + 解析 ─────────────────────────────────────────────
@@ -274,6 +275,7 @@ export async function runDeepAnalysisStream(opts: RunDeepOptions): Promise<RunDe
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({
+      stockCode: ctx.stockCode,
       stage1: ctx.stage1, stage2: ctx.stage2, stage3: ctx.stage3,
       baseUrl: cfg.baseUrl, apiKey: cfg.apiKey, model: cfg.model,
       completed: resumeCompleted,
@@ -402,6 +404,7 @@ export function buildDeepSuggestion(structured: DeepStructured | null): string {
 export async function saveDeepEval(params: {
   stockCode: string; stockName: string; entryDate: string; entryPrice: number;
   structured: DeepStructured | null;
+  marketRegime?: MarketRegime;
 }): Promise<void> {
   const { structured } = params;
   try {
@@ -415,6 +418,7 @@ export async function saveDeepEval(params: {
       position: structured && Number.isFinite(structured.position) ? structured.position : null,
       confidence: structured?.confidence,
       reasoning: structured?.reasoning,
+      marketRegime: params.marketRegime ?? null,
     });
   } catch {
     // 回测落库失败不阻断分析

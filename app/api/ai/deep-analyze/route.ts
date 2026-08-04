@@ -8,6 +8,7 @@ import {
   buildTechR2RebuttalPrompt, buildRiskR2RebuttalPrompt,
   buildManagerPrompt, buildVerdictSystemPrompt,
 } from '@/services/deepAnalysisPrompt';
+import { buildCalibrationNote } from '@/services/deep-analysis/calibration';
 
 // Jaccard 相似度（bigram 分词）— 检测辩论轮间的卡死
 function jaccardSimilarity(a: string, b: string): number {
@@ -33,7 +34,7 @@ const STUCK_THRESHOLD = 0.7;
 export async function POST(request: NextRequest) {
   try {
     const body = await request.json();
-    const { stage1, stage2, stage3, baseUrl, apiKey, model, completed, userView, userViewReason } = body;
+    const { stockCode, stage1, stage2, stage3, baseUrl, apiKey, model, completed, userView, userViewReason } = body;
 
     if (!baseUrl || !model) {
       return NextResponse.json(
@@ -241,8 +242,11 @@ export async function POST(request: NextRequest) {
           console.log('[Deep AI Proxy] Stage 3: Final Verdict');
           const s3System = stage3?.systemPrompt || buildVerdictSystemPrompt();
           const userViewVerdict = userView ? `\n\n[用户观点] 用户当前${userView}，理由：${userViewReason || '未说明'}。请在决策理由中评价用户观点是否成立（用数据说话，不要迎合用户）。` : '';
+          // P2：历史校准注入（真实回测胜率，拼在 ## 分析师报告 前；样本不足/失败返回空串）
+          const calibrationNote = await buildCalibrationNote(stockCode);
           const s3User = [
             stage3?.userPrompt?.split('## 分析师报告')[0]?.trim() || '',
+            calibrationNote,
             `## 分析师报告\n${stage1Output}`,
             `## 多空辩论\n${stage2Output}`,
             userViewVerdict,

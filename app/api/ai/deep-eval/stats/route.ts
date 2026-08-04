@@ -145,6 +145,73 @@ export async function GET(_request: NextRequest) {
       { label: '≥41%', min: 41, max: null },
     ]);
 
+    // ④ 大盘环境分桶 × T+5（P3；旧数据 marketRegime 为 NULL → unknown 桶）
+    const byRegimeMap = new Map<string, Map<string, { count: number; wins: number; sumReturn: number }>>();
+    for (const r of records) {
+      const e5 = r.evals.find((e) => e.nDays === 5 && e.returnPct != null);
+      if (!e5) continue;
+      const regime = r.marketRegime ?? 'unknown';
+      let m = byRegimeMap.get(regime);
+      if (!m) { m = new Map(); byRegimeMap.set(regime, m); }
+      const g = m.get(r.action) ?? { count: 0, wins: 0, sumReturn: 0 };
+      g.count++;
+      g.sumReturn += e5.returnPct!;
+      if (isWin(r.action, e5.returnPct!)) g.wins++;
+      m.set(r.action, g);
+    }
+    const byRegime = ['strong', 'neutral', 'weak', 'unknown'].flatMap((regime) => {
+      const m = byRegimeMap.get(regime);
+      if (!m) return [];
+      return Array.from(m.entries()).map(([action, g]) => ({
+        regime,
+        action,
+        count: g.count,
+        winRate: rate(g.wins, g.count),
+        avgReturn: g.count > 0 ? Math.round((g.sumReturn / g.count) * 100) / 100 : null,
+      }));
+    });
+
+    // ⑤ 优质买入建议榜（P5）：「买入」建议 + 该票历史买入胜率背书 + 本次 T+5 结果
+    // 高胜率 = 该票历史买入建议 T+5 胜率 ≥50%（样本≥2）；非常建议 = 高置信度
+    const perStockBuy = new Map<string, { count: number; wins: number }>();
+    for (const r of records) {
+      if (r.action !== '买入') continue;
+      const e5 = r.evals.find((e) => e.nDays === 5 && e.returnPct != null);
+      if (!e5) continue;
+      const g = perStockBuy.get(r.stockCode) ?? { count: 0, wins: 0 };
+      g.count++;
+      if (e5.returnPct! > 0) g.wins++;
+      perStockBuy.set(r.stockCode, g);
+    }
+    const topPicks = records
+      .filter((r) => r.action === '买入')
+      .map((r) => {
+        const g = perStockBuy.get(r.stockCode);
+        const e5 = r.evals.find((e) => e.nDays === 5);
+        return {
+          stockCode: r.stockCode,
+          stockName: r.stockName,
+          entryDate: r.entryDate,
+          entryPrice: r.entryPrice,
+          confidence: r.confidence,
+          position: r.position,
+          targetHigh: r.targetHigh,
+          stopLoss: r.stopLoss,
+          marketRegime: r.marketRegime,
+          reasoning: r.reasoning?.slice(0, 80) ?? null,
+          trackCount: g?.count ?? 0,
+          trackWinRate: g && g.count > 0 ? Math.round((g.wins / g.count) * 1000) / 10 : null,
+          t5Return: e5?.returnPct ?? null,
+        };
+      })
+      // 排序：有历史胜率的优先（高胜率在前），同档按置信度，再按日期
+      .sort((a, b) =>
+        (b.trackWinRate ?? -1) - (a.trackWinRate ?? -1)
+        || (b.confidence ?? 0) - (a.confidence ?? 0)
+        || b.entryDate.localeCompare(a.entryDate)
+      )
+      .slice(0, 30);
+
     return NextResponse.json({
       summary: {
         primaryN: 5,
@@ -165,6 +232,8 @@ export async function GET(_request: NextRequest) {
       byAction,
       confidenceBuckets,
       positionBuckets,
+      byRegime,
+      topPicks,
     });
   } catch (e: any) {
     console.error('[api/ai/deep-eval/stats]', e);

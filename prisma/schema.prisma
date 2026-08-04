@@ -317,6 +317,7 @@ model DeepAnalysisRecord {
   stopLoss    Float?  @map("stop_loss")
   position    Float?
   confidence  Int?
+  marketRegime String? @map("market_regime") @db.VarChar(8) // 分析时大盘环境 strong/neutral/weak（P3 环境分桶，旧数据为 NULL）
   reasoning   String? @db.VarChar(500)
   createdAt   String  @map("created_at") @db.VarChar(32) // ISO
   evals       DeepAnalysisEval[]

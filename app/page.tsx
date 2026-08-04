@@ -86,6 +86,8 @@ export default function HomePage() {
       // 量能维度：至少一条买入信号为"放量确认" → 档位 +1
       const buyVolumeBoost = buyAlerts.some(hasVolumeConfirmed) ? 1 : 0;
       const tierScore = buyScore + buyVolumeBoost;
+      // 卡面结论方向：有有效卖出信号时卖出优先（与 groupTone 同口径），此时头部不再挂红色看多徽章，避免红绿打架
+      const hasActiveSell = activeAlerts.some(a => !isBuyRule(a.ruleId) && !REFERENCE_RULE_IDS.has(a.ruleId));
       return {
         stockCode,
         stockName: stockAlerts[0].stockName,
@@ -97,7 +99,7 @@ export default function HomePage() {
         buyScore,
         buyVolumeBoost,
         tierScore,
-        buyTier: tierScore > 0 ? buyTier(tierScore) : null,
+        buyTier: tierScore > 0 && !hasActiveSell ? buyTier(tierScore) : null,
         worstLevel,
         latestTime: Math.max(...stockAlerts.map(a => a.triggeredAt))
       };
@@ -126,6 +128,8 @@ export default function HomePage() {
         : isBuyRule(alert.ruleId)
           ? 'bg-[var(--color-up)]'
           : 'bg-[var(--color-down)]';
+    // 文案里烘焙的方向 emoji（🔴/🟢/🟡/⚠️）与左侧色条、整卡着色重复，渲染时剥掉
+    const message = alert.alertMessage.replace(/^(🔴|🟢|🟡|🔵|⚠️)\s*/, '');
     return (
       <div
         key={alert.id}
@@ -136,7 +140,7 @@ export default function HomePage() {
       >
         <span className={cn("w-1 rounded-full shrink-0", toneBar)} />
         <div className={cn("flex-1 min-w-0", alert.isExpired && "line-through")}>
-          <p className="text-gray-800 dark:text-gray-200">{alert.alertMessage}</p>
+          <p className="text-gray-800 dark:text-gray-200">{message}</p>
           <p className="text-xs text-gray-500 dark:text-gray-400 mt-0.5">建议：{alert.suggestion}</p>
         </div>
       </div>
@@ -356,13 +360,13 @@ export default function HomePage() {
                   {/* 参考级弱提醒（R14/R15 筹码峰） */}
                   {group.referenceAlerts.map(alert => renderAlertRow(alert))}
 
-                  {/* 买入信号：≥2 条聚合成"共振" */}
+                  {/* 买入信号：≥2 条聚合成"共振"（中性边框，方向感只留标题红点，避免绿卡上一整块红） */}
                   {group.buyResonance ? (
-                    <div className="rounded-[var(--radius-md)] bg-white/70 dark:bg-gray-900/50 border border-[var(--color-up-border)] overflow-hidden">
+                    <div className="rounded-[var(--radius-md)] bg-white/70 dark:bg-gray-900/50 border border-black/10 dark:border-white/10 overflow-hidden">
                       <button
                         type="button"
                         onClick={(e) => { e.stopPropagation(); toggleBuyExpand(group.stockCode); }}
-                        className="w-full flex items-center gap-2 text-sm px-2.5 py-2 text-left hover:bg-[var(--color-up)]/5 transition"
+                        className="w-full flex items-center gap-2 text-sm px-2.5 py-2 text-left hover:bg-black/5 dark:hover:bg-white/5 transition"
                       >
                         <span className="w-1.5 h-1.5 rounded-full bg-[var(--color-up)] shrink-0" />
                         <span className="font-medium text-[var(--color-up)] whitespace-nowrap">买入共振 · {group.buyAlerts.length}条</span>
