@@ -9,7 +9,7 @@ import { forwardRef, type InputHTMLAttributes, type SelectHTMLAttributes, type T
 import { cn } from '@/lib/utils';
 
 const baseCls =
-  'border border-gray-200 dark:border-gray-700 rounded-lg bg-white dark:bg-gray-800 text-sm text-gray-900 dark:text-gray-100 focus:outline-none focus:ring-2 focus:ring-blue-500 placeholder:text-gray-400';
+  'border border-[var(--border)] rounded-[var(--radius-md)] bg-white dark:bg-gray-800 text-sm text-gray-900 dark:text-gray-100 focus:outline-none focus:ring-2 focus:ring-[var(--color-accent)] placeholder:text-gray-400';
 
 interface InputProps extends InputHTMLAttributes<HTMLInputElement> {
   /** 占满宽度，默认 true */

@@ -1,6 +1,6 @@
 import { KLineData, RealtimeQuote, AlertRule, RuleCheckResult } from '@/types';
 import { calculateMA as calcMAValues, calcRSISeries } from '@/lib/indicators';
-import { splitKLines } from '@/lib/stock-helpers';
+import { splitKLines, beijingTodayStr, intradayVolumePace } from '@/lib/stock-helpers';
 import type { ChipDistribution } from '@/lib/chip';
 
 /**
@@ -28,6 +28,19 @@ function calculateMaxVolume(kLines: KLineData[], period: number): number {
   if (kLines.length < period) return 0;
   const slice = kLines.slice(-period);
   return Math.max(...slice.map(k => k.volume));
+}
+
+/**
+ * 当日起始根 bar 的"等效全日量"：盘中合成 bar 只是半天累积量，
+ * 除以时间进度系数折算（非今日 bar / 盘后 pace=1 时原样返回）。
+ * 所有"今日量 vs 基线"的放量/缩量判断一律用它，否则上午漏报放量、盘中误报缩量。
+ */
+function effectiveTodayVolume(kLines: KLineData[], quote: RealtimeQuote | null): number {
+  const today = kLines[kLines.length - 1];
+  if (!today) return 0;
+  if (today.date !== beijingTodayStr()) return today.volume; // 周末/节假日：最后一根是已完成日K
+  const pace = intradayVolumePace(quote?.updateTime);
+  return pace >= 1 ? today.volume : today.volume / pace;
 }
 
 /**
@@ -221,7 +234,8 @@ function checkTopPattern(kLines: KLineData[], quote: RealtimeQuote | null, rule:
   const prev1 = kLines[idx - 1];
   const shape = classifyCandle(today);
   const avg5 = calculateAvgVolume(kLines.slice(0, -1), 5);
-  const isHighVol = avg5 > 0 && today.volume > avg5 * 1.2;
+  const effVol = effectiveTodayVolume(kLines, quote); // 盘中折算等效全日量
+  const isHighVol = avg5 > 0 && effVol > avg5 * 1.2;
   const uptrend = isUptrendRecently(kLines, idx);
   const threshold = rule.thresholdValue ?? 1.20;
 
@@ -234,8 +248,8 @@ function checkTopPattern(kLines: KLineData[], quote: RealtimeQuote | null, rule:
     const recentMax = Math.max(...kLines.slice(-10).map(k => k.volume));
     if (firstWaveMax > 0 && recentMax >= firstWaveMax * 0.9) secondWave = true;
   }
-  const isPeak = today.volume >= maxYear * 0.95 || (max5 > 0 && today.volume > max5 * 1.2);
-  const isVolumeAbnormal = avg5 > 0 && today.volume > avg5 * threshold;
+  const isPeak = effVol >= maxYear * 0.95 || (max5 > 0 && effVol > max5 * 1.2);
+  const isVolumeAbnormal = avg5 > 0 && effVol > avg5 * threshold;
 
   // [severity, label, message]
   const triggered: Array<[number, string, string]> = [];
@@ -286,7 +300,7 @@ function checkTopPattern(kLines: KLineData[], quote: RealtimeQuote | null, rule:
   }
   // 巨量异动（最弱）
   if (isVolumeAbnormal && !isPeak) {
-    triggered.push([1, '巨量异动', `⚠️ 巨量异动：成交量 ${today.volume}，近5日均量 ${Math.round(avg5)}，放量 ${Math.round(today.volume / avg5 * 100 - 100)}%`]);
+    triggered.push([1, '巨量异动', `⚠️ 巨量异动：成交量 ${today.volume}，近5日均量 ${Math.round(avg5)}，放量 ${Math.round(effVol / avg5 * 100 - 100)}%`]);
   }
 
   if (triggered.length === 0) return { triggered: false };
@@ -318,7 +332,8 @@ function checkTieredExit(kLines: KLineData[], quote: RealtimeQuote | null, rule:
   const ma10 = calculateMA(kLines, 10);
   const ma13 = calculateMA(kLines, 13);
   const avg5 = calculateAvgVolume(kLines.slice(0, -1), 5);
-  const volRatio = avg5 > 0 ? today.volume / avg5 : 1;
+  const effVol = effectiveTodayVolume(kLines, quote); // 盘中折算等效全日量
+  const volRatio = avg5 > 0 ? effVol / avg5 : 1;
   const trendLine = kLines.slice(-10).reduce((s, k) => s + k.low, 0) / 10;
 
   // [severity, label, message]
@@ -351,7 +366,7 @@ function checkTieredExit(kLines: KLineData[], quote: RealtimeQuote | null, rule:
   // 破趋势线+破MA60 — 清仓，牛熊分界
   if (kLines.length >= 60) {
     const ma60 = calculateMA(kLines, 60)[idx];
-    if (today.close < trendLine && prev1.close < trendLine && today.volume > prev1.volume * 1.05 && ma60 > 0 && today.close < ma60) {
+    if (today.close < trendLine && prev1.close < trendLine && effVol > prev1.volume * 1.05 && ma60 > 0 && today.close < ma60) {
       triggered.push([4, '破趋势线+破MA60', `🔴🔴 趋势破位+破MA60：收盘 ${today.close}，趋势支撑 ${trendLine.toFixed(2)}，MA60 ${ma60.toFixed(2)}——牛熊分界已破，清仓观望`]);
     }
   }
@@ -374,12 +389,12 @@ function checkTieredExit(kLines: KLineData[], quote: RealtimeQuote | null, rule:
   }
 
   // 跌破5日线 — 减仓
-  if (!isNaN(ma5[idx]) && today.close < ma5[idx] && today.volume > prev1.volume * 1.1) {
-    triggered.push([2, '跌破5日线', `${volRatio > 2.0 ? '🔴' : '⚠️'} 破五日线：收盘 ${today.close}，MA5 ${ma5[idx].toFixed(2)}，放量跌破`]);
+  if (!isNaN(ma5[idx]) && today.close < ma5[idx] && effVol > prev1.volume * 1.1) {
+    triggered.push([2, '跌破5日线', `${volRatio > 2.0 ? '🔴 放量' : '⚠️ 带量'}跌破5日线：收盘 ${today.close}，MA5 ${ma5[idx].toFixed(2)}`]);
   }
 
   // 破趋势线（未破MA60）— 减仓
-  if (kLines.length >= 60 && today.close < trendLine && prev1.close < trendLine && today.volume > prev1.volume * 1.05) {
+  if (kLines.length >= 60 && today.close < trendLine && prev1.close < trendLine && effVol > prev1.volume * 1.05) {
     triggered.push([2, '破趋势线', `🔴 趋势破位：收盘 ${today.close}，趋势支撑 ${trendLine.toFixed(2)}，放量跌破`]);
   }
 
@@ -389,7 +404,7 @@ function checkTieredExit(kLines: KLineData[], quote: RealtimeQuote | null, rule:
   }
 
   // 缩量破位 — 观望
-  if (!isNaN(ma5[idx]) && today.close < ma5[idx] && today.volume < prev1.volume * 0.9 && prev1.close < ma5[idx - 1]) {
+  if (!isNaN(ma5[idx]) && today.close < ma5[idx] && effVol < prev1.volume * 0.9 && prev1.close < ma5[idx - 1]) {
     triggered.push([0, '缩量破位', `🟡 缩量破位：连续两日收<MA5，缩量，减仓观望`]);
   }
 
@@ -455,7 +470,7 @@ function checkMa5Cross13Golden(kLines: KLineData[], quote: RealtimeQuote | null,
 
   const today = kLines[idx];
   const avg5 = calculateAvgVolume(kLines.slice(0, -1), 5);
-  const volConfirmed = avg5 > 0 && today.volume > avg5 * 1.2;
+  const volConfirmed = avg5 > 0 && effectiveTodayVolume(kLines, quote) > avg5 * 1.2;
 
   let aboveMa55 = true; // 数据不足时不以此降级
   if (kLines.length >= 55) {
@@ -493,7 +508,7 @@ function checkMa5Cross10Golden(kLines: KLineData[], quote: RealtimeQuote | null,
 
   const today = kLines[idx];
   const avg5 = calculateAvgVolume(kLines.slice(0, -1), 5);
-  const volConfirmed = avg5 > 0 && today.volume > avg5 * 1.2;
+  const volConfirmed = avg5 > 0 && effectiveTodayVolume(kLines, quote) > avg5 * 1.2;
 
   const message = volConfirmed
     ? `🟢 5日金叉10日：MA5 ${ma5[idx].toFixed(2)} > MA10 ${ma10[idx].toFixed(2)}，放量确认，短线启动`
@@ -575,7 +590,7 @@ function checkRsiBottom(kLines: KLineData[], quote: RealtimeQuote | null, rule: 
 }
 
 /**
- * R09: 反包入场 — 回调后放量反包突破
+ * R09: 反包入场 — 回调后放量反包突破（放量为硬条件：等效全日量 > 昨日×1.2）
  */
 function checkReboundEntry(kLines: KLineData[], quote: RealtimeQuote | null, rule: AlertRule): RuleCheckResult {
   if (kLines.length < 20) return { triggered: false };
@@ -585,17 +600,18 @@ function checkReboundEntry(kLines: KLineData[], quote: RealtimeQuote | null, rul
   const today = kLines[idx];
   const prev1 = kLines[idx - 1];
   const change = calculateChangePercent(today.close, prev1.close);
+  const volConfirmed = effectiveTodayVolume(kLines, quote) > prev1.volume * 1.2;
 
   const recentMin = Math.min(...recent15.map(k => k.low));
   const recentMaxBefore = Math.max(...recent15.slice(0, -1).map(k => k.high));
   const hasPullback = (recentMaxBefore - recentMin) / recentMaxBefore > 0.05;
 
-  if (change >= 5.0 && hasPullback && today.close >= recentMaxBefore * 0.98) {
+  if (change >= 5.0 && hasPullback && today.close >= recentMaxBefore * 0.98 && volConfirmed) {
     return {
       triggered: true,
       ruleId: 'R09',
-      message: `🟢 反包入场：大涨 ${change.toFixed(2)}%，W型/C浪企稳反包`,
-      extraData: JSON.stringify({ change, volConfirmed: true }),
+      message: `🟢 反包入场：大涨 ${change.toFixed(2)}%，放量反包，W型/C浪企稳突破`,
+      extraData: JSON.stringify({ change, volConfirmed }),
       barIndex: idx
     };
   }
@@ -619,7 +635,7 @@ function checkGoldenRebound(kLines: KLineData[], quote: RealtimeQuote | null, ru
   const ratio = (today.close - low) / (high - low);
   const change = calculateChangePercent(today.close, prev1.close);
 
-  if (ratio >= 0.382 && ratio <= 0.618 && change > 3.0 && today.volume > prev1.volume * 1.2) {
+  if (ratio >= 0.382 && ratio <= 0.618 && change > 3.0 && effectiveTodayVolume(kLines, quote) > prev1.volume * 1.2) {
     return {
       triggered: true,
       ruleId: 'R10',
@@ -641,12 +657,13 @@ function checkBoxSignal(kLines: KLineData[], quote: RealtimeQuote | null, rule: 
   const today = kLines[idx];
   const prev1 = kLines[idx - 1];
   const avgVol20 = calculateAvgVolume(kLines.slice(0, -1), 20);
+  const effVol = effectiveTodayVolume(kLines, quote); // 盘中折算等效全日量
 
   // 箱体突破
   const { high: boxHigh40, range: range40 } = getBoxRange(kLines.slice(0, -1), 40);
   if (range40 <= 0.20) {
     const breakoutPct = (today.close - boxHigh40) / boxHigh40 * 100;
-    if (breakoutPct >= 3.0 && avgVol20 > 0 && today.volume >= avgVol20 * 1.2) {
+    if (breakoutPct >= 3.0 && avgVol20 > 0 && effVol >= avgVol20 * 1.2) {
       return {
         triggered: true,
         ruleId: 'R11',
@@ -665,7 +682,7 @@ function checkBoxSignal(kLines: KLineData[], quote: RealtimeQuote | null, rule: 
     const boxRange = (boxHigh - boxLow) / boxLow;
     if (boxRange <= 0.20) {
       const change = calculateChangePercent(today.close, prev1.close);
-      if (change >= 1.0 && change <= 4.0 && avgVol20 > 0 && today.volume > avgVol20 * 1.3) {
+      if (change >= 1.0 && change <= 4.0 && avgVol20 > 0 && effVol > avgVol20 * 1.3) {
         return {
           triggered: true,
           ruleId: 'R11',
@@ -698,7 +715,7 @@ function checkMaBullAlignment(kLines: KLineData[], quote: RealtimeQuote | null, 
 
   // 放量确认：量比≥1.2 → 多头格局强势；缩量 → 弱势多头需确认
   const avg5 = calculateAvgVolume(kLines.slice(0, -1), 5);
-  const volRatio = avg5 > 0 ? today.volume / avg5 : 0;
+  const volRatio = avg5 > 0 ? effectiveTodayVolume(kLines, quote) / avg5 : 0;
   const volConfirmed = volRatio >= 1.2;
   const message = volConfirmed
     ? `🟢 均线多头排列：MA5 ${ma5[idx].toFixed(2)} > MA13 ${ma13[idx].toFixed(2)} > MA55 ${ma55[idx].toFixed(2)}，放量确认，多头格局确立`
@@ -734,7 +751,7 @@ function checkHoldMa5(kLines: KLineData[], quote: RealtimeQuote | null, rule: Al
 
   // 量价配合：温和放量(1.0~1.8)量价配合好；暴量(>1.8)注意赶顶/放量滞涨；缩量确认度一般
   const avg5 = calculateAvgVolume(kLines.slice(0, -1), 5);
-  const volRatio = avg5 > 0 ? today.volume / avg5 : 0;
+  const volRatio = avg5 > 0 ? effectiveTodayVolume(kLines, quote) / avg5 : 0;
   const volConfirmed = volRatio >= 1.0 && volRatio <= 1.8;
   let message: string;
   if (volConfirmed) {

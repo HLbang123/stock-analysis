@@ -14,13 +14,13 @@ export const signed = (v: number | null | undefined, d = 2) => (v == null ? '--'
 
 /** A股语义：涨红跌绿 */
 export const toneCls = (v: number | null | undefined) =>
-  v == null ? 'text-gray-400' : v >= 0 ? 'text-red-600' : 'text-green-600';
+  v == null ? 'text-gray-400' : v >= 0 ? 'text-[var(--color-up)]' : 'text-[var(--color-down)]';
 
 export function Metric({ label, value, tone }: { label: string; value: string; tone?: 'up' | 'down' }) {
   return (
     <div>
       <div className="text-xs text-gray-400">{label}</div>
-      <div className={cn('text-lg font-semibold mt-0.5', tone === 'up' ? 'text-red-600' : tone === 'down' ? 'text-green-600' : 'text-gray-900 dark:text-white')}>{value}</div>
+      <div className={cn('text-lg font-semibold mt-0.5', tone === 'up' ? 'text-[var(--color-up)]' : tone === 'down' ? 'text-[var(--color-down)]' : 'text-gray-900 dark:text-white')}>{value}</div>
     </div>
   );
 }
@@ -30,7 +30,7 @@ export function StatsHeader({ note, onRefresh, loading }: { note: ReactNode; onR
   return (
     <div className="flex items-center justify-between">
       <p className="text-xs text-gray-500 dark:text-gray-400">{note}</p>
-      <button onClick={onRefresh} disabled={loading} className="text-xs text-purple-600 flex items-center gap-1 disabled:opacity-50">
+      <button onClick={onRefresh} disabled={loading} className="text-xs text-[var(--color-brand)] flex items-center gap-1 disabled:opacity-50">
         {loading ? <Loader2 className="w-3.5 h-3.5 animate-spin" /> : <RefreshCw className="w-3.5 h-3.5" />} 刷新
       </button>
     </div>

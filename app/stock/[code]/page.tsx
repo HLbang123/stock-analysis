@@ -70,7 +70,7 @@ export default function StockDetailPage() {
       ]);
 
       if (!quoteData) {
-        setError('获取行情失败，请检查股票代码');
+        setError('获取行情失败，请检查标的代码');
         return;
       }
 
@@ -217,12 +217,9 @@ export default function StockDetailPage() {
           <RefreshCw className="w-5 h-5" />
         </button>
         {stock ? (
-          <button
-            onClick={() => removeFromWatchlist(code)}
-            className="px-4 py-2 text-sm bg-red-50 text-red-600 rounded-lg hover:bg-red-100 transition"
-          >
+          <Button size="sm" variant="secondary" className="text-[var(--color-danger)]" onClick={() => removeFromWatchlist(code)}>
             移除自选
-          </button>
+          </Button>
         ) : (
           <Button
             size="sm"
@@ -251,60 +248,47 @@ export default function StockDetailPage() {
       ) : (
         <>
           {/* 实时行情卡片 */}
-          {quote && (
+          {quote && (() => {
+            const up = quote.changePercent >= 0;
+            const tone = up ? 'text-[var(--color-up)]' : 'text-[var(--color-down)]';
+            const amplitude = quote.preClose ? ((quote.high - quote.low) / quote.preClose) * 100 : null;
+            return (
             <Card className="p-5 mb-4">
-              <div className="flex items-end justify-between mb-4">
-                <div>
-                  <p className={cn(
-                    "text-3xl font-bold",
-                    quote.changePercent >= 0 ? "text-red-500" : "text-green-500"
-                  )}>
+              {/* hero：大价格 + 涨跌 chip + 昨收 */}
+              <div className="flex items-end justify-between mb-5">
+                <div className="flex items-end gap-3 flex-wrap">
+                  <p className={cn("text-4xl font-bold leading-none tracking-tight", tone)}>
                     {formatPrice(quote.price)}
                   </p>
-                  <p className={cn(
-                    "text-lg mt-1",
-                    quote.changePercent >= 0 ? "text-red-500" : "text-green-500"
-                  )}>
-                    {formatChange(quote.changePercent)}
-                  </p>
+                  <div className="flex items-center gap-1.5 pb-0.5">
+                    <span className={cn(
+                      "px-1.5 py-0.5 rounded-[var(--radius-sm)] text-sm font-semibold",
+                      up ? "bg-[var(--color-up-soft)] text-[var(--color-up)]" : "bg-[var(--color-down-soft)] text-[var(--color-down)]"
+                    )}>
+                      {formatChange(quote.changePercent)}
+                    </span>
+                    <span className={cn("text-sm font-medium", tone)}>
+                      {quote.change > 0 ? '+' : ''}{quote.change?.toFixed(2)}
+                    </span>
+                  </div>
                 </div>
-                <div className="text-right text-sm text-gray-500">
-                  <p>昨收: {formatPrice(quote.preClose)}</p>
-                </div>
+                <p className="text-xs text-gray-400 pb-0.5">
+                  昨收 <span className="text-gray-600 dark:text-gray-300 font-medium">{formatPrice(quote.preClose)}</span>
+                </p>
               </div>
 
-              <div className="grid grid-cols-3 gap-3 text-sm">
-                <div>
-                  <p className="text-gray-500">开盘</p>
-                  <p className={cn("font-medium", quote.open >= quote.preClose ? "text-red-500" : "text-green-500")}>
-                    {formatPrice(quote.open)}
-                  </p>
-                </div>
-                <div>
-                  <p className="text-gray-500">最高</p>
-                  <p className="font-medium text-red-500">{formatPrice(quote.high)}</p>
-                </div>
-                <div>
-                  <p className="text-gray-500">最低</p>
-                  <p className="font-medium text-green-500">{formatPrice(quote.low)}</p>
-                </div>
-                <div>
-                  <p className="text-gray-500">成交量</p>
-                  <p className="font-medium">{formatVolume(quote.volume)}</p>
-                </div>
-                <div>
-                  <p className="text-gray-500">成交额</p>
-                  <p className="font-medium">{quote.amount ? formatVolume(quote.amount) : '--'}</p>
-                </div>
-                <div>
-                  <p className="text-gray-500">涨跌额</p>
-                  <p className={cn("font-medium", quote.change >= 0 ? "text-red-500" : "text-green-500")}>
-                    {quote.change > 0 ? '+' : ''}{quote.change?.toFixed(2)}
-                  </p>
-                </div>
+              {/* 次级指标网格：小标签 + 中数值 */}
+              <div className="grid grid-cols-3 gap-x-3 gap-y-4 pt-4 border-t border-[var(--border)]">
+                <QuoteStat label="开盘" value={formatPrice(quote.open)} tone={quote.open >= quote.preClose ? 'up' : 'down'} />
+                <QuoteStat label="最高" value={formatPrice(quote.high)} tone="up" />
+                <QuoteStat label="最低" value={formatPrice(quote.low)} tone="down" />
+                <QuoteStat label="成交量" value={formatVolume(quote.volume)} />
+                <QuoteStat label="成交额" value={quote.amount ? formatVolume(quote.amount) : '--'} />
+                <QuoteStat label="振幅" value={amplitude != null ? `${amplitude.toFixed(2)}%` : '--'} />
               </div>
             </Card>
-          )}
+            );
+          })()}
 
           {/* RPS + 趋势状态 */}
           <div className="flex flex-wrap items-center gap-2 mb-4">
@@ -330,10 +314,10 @@ export default function StockDetailPage() {
             )}
             {trendStatus && (
               <>
-                <span className={cn("px-2 py-1 rounded-lg text-xs font-medium", trendStatus.aboveMa55 ? "bg-red-50 text-red-600" : "bg-green-50 text-green-600")}>
+                <span className={cn("px-2 py-1 rounded-[var(--radius-md)] text-xs font-medium", trendStatus.aboveMa55 ? "bg-[var(--color-up-soft)] text-[var(--color-up)]" : "bg-[var(--color-down-soft)] text-[var(--color-down)]")}>
                   {trendStatus.aboveMa55 ? 'MA55上方 ✓' : 'MA55下方 ⚠'} ({trendStatus.ma55})
                 </span>
-                <span className={cn("px-2 py-1 rounded-lg text-xs font-medium", trendStatus.bullish ? "bg-red-50 text-red-600" : "bg-green-50 text-green-600")}>
+                <span className={cn("px-2 py-1 rounded-[var(--radius-md)] text-xs font-medium", trendStatus.bullish ? "bg-[var(--color-up-soft)] text-[var(--color-up)]" : "bg-[var(--color-down-soft)] text-[var(--color-down)]")}>
                   5/13{trendStatus.cross === 'golden' ? '金叉 ✓' : trendStatus.cross === 'death' ? '死叉 ⚠' : trendStatus.bullish ? '多头排列' : '空头排列'}
                 </span>
               </>
@@ -342,13 +326,13 @@ export default function StockDetailPage() {
 
           {/* 异动原因（当天有异动才显示） */}
           {anomaly && (
-            <Card className="p-4 mb-4 border-l-4 border-amber-400">
+            <Card className="p-4 mb-4 border-l-4 border-[var(--color-warning)]">
               <div className="flex items-center gap-2 mb-2">
                 <span className="text-sm font-semibold">🔥 今日异动</span>
-                <span className={cn("text-xs px-1.5 py-0.5 rounded font-medium",
-                  anomaly.tag_name === '涨停' ? "bg-red-100 text-red-700" :
-                  anomaly.tag_name === '跌停' ? "bg-green-100 text-green-700" :
-                  "bg-amber-100 text-amber-700")}>
+                <span className={cn("text-xs px-1.5 py-0.5 rounded-[var(--radius-sm)] font-medium",
+                  anomaly.tag_name === '涨停' ? "bg-[var(--color-up-soft)] text-[var(--color-up)]" :
+                  anomaly.tag_name === '跌停' ? "bg-[var(--color-down-soft)] text-[var(--color-down)]" :
+                  "bg-[var(--color-warning-soft)] text-[var(--color-warning)]")}>
                   {anomaly.tag_name}
                 </span>
                 {anomaly.keyword_list?.map((kw: string, i: number) => (
@@ -465,23 +449,23 @@ export default function StockDetailPage() {
               </div>
               <div className="grid grid-cols-2 gap-3 text-xs">
                 <div>
-                  <p className="text-green-600 font-medium mb-1.5">支撑位（下方）</p>
+                  <p className="text-[var(--color-down)] font-medium mb-1.5">支撑位（下方）</p>
                   <div className="space-y-1">
                     {srData.supports.map(l => (
-                      <div key={`s-${l.label}-${l.price}`} className="flex items-center justify-between bg-green-50/60 dark:bg-green-950/30 rounded px-2 py-1">
+                      <div key={`s-${l.label}-${l.price}`} className="flex items-center justify-between bg-[var(--color-down-soft)] rounded-[var(--radius-sm)] px-2 py-1">
                         <span className="text-gray-500">{l.label}</span>
-                        <span className="font-mono font-medium text-green-700 dark:text-green-400">{l.price.toFixed(2)}</span>
+                        <span className="font-mono font-medium text-[var(--color-down)]">{l.price.toFixed(2)}</span>
                       </div>
                     ))}
                   </div>
                 </div>
                 <div>
-                  <p className="text-red-600 font-medium mb-1.5">压力位（上方）</p>
+                  <p className="text-[var(--color-up)] font-medium mb-1.5">压力位（上方）</p>
                   <div className="space-y-1">
                     {srData.resistances.map(l => (
-                      <div key={`r-${l.label}-${l.price}`} className="flex items-center justify-between bg-red-50/60 dark:bg-red-950/30 rounded px-2 py-1">
+                      <div key={`r-${l.label}-${l.price}`} className="flex items-center justify-between bg-[var(--color-up-soft)] rounded-[var(--radius-sm)] px-2 py-1">
                         <span className="text-gray-500">{l.label}</span>
-                        <span className="font-mono font-medium text-red-700 dark:text-red-400">{l.price.toFixed(2)}</span>
+                        <span className="font-mono font-medium text-[var(--color-up)]">{l.price.toFixed(2)}</span>
                       </div>
                     ))}
                   </div>
@@ -502,7 +486,7 @@ export default function StockDetailPage() {
                   <div key={h.thscode} className="p-2 rounded-lg bg-gray-50 dark:bg-gray-800">
                     <div className="flex items-center justify-between">
                       <span className="text-xs text-gray-400">#{i + 1}</span>
-                      <span className="text-xs font-medium text-blue-600">{h.hold_ratio.toFixed(2)}%</span>
+                      <span className="text-xs font-medium text-[var(--color-accent)]">{h.hold_ratio.toFixed(2)}%</span>
                     </div>
                     <p className="text-sm font-medium mt-0.5 truncate">{h.stock_name}</p>
                     <p className="text-xs text-gray-400">{h.ticker}</p>
@@ -530,19 +514,20 @@ export default function StockDetailPage() {
                       )}
                     >
                       <div className="flex items-center gap-2 mb-1">
-                        <span className="text-sm font-medium">
-                          {rule?.level === 'CRITICAL' ? '🔴' : rule?.level === 'WARNING' ? '🟡' : '🔵'}
-                        </span>
+                        <span className={cn(
+                          "w-2 h-2 rounded-full shrink-0",
+                          rule?.level === 'CRITICAL' ? "bg-[var(--color-danger)]" : rule?.level === 'WARNING' ? "bg-[var(--color-warning)]" : "bg-[var(--color-accent)]"
+                        )} />
                         <span className="font-medium">{rule?.name || result.ruleId}</span>
                         {rule && (
                           <Badge variant={rule.level}>{rule.level}</Badge>
                         )}
                       </div>
-                      <p className="text-sm text-gray-600 dark:text-gray-400 ml-7">
+                      <p className="text-sm text-gray-600 dark:text-gray-400 ml-4">
                         {result.message}
                       </p>
                       {rule?.suggestion && (
-                        <p className="text-xs text-gray-500 mt-1 ml-7">
+                        <p className="text-xs text-gray-500 mt-1 ml-4">
                           建议: {rule.suggestion}
                         </p>
                       )}
@@ -592,11 +577,26 @@ export default function StockDetailPage() {
   );
 }
 
+/** hero 下方的次级指标：小标签 + 中数值，数字全局 tabular-nums */
+function QuoteStat({ label, value, tone }: { label: string; value: string; tone?: 'up' | 'down' }) {
+  return (
+    <div>
+      <p className="text-xs text-gray-400">{label}</p>
+      <p className={cn(
+        "text-sm font-semibold mt-0.5",
+        tone === 'up' ? "text-[var(--color-up)]" : tone === 'down' ? "text-[var(--color-down)]" : "text-gray-800 dark:text-gray-100"
+      )}>
+        {value}
+      </p>
+    </div>
+  );
+}
+
 function Metric({ label, value }: { label: string; value: string }) {
   return (
     <div>
       <p className="text-gray-400">{label}</p>
-      <p className="font-medium text-gray-700 dark:text-gray-300">{value}</p>
+      <p className="font-semibold text-gray-800 dark:text-gray-100">{value}</p>
     </div>
   );
 }

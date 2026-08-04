@@ -14,11 +14,13 @@ import { cn } from "@/lib/utils";
 
 type CardVariant = 'default' | 'bordered' | 'accent' | 'up' | 'down' | 'warning';
 
-interface CardProps {
+interface CardProps extends React.HTMLAttributes<HTMLDivElement> {
   className?: string;
   children: ReactNode;
   onClick?: () => void;
   variant?: CardVariant;
+  /** 整卡可点但内部嵌套按钮时用：渲染为 div 而非 button（避免 button 套 button） */
+  clickable?: boolean;
 }
 
 const variantCls: Record<CardVariant, string> = {
@@ -30,21 +32,33 @@ const variantCls: Record<CardVariant, string> = {
   warning: 'bg-[var(--color-warning-soft)] border border-[var(--color-warning)]/30',
 };
 
-export function Card({ className, children, onClick, variant = 'default' }: CardProps) {
-  const Component = onClick ? "button" : "div";
+export function Card({ className, children, onClick, variant = 'default', clickable, ...rest }: CardProps) {
+  const interactiveCls = "cursor-pointer text-left transition-shadow hover:shadow-[var(--shadow-hover)]";
+  const baseCls = cn("rounded-[var(--radius-lg)] p-[var(--space-card)]", variantCls[variant]);
+  if (onClick) {
+    // clickable：整卡可点但内部有嵌套按钮（如列表项带删除键），用 div 避免非法嵌套
+    if (clickable) {
+      return (
+        <div className={cn(baseCls, interactiveCls, className)} onClick={onClick} {...rest}>
+          {children}
+        </div>
+      );
+    }
+    return (
+      <button
+        type="button"
+        className={cn(baseCls, interactiveCls, className)}
+        onClick={onClick}
+        {...(rest as React.ButtonHTMLAttributes<HTMLButtonElement>)}
+      >
+        {children}
+      </button>
+    );
+  }
   return (
-    <Component
-      className={cn(
-        "rounded-[var(--radius-lg)] p-[var(--space-card)]",
-        variantCls[variant],
-        onClick && "cursor-pointer text-left transition-shadow hover:shadow-[var(--shadow-hover)]",
-        className
-      )}
-      onClick={onClick}
-      type={onClick ? "button" : undefined}
-    >
+    <div className={cn(baseCls, className)} {...rest}>
       {children}
-    </Component>
+    </div>
   );
 }
 

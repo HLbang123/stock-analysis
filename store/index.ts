@@ -3,9 +3,10 @@ import { persist } from 'zustand/middleware';
 import { Stock, AlertRecord, AlertRule, WatchlistGroup } from '@/types';
 import { generateId } from '@/lib/utils';
 
-/** 默认分组固定 id，不可删除/重命名 */
-export const DEFAULT_GROUP_ID = 'default';
-export const DEFAULT_GROUP_NAME = '默认分组';
+/**
+ * 自选不分组时 groupId 为 undefined（未分组，只在「全部」下展示）。
+ * 2026-08-04 起取消默认分组：迁移逻辑把历史 'default' 组/归属清成未分组。
+ */
 
 interface StockState {
   // 自选股
@@ -15,7 +16,7 @@ interface StockState {
   removeFromWatchlist: (code: string) => void;
   isInWatchlist: (code: string) => boolean;
   updateStockPosition: (code: string, positionPercent: number | undefined) => void;
-  moveStockToGroup: (code: string, groupId: string) => void;
+  moveStockToGroup: (code: string, groupId: string | undefined) => void;
   addGroup: (name: string) => boolean;
   renameGroup: (groupId: string, name: string) => boolean;
   deleteGroup: (groupId: string) => void;
@@ -42,11 +43,11 @@ export const useStockStore = create<StockState>()(
     (set, get) => ({
       // 自选股
       watchlist: [],
-      groups: [{ id: DEFAULT_GROUP_ID, name: DEFAULT_GROUP_NAME }],
+      groups: [],
       addToWatchlist: (stock, groupId) => {
         const { watchlist } = get();
         if (!watchlist.some(s => s.code === stock.code)) {
-          set({ watchlist: [...watchlist, { ...stock, groupId: groupId ?? DEFAULT_GROUP_ID }] });
+          set({ watchlist: [...watchlist, { ...stock, groupId }] });
         }
       },
       removeFromWatchlist: (code) => {
@@ -69,7 +70,7 @@ export const useStockStore = create<StockState>()(
       moveStockToGroup: (code, groupId) => {
         set({
           watchlist: get().watchlist.map(s =>
-            s.code === code ? { ...s, groupId } : s
+            s.code === code ? { ...s, groupId: groupId || undefined } : s
           ),
         });
       },
@@ -82,18 +83,18 @@ export const useStockStore = create<StockState>()(
       },
       renameGroup: (groupId, name) => {
         const trimmed = name.trim();
-        if (!trimmed || trimmed.length > 12 || groupId === DEFAULT_GROUP_ID) return false;
+        if (!trimmed || trimmed.length > 12) return false;
         if (get().groups.some(g => g.id !== groupId && g.name === trimmed)) return false;
         set({ groups: get().groups.map(g => g.id === groupId ? { ...g, name: trimmed } : g) });
         return true;
       },
       deleteGroup: (groupId) => {
-        if (groupId === DEFAULT_GROUP_ID) return;
         const { groups, watchlist } = get();
         set({
           groups: groups.filter(g => g.id !== groupId),
+          // 组内自选变未分组（仍可在「全部」看到）
           watchlist: watchlist.map(s =>
-            s.groupId === groupId ? { ...s, groupId: DEFAULT_GROUP_ID } : s
+            s.groupId === groupId ? { ...s, groupId: undefined } : s
           ),
         });
       },
@@ -157,20 +158,19 @@ export const useStockStore = create<StockState>()(
         rules: state.rules,
         groups: state.groups,
       }),
-      // 旧数据(version 0)升级：自建组初始化 + 存量自选逐项补默认分组
-      version: 1,
+      // 旧数据升级：v2 移除默认分组——历史 'default' 组删除，其成员归位未分组；
+      // v0 无分组概念，groups 置空、groupId 保持 undefined 即可
+      version: 2,
       migrate: (persistedState: any) => {
         const state = persistedState ?? {};
         return {
           ...state,
-          groups:
-            Array.isArray(state.groups) && state.groups.length > 0
-              ? state.groups
-              : [{ id: DEFAULT_GROUP_ID, name: DEFAULT_GROUP_NAME }],
-          watchlist: (state.watchlist ?? []).map((s: Stock) => ({
-            ...s,
-            groupId: s.groupId ?? DEFAULT_GROUP_ID,
-          })),
+          groups: (Array.isArray(state.groups) ? state.groups : []).filter(
+            (g: WatchlistGroup) => g.id !== 'default'
+          ),
+          watchlist: (state.watchlist ?? []).map((s: Stock) =>
+            s.groupId === 'default' ? { ...s, groupId: undefined } : s
+          ),
         };
       },
     }

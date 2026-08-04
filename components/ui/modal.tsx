@@ -24,7 +24,8 @@ interface ModalProps {
 export function Modal({ title, onClose, variant = 'sheet', maxWidth = 'sm:max-w-lg', children }: ModalProps) {
   const overlayCls =
     variant === 'sheet'
-      ? 'fixed inset-0 z-50 flex items-end sm:items-center justify-center p-0 sm:p-4 bg-black/40'
+      // z-[60]：必须高于底部导航(z-50)，否则移动端底部抽屉会被导航盖住
+      ? 'fixed inset-0 z-[60] flex items-end sm:items-center justify-center p-0 sm:p-4 bg-black/40'
       : 'fixed inset-0 z-[60] flex items-center justify-center p-4 bg-black/40';
 
   const panelCls =

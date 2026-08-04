@@ -1,9 +1,10 @@
 'use client';
 
-import { useState, useRef, useEffect } from 'react';
+import { useState, useRef, useEffect, useMemo } from 'react';
 import { useStockStore } from '@/store';
 import { useAiStore, AiProfile } from '@/store/ai-store';
-import { getRealtimeQuote, getKLineSina, getMinuteDataCached, getChipData, fetchMarketStatusNote } from '@/services/stockApi';
+import type { Stock } from '@/types';
+import { getRealtimeQuote, getKLineSina, getMinuteDataCached, getChipData, fetchMarketStatusNote, searchStocks, parseStockCode } from '@/services/stockApi';
 import { ALERT_RULES, checkAllRules } from '@/services/alertRules';
 import { buildTscoreSystemPrompt, buildTscoreUserPrompt } from '@/services/t-score/prompt';
 import { buildIntradayContext } from '@/services/t-score/intraday';
@@ -12,12 +13,13 @@ import { calculateIndicators } from '@/lib/indicators';
 import { isETF } from '@/lib/identify';
 import { cn } from '@/lib/utils';
 import { buildUpdatedKLines } from '@/lib/stock-helpers';
-import { Brain, Settings, Loader2, Sparkles, Send, History, BarChart3 } from 'lucide-react';
+import { Brain, Settings, Loader2, Sparkles, Send, History, BarChart3, Search } from 'lucide-react';
 import { postJSON } from '@/services/api';
 import { toast } from 'sonner';
 import { Button } from '@/components/ui/button';
 import { Card } from '@/components/ui/card';
 import { Tabs } from '@/components/ui/tabs';
+import { PageHeader } from '@/components/ui/page-header';
 import { Input, Select } from '@/components/ui/input';
 import { ProfileSettingsModal } from '@/components/ai/ProfileSettingsModal';
 import { ProfileFormModal } from '@/components/ai/ProfileFormModal';
@@ -37,6 +39,17 @@ import {
 /** 波段评分结果（客户端算的因子分 + 路由返回的 LLM 微调合并） */
 type TScoreResult = TScorePanelResult;
 
+/**
+ * 深度分析进度估算：每阶段一个基准区间，阶段内按已流式字符数（内容+思考链）插值。
+ * 估算值只增不减；断点续传跳过已完成阶段时基准自动跳段。
+ */
+const DEEP_STAGE_PLAN: Record<DeepStage, { base: number; span: number; expect: number }> = {
+  idle:    { base: 2,  span: 0,  expect: 1 },
+  analyst: { base: 4,  span: 30, expect: 1800 },
+  debate:  { base: 36, span: 30, expect: 2800 },
+  verdict: { base: 68, span: 29, expect: 1600 },
+};
+
 export default function AiPage() {
   const { watchlist } = useStockStore();
   const aiStore = useAiStore();
@@ -49,6 +62,14 @@ export default function AiPage() {
   const [deepTab, setDeepTab] = useState<'chat' | 'history' | 'stats'>('chat');
   const [editingProfile, setEditingProfile] = useState<AiProfile | null>(null);
   const [selectedCode, setSelectedCode] = useState<string>(aiStore.lastSession?.selectedCode ?? '');
+  // 搜索选中的非自选标的（自选内标的为 null）；随 lastSession 持久化
+  const [extraStock, setExtraStock] = useState<Stock | null>(
+    aiStore.lastSession?.extraStock ?? null
+  );
+  const [stockQuery, setStockQuery] = useState('');
+  const [searchResults, setSearchResults] = useState<{ code: string; name: string }[]>([]);
+  const [searching, setSearching] = useState(false);
+  const [showSearchList, setShowSearchList] = useState(false);
   const [isAnalyzing, setIsAnalyzing] = useState(false);
   const [result, setResult] = useState<TScoreResult | null>(aiStore.lastSession?.result ?? null);
   const [error, setError] = useState<string | null>(null);
@@ -66,8 +87,53 @@ export default function AiPage() {
 
   // 轻量 state 同步到 lastSession（result/deepResult 流式频繁，在完成回调里单独同步，避免每 token 写 localStorage）
   useEffect(() => {
-    aiStore.updateLastSession({ selectedCode, userView, userViewReason });
-  }, [selectedCode, userView, userViewReason]);
+    aiStore.updateLastSession({ selectedCode, userView, userViewReason, extraStock });
+  }, [selectedCode, userView, userViewReason, extraStock]);
+
+  // 标的搜索防抖：本地缓存优先，无结果走服务端兜底（setState 全部放回调里，避免 effect 体内同步 setState）
+  useEffect(() => {
+    const kw = stockQuery.trim();
+    let cancelled = false;
+    const t = setTimeout(async () => {
+      if (!kw) {
+        if (!cancelled) { setSearchResults([]); setSearching(false); }
+        return;
+      }
+      setSearching(true);
+      const r = await searchStocks(kw);
+      if (!cancelled) {
+        setSearchResults(r.map(q => ({ code: q.code, name: q.name })));
+        setSearching(false);
+        setShowSearchList(true);
+      }
+    }, kw ? 300 : 0);
+    return () => { cancelled = true; clearTimeout(t); };
+  }, [stockQuery]);
+
+  /** 解析当前选中标的：优先自选，其次搜索选中的临时标的 */
+  const resolveStock = (): Stock | undefined => {
+    const w = watchlist.find(s => s.code === selectedCode);
+    if (w) return w;
+    if (extraStock && extraStock.code === selectedCode) return extraStock;
+    return undefined;
+  };
+
+  // 传给 AI 对话的列表：附带搜索临时标的，保证名称查找/对比 chip 正常
+  const effectiveWatchlist = useMemo(() => {
+    if (extraStock && !watchlist.some(w => w.code === extraStock.code)) return [...watchlist, extraStock];
+    return watchlist;
+  }, [watchlist, extraStock]);
+
+  const pickSearchedStock = (code: string, name: string) => {
+    const parsed = parseStockCode(code);
+    setExtraStock({ code, name, market: parsed.market, pureCode: parsed.pureCode });
+    setSelectedCode(code);
+    setStockQuery('');
+    setSearchResults([]);
+    setShowSearchList(false);
+    setError(null);
+    setResult(null);
+  };
 
   // 波段评分 result 非流式（一次性算完），直接 useEffect 同步，覆盖 set 与清空
   useEffect(() => {
@@ -95,9 +161,9 @@ export default function AiPage() {
       return;
     }
 
-    const stock = watchlist.find(s => s.code === selectedCode);
+    const stock = resolveStock();
     if (!stock) {
-      toast.error('标的不在自选列表中');
+      toast.error('请先选择标的');
       return;
     }
 
@@ -220,14 +286,14 @@ export default function AiPage() {
   // 深度分析（三阶段）。resumeCompleted 传入时为断点续传，跳过已完成阶段
   const runDeepAnalysis = async (resumeCompleted?: Record<string, string>) => {
     if (!selectedCode || !currentProfile) {
-      toast.error('请先选择股票');
+      toast.error('请先选择标的');
       return;
     }
     if (isAnalyzing) return;
 
-    const stock = watchlist.find(s => s.code === selectedCode);
+    const stock = resolveStock();
     if (!stock) {
-      toast.error('股票不在自选列表中');
+      toast.error('请先选择标的');
       return;
     }
 
@@ -311,21 +377,30 @@ export default function AiPage() {
     if (deepAbortRef.current) deepAbortRef.current.abort();
   };
 
+  // 当前阶段已流式字符数（内容+思考链）→ 进度百分比
+  const deepStageChars =
+    deepStage === 'analyst' ? (deepResult?.analyst?.length ?? 0) + (deepResult?.analystReasoning?.length ?? 0)
+    : deepStage === 'debate' ? (deepResult?.debate?.length ?? 0) + (deepResult?.debateReasoning?.length ?? 0)
+    : deepStage === 'verdict' ? (deepResult?.verdict?.length ?? 0) + (deepResult?.verdictReasoning?.length ?? 0)
+    : 0;
+  const deepPlan = DEEP_STAGE_PLAN[deepStage];
+  const deepProgress = Math.min(97, deepPlan.base + Math.min(deepStageChars / deepPlan.expect, 1) * deepPlan.span);
+
   return (
     <div>
       {/* 顶部 */}
-      <div className="flex items-center justify-between mb-[var(--space-section)]">
-        <h1 className="text-xl font-bold text-gray-900 dark:text-white flex items-center gap-2">
-          <Brain className="w-6 h-6 text-[var(--color-brand)]" />
-          AI分析
-        </h1>
-        <button
-          onClick={() => setShowSettings(true)}
-          className="p-2 hover:bg-gray-100 dark:hover:bg-gray-800 rounded-[var(--radius-md)] transition"
-        >
-          <Settings className="w-5 h-5" />
-        </button>
-      </div>
+      <PageHeader
+        title="AI分析"
+        icon={<Brain className="w-6 h-6 text-[var(--color-brand)]" />}
+        actions={
+          <button
+            onClick={() => setShowSettings(true)}
+            className="p-2 hover:bg-gray-100 dark:hover:bg-gray-800 rounded-[var(--radius-md)] transition"
+          >
+            <Settings className="w-5 h-5" />
+          </button>
+        }
+      />
 
       {/* 操作区：配置 + 模式切换 */}
       {currentProfile ? (
@@ -356,7 +431,7 @@ export default function AiPage() {
           value={mode}
           onChange={setMode}
           items={[
-            { value: 'analyze', label: '个股分析', icon: <Brain className="w-4 h-4" /> },
+            { value: 'analyze', label: '标的分析', icon: <Brain className="w-4 h-4" /> },
             { value: 'screen', label: 'AI 筛选', icon: <Sparkles className="w-4 h-4" /> },
           ]}
         />
@@ -378,16 +453,59 @@ export default function AiPage() {
         </label>
         <Select
           value={selectedCode}
-          onChange={(e) => { setSelectedCode(e.target.value); setError(null); setResult(null); }}
-          className="mb-3"
+          onChange={(e) => {
+            const v = e.target.value;
+            setSelectedCode(v);
+            if (v !== extraStock?.code) setExtraStock(null);
+            setError(null); setResult(null);
+          }}
+          className="mb-2"
         >
-          <option value="">-- 请选择自选股 --</option>
+          <option value="">-- 请选择自选标的 --</option>
+          {extraStock && !watchlist.some(w => w.code === extraStock.code) && (
+            <option value={extraStock.code}>{extraStock.name} ({extraStock.code}) · 搜索选中</option>
+          )}
           {watchlist.map(stock => (
             <option key={stock.code} value={stock.code}>
               {stock.name} ({stock.code})
             </option>
           ))}
         </Select>
+
+        {/* 任意标的搜索：非自选也能直接分析 */}
+        <div className="relative mb-3">
+          <Search className="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-gray-400 pointer-events-none" />
+          <Input
+            value={stockQuery}
+            onChange={(e) => setStockQuery(e.target.value)}
+            onFocus={() => { if (searchResults.length > 0) setShowSearchList(true); }}
+            onBlur={() => setTimeout(() => setShowSearchList(false), 150)}
+            placeholder="搜索代码/名称，非自选标的也能直接分析"
+            className="pl-9"
+          />
+          {searching && (
+            <Loader2 className="absolute right-3 top-1/2 -translate-y-1/2 w-4 h-4 animate-spin text-gray-400" />
+          )}
+          {showSearchList && stockQuery.trim() && (
+            <div className="absolute z-20 left-0 right-0 mt-1 max-h-56 overflow-y-auto bg-white dark:bg-gray-900 border border-gray-200 dark:border-gray-700 rounded-[var(--radius-md)] shadow-[var(--shadow-hover)]">
+              {searchResults.length > 0 ? (
+                searchResults.map(r => (
+                  <button
+                    key={r.code}
+                    type="button"
+                    onMouseDown={() => pickSearchedStock(r.code, r.name)}
+                    className="w-full px-3 py-2 text-left text-sm hover:bg-gray-50 dark:hover:bg-gray-800 flex items-center justify-between gap-2"
+                  >
+                    <span className="text-gray-800 dark:text-gray-200">{r.name}</span>
+                    <span className="text-xs text-gray-400 font-mono">{r.code}</span>
+                  </button>
+                ))
+              ) : (
+                !searching && <p className="px-3 py-2 text-xs text-gray-400">无匹配结果</p>
+              )}
+            </div>
+          )}
+        </div>
 
         <div className="flex gap-2 mb-1">
           <Button
@@ -515,6 +633,21 @@ export default function AiPage() {
                   )} />
                   最终裁决
                 </div>
+              </div>
+
+              {/* 进度条：颜色随阶段（情报蓝/辩论黄/裁决绿），宽度随流式输出平滑推进 */}
+              <div className="mt-3 flex items-center gap-2">
+                <div className="flex-1 h-1.5 bg-gray-100 dark:bg-gray-800 rounded-full overflow-hidden">
+                  <div
+                    className={cn(
+                      "h-full rounded-full transition-[width] duration-500 ease-out",
+                      deepStage === 'analyst' ? "bg-blue-500" :
+                      deepStage === 'debate' ? "bg-amber-500" : "bg-green-500"
+                    )}
+                    style={{ width: `${deepProgress}%` }}
+                  />
+                </div>
+                <span className="text-xs text-gray-400 tabular-nums w-8 text-right">{Math.round(deepProgress)}%</span>
               </div>
             </div>
           )}
@@ -737,7 +870,7 @@ export default function AiPage() {
       {!result && !isAnalyzing && !deepResult && !isDeepAnalyzing && !error && (
         <div className="text-center py-16 text-gray-400">
           <Brain className="w-16 h-16 mx-auto mb-4 opacity-20" />
-          <p className="text-lg">选择股票开始AI分析</p>
+          <p className="text-lg">选择标的开始AI分析</p>
           <p className="text-sm mt-2">支持所有OpenAI兼容API（DeepSeek、GLM、GPT等）</p>
         </div>
       )}
@@ -778,7 +911,7 @@ export default function AiPage() {
         <AiChat
           currentProfile={currentProfile}
           selectedCode={selectedCode}
-          watchlist={watchlist}
+          watchlist={effectiveWatchlist}
           result={result}
           deepStructured={deepResult?.structured ?? null}
         />

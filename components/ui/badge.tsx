@@ -7,11 +7,12 @@ interface BadgeProps {
   className?: string;
 }
 
+/** 语义色全部走设计 token（globals.css），散装 red/orange/blue 色值勿回潮 */
 const variants = {
-  CRITICAL: "bg-red-50 text-red-700 border-red-200 dark:bg-red-950 dark:text-red-300 dark:border-red-800",
-  WARNING: "bg-orange-50 text-orange-700 border-orange-200 dark:bg-orange-950 dark:text-orange-300 dark:border-orange-800",
-  INFO: "bg-blue-50 text-blue-700 border-blue-200 dark:bg-blue-950 dark:text-blue-300 dark:border-blue-800",
-  opportunity: "bg-green-50 text-green-700 border-green-200 dark:bg-green-950 dark:text-green-300 dark:border-green-800",
+  CRITICAL: "bg-[var(--color-danger-soft)] text-[var(--color-danger)] border-[var(--color-danger)]/30",
+  WARNING: "bg-[var(--color-warning-soft)] text-[var(--color-warning)] border-[var(--color-warning)]/30",
+  INFO: "bg-[var(--color-accent-soft)] text-[var(--color-accent)] border-[var(--color-accent)]/30",
+  opportunity: "bg-[var(--color-down-soft)] text-[var(--color-down)] border-[var(--color-down-border)]",
   default: "bg-gray-50 text-gray-700 border-gray-200 dark:bg-gray-800 dark:text-gray-300 dark:border-gray-700",
 } as const;
 
@@ -29,12 +30,19 @@ export function Badge({ children, variant = "default", className }: BadgeProps) 
   );
 }
 
+/** 等级标识用色点而非 emoji（跨平台渲染一致，与首页信号行视觉语言统一） */
+const LEVEL_DOT: Record<AlertLevel, string> = {
+  CRITICAL: "bg-[var(--color-danger)]",
+  WARNING: "bg-[var(--color-warning)]",
+  INFO: "bg-[var(--color-accent)]",
+};
+
 export function AlertLevelBadge({ level }: { level: AlertLevel }) {
   const labels = { CRITICAL: "严重", WARNING: "警告", INFO: "提示" };
-  const emojis = { CRITICAL: "🔴", WARNING: "🟡", INFO: "🔵" };
   return (
     <Badge variant={level}>
-      {emojis[level]} {labels[level]}
+      <span className={cn("w-1.5 h-1.5 rounded-full mr-1.5", LEVEL_DOT[level])} />
+      {labels[level]}
     </Badge>
   );
 }

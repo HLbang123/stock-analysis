@@ -20,12 +20,14 @@ const CHANGELOG: ChangeEntry[] = [
     items: [
       '前端重构，全站样式收敛',
       '统一 API 请求层与接口类型，大盘/详情/AI 页请求收敛',
-      'AI 分析页拆分：深度分析三阶段（情报/辩论/裁决）抽为独立引擎，页面只留编排',
-      'AI 对话状态收口到全局 store：切页面/路由不丢对话',
       '预警页 UI 升级：未读徽章、信号色条区分方向、买入共振改用语义色',
       '自选页新增分组管理：分组增删改、标的移入指定组、按组筛选',
-      '底部导航修复子页面激活高亮；「筛选」更名「全市场扫描」',
-      '移除冗余的独立 OCR 页',
+      '预警卡片恢复整框着色（买红卖绿），并按严重程度排序、已消失信号沉底',
+      'AI 筛选结果支持按综合分/涨跌幅点击排序',
+      'AI 分析支持直接搜索标的，无需先加自选',
+      '全市场扫描板块精简为搜索框：搜名称直达一级/二级行业',
+      '深度分析新增进度条',
+      '自选卡片新增均线交叉徽标：金叉/死叉/即将金叉',
     ],
   },
   {
@@ -272,10 +274,10 @@ export function UpdateLog() {
         </div>
       )}
 
-      {/* 第二级：抽屉/弹窗 */}
+      {/* 第二级：抽屉/弹窗（z-[60] 高于底部导航，防移动端被挡） */}
       {panel && (
         <div
-          className="fixed inset-0 z-50 flex items-end sm:items-center justify-center p-0 sm:p-4 bg-black/40"
+          className="fixed inset-0 z-[60] flex items-end sm:items-center justify-center p-0 sm:p-4 bg-black/40"
           onClick={() => setPanel(null)}
         >
           <div

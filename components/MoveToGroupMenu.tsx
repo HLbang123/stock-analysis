@@ -6,7 +6,7 @@
  */
 
 import { Check, FolderPlus } from 'lucide-react';
-import { useStockStore, DEFAULT_GROUP_ID } from '@/store';
+import { useStockStore } from '@/store';
 import { cn } from '@/lib/utils';
 
 interface Props {
@@ -17,7 +17,7 @@ interface Props {
 
 export function MoveToGroupMenu({ code, onClose, onCreateGroup }: Props) {
   const { groups, watchlist, moveStockToGroup } = useStockStore();
-  const currentId = watchlist.find(s => s.code === code)?.groupId ?? DEFAULT_GROUP_ID;
+  const currentId = watchlist.find(s => s.code === code)?.groupId; // undefined = 未分组
 
   return (
     <div
@@ -25,6 +25,16 @@ export function MoveToGroupMenu({ code, onClose, onCreateGroup }: Props) {
       onClick={e => e.stopPropagation()}
     >
       <p className="px-3 pt-1 pb-1 text-xs text-gray-400">移动到分组</p>
+      <button
+        onClick={() => { moveStockToGroup(code, undefined); onClose(); }}
+        className={cn(
+          'w-full flex items-center justify-between px-3 py-1.5 text-sm hover:bg-gray-50 dark:hover:bg-gray-800 transition',
+          currentId == null ? 'text-blue-600' : 'text-gray-700 dark:text-gray-300',
+        )}
+      >
+        未分组
+        {currentId == null && <Check className="w-4 h-4" />}
+      </button>
       {groups.map(g => (
         <button
           key={g.id}

@@ -6,7 +6,7 @@
  */
 
 import { FolderPlus } from 'lucide-react';
-import { useStockStore, DEFAULT_GROUP_ID } from '@/store';
+import { useStockStore } from '@/store';
 import { cn } from '@/lib/utils';
 
 export const ALL_GROUP_ID = 'all'; // 虚拟「全部」tab
@@ -22,7 +22,7 @@ export function GroupBar({ selectedId, onSelect, onManage }: Props) {
   const countOf = (id: string) =>
     id === ALL_GROUP_ID
       ? watchlist.length
-      : watchlist.filter(s => (s.groupId ?? DEFAULT_GROUP_ID) === id).length;
+      : watchlist.filter(s => s.groupId === id).length;
 
   return (
     <div className="bg-white dark:bg-gray-900 rounded-xl p-2 shadow-sm mb-4 flex items-center gap-1.5 overflow-x-auto">

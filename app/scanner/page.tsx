@@ -1,12 +1,13 @@
 'use client';
 
-import { useState, useCallback, useEffect } from 'react';
+import { useState, useCallback, useEffect, useMemo } from 'react';
 import { useRouter } from 'next/navigation';
 import { useStockStore } from '@/store';
 import { useScannerStore, type Board } from '@/store/scanner-store';
 import { cn } from '@/lib/utils';
 import { Card } from '@/components/ui/card';
-import { Filter, Loader2, ChevronDown, ChevronUp, Plus, Check, BarChart3, Info } from 'lucide-react';
+import { PageHeader } from '@/components/ui/page-header';
+import { Filter, Loader2, ChevronDown, ChevronUp, Plus, Check, BarChart3, Info, Search } from 'lucide-react';
 import { toast } from 'sonner';
 
 const RPS_PERIODS = [
@@ -52,6 +53,7 @@ export default function ScannerPage() {
 
   // 仅本组件内的瞬态 UI 状态
   const [showSectors, setShowSectors] = useState(true);
+  const [sectorQuery, setSectorQuery] = useState('');
   const [showRpsIntro, setShowRpsIntro] = useState(false);
   const [showVcpIntro, setShowVcpIntro] = useState(false);
   const [loading, setLoading] = useState(false);
@@ -135,7 +137,7 @@ export default function ScannerPage() {
   const condParts: string[] = [];
   if (filterRps) condParts.push(`RPS(${rpsPeriod})≥${rpsMin}`);
   if (goldenCross) condParts.push(gcDays === 0 ? '5/13即将金叉' : `5/13金叉(近${gcDays}日)`);
-  if (ma55Up) condParts.push('股价在55日线上方');
+  if (ma55Up) condParts.push('价格在55日线上方');
   if (filterRoe) condParts.push(`ROE≥${minRoe}%`);
   if (filterMv) condParts.push(`流通市值≥${minMv}亿`);
   if (vcp) condParts.push('VCP收缩');
@@ -147,27 +149,41 @@ export default function ScannerPage() {
   }
   const condText = condParts.length > 0 ? condParts.join(' · ') : '无过滤（全市场 top RPS）';
 
-  // 当前选中的 L1（选中 L2 时回溯其父级 L1，用于高亮 + 展开 L2 子目录）
-  const activeL1 = !rpsIndustry ? '' :
-    industryLevel === 'L1' ? rpsIndustry :
-    (industries.find((ind) => ind.l2?.includes(rpsIndustry))?.name ?? '');
-  const activeL1Data = industries.find((ind) => ind.name === activeL1);
+  // 板块只保留模糊搜索（用户通常心里有明确目标如"半导体"，平铺网格已移除）：
+  // 名称子串同时匹配一/二级行业，二级带父级前缀便于区分层级
+  const sectorResults = useMemo(() => {
+    const q = sectorQuery.trim();
+    if (!q) return null;
+    return {
+      l1: industries.filter((ind) => ind.name.includes(q)),
+      l2: industries.flatMap((ind) =>
+        (ind.l2 || []).filter((n) => n.includes(q)).map((n) => ({ l1: ind.name, name: n }))
+      ),
+    };
+  }, [sectorQuery, industries]);
+
+  const pickSector = (name: string, lvl: 'L1' | 'L2') => {
+    setRpsIndustry(name);
+    setIndustryLevel(lvl);
+    setSelectedSectors([name]);
+    setSectorQuery(''); // 选中后收起结果列表，当前板块显示在面板标题上
+  };
 
   return (
     <div>
-      <h1 className="text-xl font-bold text-gray-900 dark:text-white mb-4">市场扫描</h1>
+      <PageHeader title="市场扫描" />
 
       {/* RPS 说明 */}
       <div className="bg-blue-50 dark:bg-blue-950/30 rounded-xl p-3 mb-4 text-sm">
         <button onClick={() => setShowRpsIntro(!showRpsIntro)} className="flex items-center gap-1 text-blue-600 font-medium w-full text-left">
-          <Info className="w-4 h-4" /> RPS + 斐波那契均线选股说明
+          <Info className="w-4 h-4" /> RPS + 斐波那契均线筛选说明
           <span className="text-xs text-blue-400 ml-auto">{showRpsIntro ? '收起' : '展开'}</span>
         </button>
         {showRpsIntro && (
           <div className="mt-2 text-gray-600 dark:text-gray-400 space-y-1 leading-relaxed">
-            <p><strong>RPS</strong>：近 N 日涨幅在全市场的百分位排名，≥87 为强势股。5/13/55 是斐波那契数列均线。</p>
+            <p><strong>RPS</strong>：近 N 日涨幅在全市场的百分位排名，≥87 为强势标的。5/13/55 是斐波那契数列均线。</p>
             <p>• <strong>5/13金叉</strong>：MA5 上穿 MA13，短期动能转多；选「近 N 日」抓新鲜金叉，「不限」= 当前 MA5&gt;MA13</p>
-            <p>• <strong>股价在55日线上方</strong>：当前价格高于55日均线，处于多头区域</p>
+            <p>• <strong>价格在55日线上方</strong>：当前价格高于55日均线，处于多头区域</p>
             <p>• 三个条件 AND 组合，可自由勾选；不选板块=全市场</p>
           </div>
         )}
@@ -181,7 +197,7 @@ export default function ScannerPage() {
         </button>
         {showVcpIntro && (
           <div className="mt-2 text-gray-600 dark:text-gray-400 space-y-1 leading-relaxed">
-            <p><strong>VCP（Volatility Contraction Pattern）</strong>：Mark Minervini 的趋势延续形态。股价在上升中继里横盘整理，价格摆幅一波比一波小、右侧量能萎缩，卖压枯竭后放量突破。</p>
+            <p><strong>VCP（Volatility Contraction Pattern）</strong>：Mark Minervini 的趋势延续形态。价格在上升中继里横盘整理，价格摆幅一波比一波小、右侧量能萎缩，卖压枯竭后放量突破。</p>
             <p>• <strong>趋势前置</strong>：价 &gt; MA150 &gt; MA200 且 MA200 上行（只抓第二阶段上升期，过滤熊市假突破）</p>
             <p>• <strong>递进收缩</strong>：近 60 日分三段（各 20 日），每段高低点波幅比上一段收缩 ≥20%</p>
             <p>• <strong>右侧量缩</strong>：最近一段均量 &lt; 上一段 ×0.8</p>
@@ -204,63 +220,49 @@ export default function ScannerPage() {
         </button>
         {showSectors && (
           <div className="px-4 pb-4">
-            <button onClick={clearSectors} className="text-sm text-blue-600 mb-3">清空（全市场）</button>
-            <div className="grid grid-cols-2 sm:grid-cols-3 md:grid-cols-4 gap-2">
-              {industries.map((ind) => {
-                const isActive = activeL1 === ind.name;
-                return (
-                  <button key={ind.name} onClick={() => {
-                    if (isActive) {
-                      // 再次点击当前 L1 → 取消
-                      clearSectors();
-                    } else {
-                      setRpsIndustry(ind.name);
-                      setIndustryLevel('L1');
-                      setSelectedSectors([ind.name]);
-                    }
-                  }}
-                    className={cn("px-3 py-2 rounded-lg text-sm text-left transition border-2",
-                      isActive ? "border-blue-500 bg-blue-50 dark:bg-blue-950" : "border-gray-200 dark:border-gray-700 hover:border-gray-300")}>
-                    <div className="font-medium">{ind.name}
-                      <span className="text-xs text-gray-400 ml-1">({ind.count})</span>
-                    </div>
-                    {ind.l2?.length > 0 && (
-                      <div className="text-[10px] text-gray-400 mt-0.5 line-clamp-1 leading-tight">
-                        {ind.l2.slice(0, 3).join(' · ')}
-                      </div>
-                    )}
-                  </button>
-                );
-              })}
+            <div className="flex items-center gap-3">
+              <div className="relative flex-1 max-w-xs">
+                <Search className="absolute left-2.5 top-1/2 -translate-y-1/2 w-3.5 h-3.5 text-gray-400 pointer-events-none" />
+                <input
+                  value={sectorQuery}
+                  onChange={(e) => setSectorQuery(e.target.value)}
+                  placeholder="搜索行业直达，如：半导体"
+                  className="w-full pl-8 pr-3 py-1.5 border border-gray-200 dark:border-gray-700 rounded-lg bg-white dark:bg-gray-800 text-sm"
+                />
+              </div>
+              {rpsIndustry && (
+                <button onClick={clearSectors} className="text-sm text-blue-600 shrink-0">清空（全市场）</button>
+              )}
             </div>
 
-            {/* 选中 L1 后展开的 L2 子目录：可进一步缩到具体 L2，把选择权交给用户 */}
-            {activeL1Data && activeL1Data.l2?.length > 0 && (
-              <div className="mt-3 pt-3 border-t border-gray-100 dark:border-gray-800">
-                <div className="text-xs text-gray-500 mb-2">在「{activeL1Data.name}」内进一步选二级方向：</div>
-                <div className="flex flex-wrap gap-1.5">
-                  <button onClick={() => {
-                    setRpsIndustry(activeL1Data.name);
-                    setIndustryLevel('L1');
-                    setSelectedSectors([activeL1Data.name]);
-                  }}
+            {sectorResults ? (
+              /* 一/二级行业匹配项，二级带父级前缀 */
+              <div className="flex flex-wrap gap-1.5 mt-3">
+                {sectorResults.l1.map((ind) => (
+                  <button key={`s-l1-${ind.name}`} onClick={() => pickSector(ind.name, 'L1')}
                     className={cn("px-2.5 py-1.5 rounded-lg text-xs transition border",
-                      industryLevel === 'L1' ? "bg-blue-600 text-white border-blue-600" : "bg-gray-50 dark:bg-gray-800 text-gray-600 dark:text-gray-300 border-gray-200 dark:border-gray-700 hover:border-blue-300")}>
-                    全部{activeL1Data.name}
+                      industryLevel === 'L1' && rpsIndustry === ind.name
+                        ? "bg-blue-600 text-white border-blue-600"
+                        : "bg-gray-50 dark:bg-gray-800 text-gray-600 dark:text-gray-300 border-gray-200 dark:border-gray-700 hover:border-blue-300")}>
+                    {ind.name}
+                    <span className="opacity-60 ml-1">一级 · {ind.count}</span>
                   </button>
-                  {activeL1Data.l2.map((l2name) => (
-                    <button key={l2name} onClick={() => {
-                      setRpsIndustry(l2name);
-                      setIndustryLevel('L2');
-                      setSelectedSectors([l2name]);
-                    }}
-                      className={cn("px-2.5 py-1.5 rounded-lg text-xs transition border",
-                        industryLevel === 'L2' && rpsIndustry === l2name ? "bg-blue-600 text-white border-blue-600" : "bg-gray-50 dark:bg-gray-800 text-gray-600 dark:text-gray-300 border-gray-200 dark:border-gray-700 hover:border-blue-300")}>
-                      {l2name}
-                    </button>
-                  ))}
-                </div>
+                ))}
+                {sectorResults.l2.map((item) => (
+                  <button key={`s-l2-${item.l1}-${item.name}`} onClick={() => pickSector(item.name, 'L2')}
+                    className={cn("px-2.5 py-1.5 rounded-lg text-xs transition border",
+                      industryLevel === 'L2' && rpsIndustry === item.name
+                        ? "bg-blue-600 text-white border-blue-600"
+                        : "bg-gray-50 dark:bg-gray-800 text-gray-600 dark:text-gray-300 border-gray-200 dark:border-gray-700 hover:border-blue-300")}>
+                    <span className="opacity-60">{item.l1} / </span>{item.name}
+                  </button>
+                ))}
+                {sectorResults.l1.length === 0 && sectorResults.l2.length === 0 && (
+                  <p className="text-xs text-gray-400 py-1">无匹配行业，换个关键词试试</p>
+                )}
               </div>
+            ) : (
+              <p className="text-xs text-gray-400 mt-2">输入行业名称搜索（一/二级均可），不选=全市场</p>
             )}
           </div>
         )}
@@ -452,7 +454,7 @@ export default function ScannerPage() {
               <thead>
                 <tr className="border-b border-gray-100 dark:border-gray-800 text-left text-xs text-gray-400 uppercase">
                   <th className="px-3 py-2 w-10">#</th>
-                  <th className="px-3 py-2">股票</th>
+                  <th className="px-3 py-2">标的</th>
                   <th className="px-3 py-2 text-right">RPS</th>
                   {filterRsi && <th className="px-3 py-2 text-right">RSI</th>}
                   <th className="px-3 py-2 text-right">最新价</th>
@@ -537,7 +539,7 @@ export default function ScannerPage() {
           <BarChart3 className="w-16 h-16 mx-auto mb-4 opacity-20" />
           {hasQueried ? (
             <>
-              <p className="text-lg">没有符合条件的股票</p>
+              <p className="text-lg">没有符合条件的标的</p>
               <p className="text-sm mt-2">试试放宽条件：调低 RPS 阈值、增大金叉天数、或不勾 55日线</p>
             </>
           ) : (

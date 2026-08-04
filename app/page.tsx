@@ -12,6 +12,7 @@ import { AlertTriangle, Trash2, BookOpen } from 'lucide-react';
 import { UpdateLog } from '@/components/UpdateLog';
 import { AlertRulesModal } from '@/components/AlertRulesModal';
 import { Button } from '@/components/ui/button';
+import { PageHeader } from '@/components/ui/page-header';
 
 /** 买入共振强度档位：按买入信号加权分(A级=2/B级=1)映射到情绪档位 */
 const buyTier = (score: number) => {
@@ -25,6 +26,23 @@ const buyTier = (score: number) => {
 const hasVolumeConfirmed = (a: AlertRecord): boolean => {
   if (!a.extraData) return false;
   try { return JSON.parse(a.extraData)?.volConfirmed === true; } catch { return false; }
+};
+
+/** 严重度排序权重：CRITICAL 最前 */
+const LEVEL_RANK: Record<string, number> = { CRITICAL: 0, WARNING: 1, INFO: 2 };
+
+/** 整卡按信号方向着色（用户约定：买=红、卖=绿；同组买卖都有时卖出优先，风控先行） */
+const groupTone = (group: { alerts: AlertRecord[] }): string => {
+  const active = group.alerts.filter(a => !a.isExpired);
+  if (active.length === 0) {
+    return 'bg-gray-50 dark:bg-gray-800/40 border-gray-200 dark:border-gray-700 opacity-50';
+  }
+  const hasSell = active.some(a => !isBuyRule(a.ruleId) && !REFERENCE_RULE_IDS.has(a.ruleId));
+  if (hasSell) return 'bg-[var(--color-down-soft)] border-[var(--color-down-border)]';
+  const hasBuy = active.some(a => isBuyRule(a.ruleId) && !REFERENCE_RULE_IDS.has(a.ruleId));
+  if (hasBuy) return 'bg-[var(--color-up-soft)] border-[var(--color-up-border)]';
+  // 仅参考级弱提醒（R14/R15 筹码峰）
+  return 'bg-white dark:bg-gray-900 border-gray-200 dark:border-gray-700';
 };
 
 export default function HomePage() {
@@ -78,31 +96,42 @@ export default function HomePage() {
         buyResonance: buyAlerts.length >= 2,
         buyScore,
         buyVolumeBoost,
+        tierScore,
         buyTier: tierScore > 0 ? buyTier(tierScore) : null,
         worstLevel,
         latestTime: Math.max(...stockAlerts.map(a => a.triggeredAt))
       };
-    }).sort((a, b) => b.latestTime - a.latestTime);
+    }).sort((a, b) => {
+      // 已消失的信号组沉底；有效组按严重度(CRITICAL>WARNING>INFO) → 买入强度 → 最新时间
+      const aGone = a.alerts.every(x => x.isExpired);
+      const bGone = b.alerts.every(x => x.isExpired);
+      if (aGone !== bGone) return aGone ? 1 : -1;
+      const lr = (LEVEL_RANK[a.worstLevel] ?? 3) - (LEVEL_RANK[b.worstLevel] ?? 3);
+      if (lr !== 0) return lr;
+      if (a.tierScore !== b.tierScore) return b.tierScore - a.tierScore;
+      return b.latestTime - a.latestTime;
+    });
   }, [alerts]);
 
   // 未读数
   const unreadCount = alerts.filter(a => !a.isRead).length;
 
-  // 单条预警行渲染：用左侧色条区分买卖/风险/参考方向，弱化 emoji
+  // 单条预警行渲染：左侧色条按方向着色（买红/卖绿/参考黄），弱化 emoji；
+  // 行底用半透明白，叠在整卡着色上保持可读
   const renderAlertRow = (alert: AlertRecord) => {
     const toneBar = alert.isExpired
       ? 'bg-gray-300 dark:bg-gray-600'
-      : alert.alertLevel === 'CRITICAL'
-        ? 'bg-[var(--color-up)]'
-        : alert.alertLevel === 'WARNING'
-          ? 'bg-[var(--color-warning)]'
+      : REFERENCE_RULE_IDS.has(alert.ruleId)
+        ? 'bg-[var(--color-warning)]'
+        : isBuyRule(alert.ruleId)
+          ? 'bg-[var(--color-up)]'
           : 'bg-[var(--color-down)]';
     return (
       <div
         key={alert.id}
         className={cn(
           "flex items-stretch gap-2.5 text-sm py-2 px-2.5 rounded-[var(--radius-md)]",
-          alert.isExpired ? "bg-gray-50 dark:bg-gray-800/40 opacity-60" : "bg-gray-50 dark:bg-gray-800/60"
+          alert.isExpired ? "bg-white/40 dark:bg-gray-900/30 opacity-60" : "bg-white/70 dark:bg-gray-900/50"
         )}
       >
         <span className={cn("w-1 rounded-full shrink-0", toneBar)} />
@@ -117,7 +146,7 @@ export default function HomePage() {
   // 检查预警
   const checkAlerts = async () => {
     if (watchlist.length === 0) {
-      setResultMessage('请先添加自选股');
+      setResultMessage('请先添加自选标的');
       setTimeout(() => setResultMessage(null), 3000);
       return;
     }
@@ -210,35 +239,35 @@ export default function HomePage() {
   return (
     <div>
       {/* 页面头部：标题 + 操作 */}
-      <div className="flex items-center justify-between mb-[var(--space-section)]">
-        <div className="flex items-center gap-1">
-          <UpdateLog />
-          <h1 className="text-xl font-bold text-gray-900 dark:text-white">预警</h1>
-          {unreadCount > 0 && (
-            <span className="ml-1 bg-[var(--color-danger)] text-white text-xs px-2 py-0.5 rounded-full font-medium">
-              {unreadCount}
-            </span>
-          )}
-        </div>
-        <div className="flex items-center gap-2">
-          <button
-            onClick={() => setShowRules(true)}
-            className="flex items-center gap-1 px-3 py-1.5 text-sm text-gray-600 dark:text-gray-300 hover:bg-gray-100 dark:hover:bg-gray-800 rounded-[var(--radius-md)] transition"
-            title="查看预警规则说明"
-          >
-            <BookOpen className="w-4 h-4" />
-            规则说明
-          </button>
-          {alerts.length > 0 && (
+      <PageHeader
+        title="预警"
+        icon={<UpdateLog />}
+        badge={unreadCount > 0 && (
+          <span className="bg-[var(--color-danger)] text-white text-xs px-2 py-0.5 rounded-full font-medium">
+            {unreadCount}
+          </span>
+        )}
+        actions={
+          <>
             <button
-              onClick={() => clearAllAlerts()}
-              className="px-3 py-1.5 text-sm text-[var(--color-danger)] hover:bg-[var(--color-danger-soft)] rounded-[var(--radius-md)] transition"
+              onClick={() => setShowRules(true)}
+              className="flex items-center gap-1 px-3 py-1.5 text-sm text-gray-600 dark:text-gray-300 hover:bg-gray-100 dark:hover:bg-gray-800 rounded-[var(--radius-md)] transition"
+              title="查看预警规则说明"
             >
-              清除全部
+              <BookOpen className="w-4 h-4" />
+              规则说明
             </button>
-          )}
-        </div>
-      </div>
+            {alerts.length > 0 && (
+              <button
+                onClick={() => clearAllAlerts()}
+                className="px-3 py-1.5 text-sm text-[var(--color-danger)] hover:bg-[var(--color-danger-soft)] rounded-[var(--radius-md)] transition"
+              >
+                清除全部
+              </button>
+            )}
+          </>
+        }
+      />
 
       {/* 操作区 */}
       <Button
@@ -269,7 +298,7 @@ export default function HomePage() {
           <div className="mt-12 text-center py-20 text-gray-400">
             <AlertTriangle className="w-16 h-16 mx-auto mb-4 opacity-20" />
             <p className="text-lg">暂无预警</p>
-            <p className="text-sm mt-2">添加自选股后点击上方按钮开始检测</p>
+            <p className="text-sm mt-2">添加自选后点击上方按钮开始检测</p>
           </div>
         ) : (
           <div className="mt-[var(--space-section)] space-y-3">
@@ -278,12 +307,12 @@ export default function HomePage() {
                 key={group.stockCode}
                 onClick={() => router.push(`/stock/${group.stockCode}`)}
                 className={cn(
-                  "bg-white dark:bg-gray-900 rounded-[var(--radius-lg)] shadow-[var(--shadow-card)] overflow-hidden transition-shadow hover:shadow-[var(--shadow-hover)] cursor-pointer",
-                  group.alerts.every(a => a.isExpired) && "opacity-50"
+                  "border-2 rounded-[var(--radius-lg)] shadow-[var(--shadow-card)] overflow-hidden transition-shadow hover:shadow-[var(--shadow-hover)] cursor-pointer",
+                  groupTone(group)
                 )}
               >
                 {/* 扫读层：股名 + 强度 + 时间，一眼获取关键信息 */}
-                <div className="px-4 pt-3.5 pb-3 border-b border-gray-100 dark:border-gray-800">
+                <div className="px-4 pt-3.5 pb-3 border-b border-black/5 dark:border-white/10">
                   <div className="flex items-center justify-between gap-2">
                     <div className="flex items-center gap-2 min-w-0">
                       <h3 className="font-semibold text-gray-900 dark:text-white truncate">{group.stockName}</h3>
@@ -307,7 +336,7 @@ export default function HomePage() {
                       <button
                         onClick={(e) => { e.stopPropagation(); clearAlerts(group.stockCode); }}
                         className="p-1 text-gray-400 hover:text-[var(--color-danger)] hover:bg-[var(--color-danger-soft)] rounded-[var(--radius-sm)] transition"
-                        title="清除此股预警"
+                        title="清除该标的预警"
                       >
                         <Trash2 className="w-4 h-4" />
                       </button>
@@ -329,7 +358,7 @@ export default function HomePage() {
 
                   {/* 买入信号：≥2 条聚合成"共振" */}
                   {group.buyResonance ? (
-                    <div className="rounded-[var(--radius-md)] bg-[var(--color-up-soft)] border border-[var(--color-up-border)] overflow-hidden">
+                    <div className="rounded-[var(--radius-md)] bg-white/70 dark:bg-gray-900/50 border border-[var(--color-up-border)] overflow-hidden">
                       <button
                         type="button"
                         onClick={(e) => { e.stopPropagation(); toggleBuyExpand(group.stockCode); }}

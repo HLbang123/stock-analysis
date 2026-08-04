@@ -3,6 +3,7 @@
 import { useState, useEffect, useCallback } from 'react';
 import { EChart } from '@/components/market/EChart';
 import { Card } from '@/components/ui/card';
+import { PageHeader } from '@/components/ui/page-header';
 import { Select } from '@/components/ui/input';
 import { cn } from '@/lib/utils';
 import { getJSON, getJSONOr } from '@/services/api';
@@ -79,12 +80,11 @@ export default function MarketPage() {
 
   return (
     <div>
-      <h1 className="text-xl font-bold text-gray-900 dark:text-white mb-1 flex items-center gap-2">
-        <LineChart className="w-6 h-6 text-blue-500" /> 大盘
-      </h1>
-      <p className="text-xs text-gray-400 mb-4">
-        数据日期：{latest?.date || '--'} · 市场级宏观温度，辅助判断仓位轻重
-      </p>
+      <PageHeader
+        title="大盘"
+        icon={<LineChart className="w-6 h-6 text-[var(--color-accent)]" />}
+        subtitle={`数据日期：${latest?.date || '--'} · 市场级宏观温度，辅助判断仓位轻重`}
+      />
 
       {loading && (
         <div className="flex items-center justify-center py-20 text-gray-400">
@@ -124,7 +124,7 @@ export default function MarketPage() {
           {/* 2. 大势温度 */}
           <Card className="p-4">
             <h3 className="font-medium mb-1">大势温度（多头占比）</h3>
-            <p className="text-xs text-gray-500 mb-2">MA55 上方占比 & RPS≥87 强势股占比（%）</p>
+            <p className="text-xs text-gray-500 mb-2">MA55 上方占比 & RPS≥87 强势标的占比（%）</p>
             <div className="h-56">
               {breadth.length > 0 ? (
                 <EChart option={{
@@ -146,14 +146,14 @@ export default function MarketPage() {
           <Card className="p-4">
             <h3 className="font-medium mb-1">行业强度榜（RPS≥87 占比 %）</h3>
             <p className="text-xs text-gray-500 mb-2">资金在哪个方向</p>
-            <div className="h-72">
+            <div className="h-[30rem]">
               {sectors.length > 0 ? (
                 <EChart option={{
                   tooltip: { formatter: '{b}: {c}%' },
-                  grid: { left: 90, right: 30, top: 10, bottom: 20 },
+                  grid: { left: 120, right: 30, top: 10, bottom: 20 },
                   xAxis: { type: 'value', max: 80 },
-                  yAxis: { type: 'category', data: sectors.slice(0, 20).map(s => s.industry), inverse: true, axisLabel: { fontSize: 10 } },
-                  series: [{ type: 'bar', data: sectors.slice(0, 20).map(s => s.ratio), itemStyle: { color: '#3b82f6' } }],
+                  yAxis: { type: 'category', data: sectors.slice(0, 20).map(s => s.industry), inverse: true, axisLabel: { fontSize: 11, interval: 0 } },
+                  series: [{ type: 'bar', data: sectors.slice(0, 20).map(s => s.ratio), itemStyle: { color: '#3b82f6' }, label: { show: true, position: 'right', fontSize: 10 } }],
                 }} />
               ) : <Empty />}
             </div>
@@ -325,7 +325,7 @@ export default function MarketPage() {
             <h3 className="font-medium mb-1">热度排行</h3>
             {(hotStocks?.hot?.item?.length ?? 0) > 0 ? (
               <>
-                <p className="text-xs text-gray-500 mb-2">热股 Top10（24h）</p>
+                <p className="text-xs text-gray-500 mb-2">热门标的 Top10（24h）</p>
                 <div className="space-y-1 mb-3">
                   {(hotStocks?.hot?.item ?? []).slice(0, 10).map((s) => (
                     <div key={s.thscode} className="flex items-center gap-2 text-xs py-0.5">

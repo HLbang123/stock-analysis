@@ -6,7 +6,7 @@
  * 后端按「策略+数据日」去重，首跑者花 token，后续秒取缓存；降级时后续 token 自动补救。
  */
 
-import { useState, useEffect, useCallback, Fragment } from 'react';
+import { useState, useEffect, useCallback, useMemo, Fragment } from 'react';
 import { useRouter } from 'next/navigation';
 import { useAiScreenStore } from '@/store/ai-screen-store';
 import { cn } from '@/lib/utils';
@@ -288,6 +288,36 @@ function RunResult({
   setShowLlmDetail: (b: boolean) => void;
   onNav: (code: string) => void;
 }) {
+  // 结果排序：默认按 rank（后端综合序），可点表头切综合分/涨跌幅，再点切换升降序，三次点击回默认
+  const [sortKey, setSortKey] = useState<'rank' | 'score' | 'change'>('rank');
+  const [sortDir, setSortDir] = useState<'desc' | 'asc'>('desc');
+
+  const toggleSort = (key: 'score' | 'change') => {
+    setExpanded(null); // 排序变化后展开行会错位，先收起
+    if (sortKey === key) {
+      if (sortDir === 'desc') setSortDir('asc');
+      else { setSortKey('rank'); setSortDir('desc'); }
+    } else {
+      setSortKey(key);
+      setSortDir('desc');
+    }
+  };
+
+  const sortedPicks = useMemo(() => {
+    if (sortKey === 'rank') return picks;
+    const val = (k: AiPick) => (sortKey === 'score' ? k.finalScore : k.latestChange);
+    return [...picks].sort((a, b) => {
+      const av = val(a), bv = val(b);
+      if (av == null && bv == null) return 0;
+      if (av == null) return 1; // 缺数据恒排最后
+      if (bv == null) return -1;
+      return sortDir === 'desc' ? bv - av : av - bv;
+    });
+  }, [picks, sortKey, sortDir]);
+
+  const sortMark = (key: 'score' | 'change') =>
+    sortKey === key ? (sortDir === 'desc' ? ' ↓' : ' ↑') : '';
+
   return (
     <div className="space-y-4">
       <Card className="p-4">
@@ -331,16 +361,24 @@ function RunResult({
           <table className="w-full text-sm">
             <thead>
               <tr className="border-b border-gray-100 dark:border-gray-800 text-left text-xs text-gray-400 uppercase">
-                <th className="px-3 py-2 w-10">#</th>
-                <th className="px-3 py-2">股票</th>
-                <th className="px-3 py-2 text-right">综合分</th>
-                <th className="px-3 py-2 text-right">规则/LLM</th>
-                <th className="px-3 py-2 text-right">涨跌</th>
+                <th className="px-3 py-2 w-10 whitespace-nowrap">#</th>
+                <th className="px-3 py-2 whitespace-nowrap">标的</th>
+                <th
+                  className="px-3 py-2 text-right whitespace-nowrap cursor-pointer select-none hover:text-gray-600 dark:hover:text-gray-300"
+                  title="点击按综合分排序"
+                  onClick={() => toggleSort('score')}
+                >综合分{sortMark('score')}</th>
+                <th className="px-3 py-2 text-right whitespace-nowrap">规则/LLM</th>
+                <th
+                  className="px-3 py-2 text-right whitespace-nowrap cursor-pointer select-none hover:text-gray-600 dark:hover:text-gray-300"
+                  title="点击按涨跌幅排序"
+                  onClick={() => toggleSort('change')}
+                >涨跌{sortMark('change')}</th>
                 <th className="px-3 py-2 min-w-[220px]">理由 / 风险</th>
               </tr>
             </thead>
             <tbody>
-              {picks.map((k, i) => (
+              {sortedPicks.map((k, i) => (
                 <Fragment key={k.tsCode}>
                   <tr
                     onClick={() => setExpanded(expanded === i ? null : i)}

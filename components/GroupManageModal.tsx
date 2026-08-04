@@ -2,12 +2,12 @@
 
 /**
  * 自选分组管理弹窗 — 新建 / 重命名 / 删除分组。
- * 默认分组不可删除不可重命名。删除两步确认（3 秒未点自动恢复）。
+ * 删除两步确认（3 秒未点自动恢复）；删除后组内自选变为未分组。
  */
 
 import { useState } from 'react';
 import { Plus, Pencil, Trash2, Check } from 'lucide-react';
-import { useStockStore, DEFAULT_GROUP_ID, DEFAULT_GROUP_NAME } from '@/store';
+import { useStockStore } from '@/store';
 import { toast } from 'sonner';
 import { cn } from '@/lib/utils';
 import { Modal } from '@/components/ui/modal';
@@ -22,7 +22,7 @@ export function GroupManageModal({ onClose }: { onClose: () => void }) {
   const [editName, setEditName] = useState('');
   const [confirmDeleteId, setConfirmDeleteId] = useState<string | null>(null);
 
-  const countOf = (id: string) => watchlist.filter(s => (s.groupId ?? DEFAULT_GROUP_ID) === id).length;
+  const countOf = (id: string) => watchlist.filter(s => s.groupId === id).length;
 
   const handleCreate = () => {
     if (addGroup(newName)) {
@@ -51,7 +51,7 @@ export function GroupManageModal({ onClose }: { onClose: () => void }) {
     if (confirmDeleteId === id) {
       deleteGroup(id);
       setConfirmDeleteId(null);
-      toast.success(`已删除「${name}」，其中自选已移至默认分组`);
+      toast.success(`已删除「${name}」，其中自选已变为未分组`);
     } else {
       setConfirmDeleteId(id);
       setTimeout(() => setConfirmDeleteId(c => (c === id ? null : c)), 3000);
@@ -82,8 +82,10 @@ export function GroupManageModal({ onClose }: { onClose: () => void }) {
 
           {/* 分组列表 */}
           <div className="space-y-2">
+            {groups.length === 0 && (
+              <p className="text-xs text-gray-400 text-center py-3">还没有分组，先在上方创建一个</p>
+            )}
             {groups.map(g => {
-              const isDefault = g.id === DEFAULT_GROUP_ID;
               const isEditing = editingId === g.id;
               const isConfirming = confirmDeleteId === g.id;
               return (
@@ -107,9 +109,7 @@ export function GroupManageModal({ onClose }: { onClose: () => void }) {
 
                   <span className="text-xs text-gray-400 shrink-0">{countOf(g.id)} 只</span>
 
-                  {isDefault ? (
-                    <span className="text-xs text-gray-400 border border-gray-200 dark:border-gray-700 rounded px-1.5 py-0.5 shrink-0">默认</span>
-                  ) : isEditing ? (
+                  {isEditing ? (
                     <button
                       onClick={() => saveRename(g.id)}
                       className="p-1.5 text-green-600 hover:bg-green-50 dark:hover:bg-green-950 rounded-lg shrink-0"
@@ -146,7 +146,7 @@ export function GroupManageModal({ onClose }: { onClose: () => void }) {
           </div>
 
           <p className="text-xs text-gray-400">
-            删除分组后，组内自选将移至{DEFAULT_GROUP_NAME}。
+            删除分组后，组内自选将变为未分组，仍可在「全部」中看到。
           </p>
       </div>
     </Modal>

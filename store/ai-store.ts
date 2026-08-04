@@ -24,6 +24,8 @@ export interface LastSession {
   deepResult: DeepResult | null;
   userView: string;
   userViewReason: string;
+  /** 搜索选中的非自选标的（自选内标的为 null），随会话持久化以便恢复 */
+  extraStock?: { code: string; name: string; market: string; pureCode: string } | null;
 }
 
 export interface AiAnalysisRecord {

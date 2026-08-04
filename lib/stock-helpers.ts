@@ -72,3 +72,65 @@ export function splitKLines(kLines: KLineData[]): KLineSeries {
 export function combinedBars(s: KLineSeries): KLineData[] {
   return s.intradayBar ? [...s.completedBars, s.intradayBar] : s.completedBars;
 }
+
+export type MaCrossState = 'golden' | 'death' | 'pending';
+
+/**
+ * 盘中成交量时间归一化系数 (0,1]。
+ * 预警在交易时段跑时，合成 bar 的 volume 是半天累积量，直接和全日基线比会
+ * 上午漏报放量、盘中误报缩量；比较前应用 volume / pace 折算成等效全日量。
+ * A股成交量日内呈 U 形，分段线性锚点：10:00≈30% / 11:30≈55% / 14:00≈80% / 15:00=100%；
+ * 开盘前 floor 0.1（防集合竞价小量被过度放大），午休恒 0.55，盘后/非交易时段返回 1。
+ * updateTime 形如 "2026-07-18 14:30"（行情自带时间）；缺失时按当前北京时间。
+ */
+export function intradayVolumePace(updateTime?: string): number {
+  let mins: number;
+  const m = updateTime?.match(/(\d{1,2}):(\d{2})/);
+  if (m) {
+    mins = Number(m[1]) * 60 + Number(m[2]);
+  } else {
+    const parts = new Intl.DateTimeFormat('zh-CN', {
+      timeZone: 'Asia/Shanghai', hour: '2-digit', minute: '2-digit', hour12: false,
+    }).formatToParts(new Date());
+    mins = Number(parts.find(p => p.type === 'hour')!.value) * 60 + Number(parts.find(p => p.type === 'minute')!.value);
+  }
+  const T = (h: number, mi: number) => h * 60 + mi;
+  if (mins < T(9, 30)) return 0.1;
+  if (mins < T(10, 0)) return 0.1 + (0.3 - 0.1) * (mins - T(9, 30)) / 30;
+  if (mins < T(11, 30)) return 0.3 + (0.55 - 0.3) * (mins - T(10, 0)) / 90;
+  if (mins < T(13, 0)) return 0.55; // 午休量不增长
+  if (mins < T(14, 0)) return 0.55 + (0.8 - 0.55) * (mins - T(13, 0)) / 60;
+  if (mins < T(15, 0)) return 0.8 + (1 - 0.8) * (mins - T(14, 0)) / 60;
+  return 1;
+}
+
+/**
+ * MA5/MA13 交叉状态（与详情页 trendStatus、扫描器「即将金叉」同源口径）：
+ *  - golden/death：最近 3 根内发生上穿/下穿
+ *  - pending：尚未金叉，但 MA5<MA13 差距 <2% 且 MA5 在上行（扫描器即将金叉定义）
+ * closes 最后一根可传盘中实时价（详情页同款做法），无实时价就传纯日K收盘序列。
+ * 数据不足（<15 根）或无信号返回 null。
+ */
+export function computeMaCross(closes: number[]): MaCrossState | null {
+  if (closes.length < 15) return null;
+  const maSeries = (p: number) => {
+    const out: number[] = [];
+    let sum = 0;
+    for (let i = 0; i < closes.length; i++) {
+      sum += closes[i];
+      if (i >= p) sum -= closes[i - p];
+      out.push(i >= p - 1 ? sum / p : NaN);
+    }
+    return out;
+  };
+  const ma5 = maSeries(5), ma13 = maSeries(13);
+  const n = closes.length - 1;
+  for (let i = n; i > n - 3 && i >= 1; i--) {
+    const prevBull = ma5[i - 1] > ma13[i - 1];
+    const curBull = ma5[i] > ma13[i];
+    if (!prevBull && curBull) return 'golden';
+    if (prevBull && !curBull) return 'death';
+  }
+  if (ma5[n] < ma13[n] && (ma13[n] - ma5[n]) / ma13[n] < 0.02 && ma5[n] > ma5[n - 1]) return 'pending';
+  return null;
+}
