@@ -2,18 +2,21 @@
 
 import { useEffect, useState, useRef } from 'react';
 import { useRouter } from 'next/navigation';
-import { useStockStore } from '@/store';
+import { useStockStore, DEFAULT_GROUP_ID } from '@/store';
 import { getRealtimeQuote, parseStockCode, searchStocks } from '@/services/stockApi';
 import { isETF, validateStockCode } from '@/lib/identify';
 import { RealtimeQuote } from '@/types';
 import { formatPrice, formatChange, formatVolume, cn } from '@/lib/utils';
-import { Plus, Search, Trash2, TrendingUp, ScanLine, Upload, Camera, X, Check } from 'lucide-react';
+import { Plus, Search, Trash2, TrendingUp, ScanLine, Upload, Camera, X, Check, FolderInput } from 'lucide-react';
 import { toast } from 'sonner';
 import { Button } from '@/components/ui/button';
+import { GroupBar, ALL_GROUP_ID } from '@/components/GroupBar';
+import { GroupManageModal } from '@/components/GroupManageModal';
+import { MoveToGroupMenu } from '@/components/MoveToGroupMenu';
 
 export default function WatchlistPage() {
   const router = useRouter();
-  const { watchlist, addToWatchlist, removeFromWatchlist, isInWatchlist } = useStockStore();
+  const { watchlist, groups, addToWatchlist, removeFromWatchlist, isInWatchlist } = useStockStore();
   const [searchQuery, setSearchQuery] = useState('');
   const [searchResults, setSearchResults] = useState<RealtimeQuote[]>([]);
   const [isSearching, setIsSearching] = useState(false);
@@ -21,6 +24,11 @@ export default function WatchlistPage() {
   const [stockQuotes, setStockQuotes] = useState<Map<string, RealtimeQuote>>(new Map());
   const debounceRef = useRef<NodeJS.Timeout | null>(null);
   const ocrFileRef = useRef<HTMLInputElement>(null);
+
+  // 分组状态
+  const [selectedGroupId, setSelectedGroupId] = useState<string>(ALL_GROUP_ID);
+  const [showGroupManage, setShowGroupManage] = useState(false);
+  const [moveMenuFor, setMoveMenuFor] = useState<string | null>(null);
 
   // OCR 状态
   const [showOcr, setShowOcr] = useState(false);
@@ -84,26 +92,49 @@ export default function WatchlistPage() {
 
   const handleOcrAdd = (code: string, name: string) => {
     const parsed = parseStockCode(code);
-    addToWatchlist({ code, name, market: parsed.market, pureCode: parsed.pureCode });
+    addToWatchlist({ code, name, market: parsed.market, pureCode: parsed.pureCode }, currentGroupId);
     setOcrResults(prev => prev.map(r => r.code === code ? { ...r, added: true } : r));
     toast.success(`已添加 ${name}`);
   };
 
-  // 刷新自选股行情
+  // 刷新自选股行情（并发拉取，替代原串行循环）
   const refreshQuotes = async () => {
+    const results = await Promise.all(
+      watchlist.map(async stock => {
+        const quote = await getRealtimeQuote(stock.code);
+        return quote ? ([stock.code, quote] as const) : null;
+      })
+    );
     const quotes = new Map<string, RealtimeQuote>();
-    for (const stock of watchlist) {
-      const quote = await getRealtimeQuote(stock.code);
-      if (quote) {
-        quotes.set(stock.code, quote);
-      }
-    }
+    for (const r of results) if (r) quotes.set(r[0], r[1]);
     setStockQuotes(quotes);
   };
 
+  // 只在标的「增删」时重拉行情；position 占比、groupId 分组归属变化不触发
+  // （原实现依赖 [watchlist] 引用，导致持仓占比每敲一个数字就重拉全部行情）
+  const watchlistCodesKey = watchlist.map(s => s.code).join(',');
   useEffect(() => {
     refreshQuotes();
-  }, [watchlist]);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [watchlistCodesKey]);
+
+  // 分组派生：切换组只过滤展示，不重拉行情
+  const activeGroupName = selectedGroupId === ALL_GROUP_ID
+    ? '全部'
+    : groups.find(g => g.id === selectedGroupId)?.name ?? '全部';
+  const visibleWatchlist = selectedGroupId === ALL_GROUP_ID
+    ? watchlist
+    : watchlist.filter(s => (s.groupId ?? DEFAULT_GROUP_ID) === selectedGroupId);
+
+  // 选中组被删除时自动回退「全部」
+  useEffect(() => {
+    if (selectedGroupId !== ALL_GROUP_ID && !groups.some(g => g.id === selectedGroupId)) {
+      setSelectedGroupId(ALL_GROUP_ID);
+    }
+  }, [groups, selectedGroupId]);
+
+  // 页内添加(搜索/OCR)归当前选中组；「全部」时归默认分组
+  const currentGroupId = selectedGroupId === ALL_GROUP_ID ? undefined : selectedGroupId;
 
   // 输入即搜（防抖400ms + 竞态防护）
   useEffect(() => {
@@ -140,7 +171,7 @@ export default function WatchlistPage() {
       name: quote.name,
       market,
       pureCode,
-    });
+    }, currentGroupId);
     setSearchQuery('');
     setSearchResults([]);
     setHasSearched(false);
@@ -294,6 +325,13 @@ export default function WatchlistPage() {
         )}
       </div>
 
+      {/* 分组栏 */}
+      <GroupBar
+        selectedId={selectedGroupId}
+        onSelect={setSelectedGroupId}
+        onManage={() => setShowGroupManage(true)}
+      />
+
       {/* 自选股列表 */}
       {watchlist.length === 0 ? (
         <div className="text-center py-20 text-gray-400">
@@ -301,10 +339,16 @@ export default function WatchlistPage() {
           <p className="text-lg">暂无自选股</p>
           <p className="text-sm mt-2">在上方搜索框输入股票代码添加</p>
         </div>
+      ) : visibleWatchlist.length === 0 ? (
+        <div className="text-center py-16 text-gray-400 bg-white dark:bg-gray-900 rounded-xl shadow-sm">
+          <FolderInput className="w-12 h-12 mx-auto mb-3 opacity-20" />
+          <p className="text-base">「{activeGroupName}」暂无自选</p>
+          <p className="text-sm mt-2">可搜索添加，或用卡片上的分组入口移动进来</p>
+        </div>
       ) : (
         <>
           <div className="flex items-center justify-between mb-4">
-            <span className="text-sm text-gray-500">共 {watchlist.length} 只股票</span>
+            <span className="text-sm text-gray-500">{activeGroupName} · {visibleWatchlist.length} 只</span>
             <button
               onClick={refreshQuotes}
               className="text-sm text-blue-600 hover:text-blue-700 flex items-center gap-1"
@@ -315,7 +359,7 @@ export default function WatchlistPage() {
           </div>
 
           <div className="space-y-3">
-            {watchlist.map((stock) => {
+            {visibleWatchlist.map((stock) => {
               const quote = stockQuotes.get(stock.code);
               return (
                 <div
@@ -342,6 +386,22 @@ export default function WatchlistPage() {
                           <p className={cn("text-sm", quote.changePercent >= 0 ? "text-red-500" : "text-green-500")}>
                             {formatChange(quote.changePercent)}
                           </p>
+                        </div>
+                        <div className="relative">
+                          <button
+                            onClick={(e) => { e.stopPropagation(); setMoveMenuFor(moveMenuFor === stock.code ? null : stock.code); }}
+                            className="p-2 text-gray-400 hover:text-blue-600 hover:bg-blue-50 dark:hover:bg-blue-950 rounded-lg transition"
+                            title="移动到分组"
+                          >
+                            <FolderInput className="w-4 h-4" />
+                          </button>
+                          {moveMenuFor === stock.code && (
+                            <MoveToGroupMenu
+                              code={stock.code}
+                              onClose={() => setMoveMenuFor(null)}
+                              onCreateGroup={() => setShowGroupManage(true)}
+                            />
+                          )}
                         </div>
                         <button
                           onClick={(e) => { e.stopPropagation(); removeFromWatchlist(stock.code); }}
@@ -388,6 +448,8 @@ export default function WatchlistPage() {
           </div>
         </>
       )}
+
+      {showGroupManage && <GroupManageModal onClose={() => setShowGroupManage(false)} />}
     </div>
   );
 }

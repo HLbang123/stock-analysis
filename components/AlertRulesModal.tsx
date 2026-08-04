@@ -1,9 +1,9 @@
 'use client';
 
-import { X } from 'lucide-react';
 import { ALERT_RULES, isBuyRule, REFERENCE_RULE_IDS } from '@/services/alertRules';
 import type { AlertRule } from '@/types';
 import { cn } from '@/lib/utils';
+import { Modal } from '@/components/ui/modal';
 
 interface Props {
   onClose: () => void;
@@ -47,30 +47,12 @@ export function AlertRulesModal({ onClose }: Props) {
   const ref = ALERT_RULES.filter(r => REFERENCE_RULE_IDS.has(r.id));
 
   return (
-    <div
-      className="fixed inset-0 z-50 flex items-end sm:items-center justify-center p-0 sm:p-4 bg-black/40"
-      onClick={onClose}
-    >
-      <div
-        className="bg-white dark:bg-gray-900 w-full sm:max-w-lg max-h-[80vh] rounded-t-2xl sm:rounded-2xl overflow-hidden flex flex-col"
-        onClick={e => e.stopPropagation()}
-      >
-        <div className="flex items-center justify-between px-4 py-3 border-b border-gray-100 dark:border-gray-800">
-          <h3 className="text-sm font-semibold text-gray-800 dark:text-gray-200">预警规则说明</h3>
-          <button
-            onClick={onClose}
-            className="p-1 text-gray-400 hover:text-gray-600 dark:hover:text-gray-300 rounded-lg transition"
-            aria-label="关闭"
-          >
-            <X className="w-5 h-5" />
-          </button>
-        </div>
-        <div className="flex-1 overflow-y-auto p-4">
-          <RuleGroup title="卖出 / 风险信号" hint="破位·见顶·离场" rules={sell} />
-          <RuleGroup title="买入 / 机会信号" hint="金叉·突破·站稳" rules={buy} />
-          <RuleGroup title="参考信号" hint="筹码等辅助判断" rules={ref} />
-        </div>
+    <Modal title="预警规则说明" onClose={onClose}>
+      <div className="p-4">
+        <RuleGroup title="卖出 / 风险信号" hint="破位·见顶·离场" rules={sell} />
+        <RuleGroup title="买入 / 机会信号" hint="金叉·突破·站稳" rules={buy} />
+        <RuleGroup title="参考信号" hint="筹码等辅助判断" rules={ref} />
       </div>
-    </div>
+    </Modal>
   );
 }

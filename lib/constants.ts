@@ -48,6 +48,5 @@ export const ROUTES = {
   watchlist: "/watchlist",
   ai: "/ai",
   scanner: "/scanner",
-  ocr: "/ocr",
   stockDetail: (code: string) => `/stock/${code}`,
 } as const;

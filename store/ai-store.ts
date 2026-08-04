@@ -1,5 +1,7 @@
 import { create } from 'zustand';
 import { persist } from 'zustand/middleware';
+import type { TScorePanelResult } from '@/components/ai/TScorePanel';
+import type { DeepResult } from '@/services/deep-analysis/engine';
 
 export interface AiProfile {
   id: string;
@@ -18,8 +20,8 @@ export interface ChatMessage {
 /** 上次分析会话快照（用于切路由/切模式后恢复，避免结果丢失） */
 export interface LastSession {
   selectedCode: string;
-  result: unknown; // TScoreResult
-  deepResult: unknown; // 深度分析完整结果（含三阶段原文 + structured）
+  result: TScorePanelResult | null;
+  deepResult: DeepResult | null;
   userView: string;
   userViewReason: string;
 }

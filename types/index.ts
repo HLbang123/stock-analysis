@@ -5,6 +5,13 @@ export interface Stock {
   market: string;    // 市场: sh/sz/bj
   pureCode: string;  // 纯数字代码: 600519
   positionPercent?: number; // 可选: 持仓占比 0-100
+  groupId?: string;  // 可选: 所属自选分组 id，缺省视为默认分组
+}
+
+// 自选分组
+export interface WatchlistGroup {
+  id: string;
+  name: string;
 }
 
 // 实时行情

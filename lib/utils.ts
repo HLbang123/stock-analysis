@@ -5,6 +5,11 @@ export function cn(...inputs: ClassValue[]) {
   return twMerge(clsx(inputs));
 }
 
+/** 通用短 id（时间戳 + 随机，base36）。全项目唯一 id 生成器。 */
+export function generateId(): string {
+  return Date.now().toString(36) + Math.random().toString(36).slice(2);
+}
+
 /**
  * 格式化价格
  */

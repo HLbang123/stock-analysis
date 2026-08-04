@@ -8,8 +8,9 @@
 
 import { useState, useEffect, useCallback } from 'react';
 import { Card } from '@/components/ui/card';
-import { Loader2, RefreshCw, Activity, Target } from 'lucide-react';
+import { Activity, Target } from 'lucide-react';
 import { cn } from '@/lib/utils';
+import { pct, signed, Metric, StatsHeader, StatsEmpty } from './stats-primitives';
 
 interface Stats {
   summary: {
@@ -27,9 +28,6 @@ interface Stats {
   confidenceBuckets: { bucket: string; count: number; winRate: number | null; avgReturn: number | null }[];
   positionBuckets: { bucket: string; count: number; winRate: number | null; avgReturn: number | null }[];
 }
-
-const pct = (v: number | null | undefined, d = 1) => (v == null ? '--' : v.toFixed(d));
-const signed = (v: number | null | undefined, d = 2) => (v == null ? '--' : `${v >= 0 ? '+' : ''}${v.toFixed(d)}`);
 
 const ACTION_TONE: Record<string, string> = {
   '买入': 'text-red-600',
@@ -62,17 +60,14 @@ export function DeepAnalysisStats() {
 
   return (
     <div className="space-y-4">
-      <div className="flex items-center justify-between">
-        <p className="text-xs text-gray-500 dark:text-gray-400">
-          基于 T+{stats?.summary.primaryN ?? 5} 绝对收益。全局匿名聚合，样本不足显示 --。
-        </p>
-        <button onClick={load} disabled={loading} className="text-xs text-purple-600 flex items-center gap-1 disabled:opacity-50">
-          {loading ? <Loader2 className="w-3.5 h-3.5 animate-spin" /> : <RefreshCw className="w-3.5 h-3.5" />} 刷新
-        </button>
-      </div>
+      <StatsHeader
+        note={<>基于 T+{stats?.summary.primaryN ?? 5} 绝对收益。全局匿名聚合，样本不足显示 --。</>}
+        onRefresh={load}
+        loading={loading}
+      />
 
-      {!stats && !loading && <div className="text-center py-12 text-gray-400 text-sm">暂无回测数据（深度分析落库后按日回填）</div>}
-      {stats && stats.summary.totalRecords === 0 && <div className="text-center py-12 text-gray-400 text-sm">暂无回测数据（深度分析落库后按日回填）</div>}
+      {!stats && !loading && <StatsEmpty>暂无回测数据（深度分析落库后按日回填）</StatsEmpty>}
+      {stats && stats.summary.totalRecords === 0 && <StatsEmpty>暂无回测数据（深度分析落库后按日回填）</StatsEmpty>}
 
       {stats && stats.summary.totalRecords > 0 && (
         <>
@@ -169,15 +164,6 @@ export function DeepAnalysisStats() {
           </div>
         </>
       )}
-    </div>
-  );
-}
-
-function Metric({ label, value, tone }: { label: string; value: string; tone?: 'up' | 'down' }) {
-  return (
-    <div>
-      <div className="text-xs text-gray-400">{label}</div>
-      <div className={cn('text-lg font-semibold mt-0.5', tone === 'up' ? 'text-red-600' : tone === 'down' ? 'text-green-600' : 'text-gray-900 dark:text-white')}>{value}</div>
     </div>
   );
 }

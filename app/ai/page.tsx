@@ -1,27 +1,24 @@
 'use client';
 
-import { useState, useCallback, useRef, useEffect } from 'react';
+import { useState, useRef, useEffect } from 'react';
 import { useStockStore } from '@/store';
 import { useAiStore, AiProfile } from '@/store/ai-store';
-import { getRealtimeQuote, getKLineSina, getRealtimeQuoteCached, getKLineSinaCached, getIndustry, fetchMarketStatusNote, getChipData, getMinuteDataCached } from '@/services/stockApi';
+import { getRealtimeQuote, getKLineSina, getMinuteDataCached, getChipData, fetchMarketStatusNote } from '@/services/stockApi';
 import { ALERT_RULES, checkAllRules } from '@/services/alertRules';
 import { buildTscoreSystemPrompt, buildTscoreUserPrompt } from '@/services/t-score/prompt';
 import { buildIntradayContext } from '@/services/t-score/intraday';
 import { computeTScore } from '@/services/t-score/scorer';
-import {
-  buildAnalystSystemPrompt, buildAnalystUserPrompt,
-  buildVerdictSystemPrompt, buildVerdictUserPrompt,
-  buildReflectionContext, buildDebateDataPrompt,
-} from '@/services/deepAnalysisPrompt';
-import { computeKeyLevels, formatLevelsForPrompt, type TradeLevels, type MarketRegime } from '@/services/deep-analysis/levels';
-import { calculateIndicators, formatIndicatorsForPrompt } from '@/lib/indicators';
+import { calculateIndicators } from '@/lib/indicators';
 import { isETF } from '@/lib/identify';
 import { cn } from '@/lib/utils';
 import { buildUpdatedKLines } from '@/lib/stock-helpers';
 import { Brain, Settings, Loader2, Sparkles, Send, History, BarChart3 } from 'lucide-react';
-import { fetchTushareData, formatTushareForPrompt } from '@/services/tushareData';
+import { postJSON } from '@/services/api';
 import { toast } from 'sonner';
 import { Button } from '@/components/ui/button';
+import { Card } from '@/components/ui/card';
+import { Tabs } from '@/components/ui/tabs';
+import { Input, Select } from '@/components/ui/input';
 import { ProfileSettingsModal } from '@/components/ai/ProfileSettingsModal';
 import { ProfileFormModal } from '@/components/ai/ProfileFormModal';
 import { AnalysisHistory } from '@/components/ai/AnalysisHistory';
@@ -32,6 +29,10 @@ import { AiScreenPanel } from '@/components/ai/AiScreenPanel';
 import { TScorePanel, type TScorePanelResult } from '@/components/ai/TScorePanel';
 import { TermTooltip } from '@/components/ui/TermTooltip';
 import { generateId } from '@/components/ai/shared';
+import {
+  prepareDeepContext, runDeepAnalysisStream, buildDeepSummary, buildDeepSuggestion, saveDeepEval,
+  type DeepResult, type DeepStage,
+} from '@/services/deep-analysis/engine';
 
 /** 波段评分结果（客户端算的因子分 + 路由返回的 LLM 微调合并） */
 type TScoreResult = TScorePanelResult;
@@ -49,43 +50,13 @@ export default function AiPage() {
   const [editingProfile, setEditingProfile] = useState<AiProfile | null>(null);
   const [selectedCode, setSelectedCode] = useState<string>(aiStore.lastSession?.selectedCode ?? '');
   const [isAnalyzing, setIsAnalyzing] = useState(false);
-  const [result, setResult] = useState<TScoreResult | null>((aiStore.lastSession?.result as TScoreResult | null) ?? null);
+  const [result, setResult] = useState<TScoreResult | null>(aiStore.lastSession?.result ?? null);
   const [error, setError] = useState<string | null>(null);
   const abortRef = useRef<AbortController | null>(null);
 
   const [isDeepAnalyzing, setIsDeepAnalyzing] = useState(false);
-  const [deepStage, setDeepStage] = useState<'idle' | 'analyst' | 'debate' | 'verdict'>('idle');
-  const [deepResult, setDeepResult] = useState<{
-    analyst: string;
-    analystReasoning?: string;
-    debate: string;
-    debateReasoning?: string;
-    debateError?: string;
-    verdict: string;
-    verdictReasoning?: string;
-    verdictError?: string;
-    levels?: {
-      current: number;
-      supports: { price: number; label: string }[];
-      resistances: { price: number; label: string }[];
-    } | null;
-    structured: {
-      action: string;
-      oneLiner?: string;
-      riskLevel: string;
-      confidence: number;
-      targetLow: number;
-      targetHigh: number;
-      stopLoss: number;
-      position: number;
-      reasoning: string;
-      plan: string;
-      riskNote: string;
-      confidenceScore?: number;
-      clamped?: string[];
-      keyPoints?: string[];
-    } | null;
-  } | null>((aiStore.lastSession?.deepResult as any) ?? null);
+  const [deepStage, setDeepStage] = useState<DeepStage>('idle');
+  const [deepResult, setDeepResult] = useState<DeepResult | null>(aiStore.lastSession?.deepResult ?? null);
   const deepAbortRef = useRef<AbortController | null>(null);
   // 断点续传：记录已完成阶段的输出文本 { analyst, tech, risk, ... }
   const [deepCompleted, setDeepCompleted] = useState<Record<string, string>>({});
@@ -116,82 +87,6 @@ export default function AiPage() {
     setShowSettings(false);
     setShowAddProfile(true);
   };
-
-  // 从阶段三输出中解析结构化决策字段。levels 传入时对目标价/止损/仓位做越界夹紧。
-  const parseVerdictContent = useCallback((text: string, levels?: TradeLevels | null) => {
-    const actionMatch = text.match(/ACTION:(.+)/);
-    const oneLinerMatch = text.match(/ONE_LINER:(.+)/);
-    const riskMatch = text.match(/RISK_LEVEL:(.+)/);
-    const confMatch = text.match(/CONFIDENCE:\s*(\d+)/);
-    const confValue = confMatch ? parseInt(confMatch[1]) : 0;
-    const confScoreValue = confValue / 100;
-    const targetLowMatch = text.match(/TARGET_LOW:(.+)/);
-    const targetHighMatch = text.match(/TARGET_HIGH:(.+)/);
-    const stopMatch = text.match(/STOP_LOSS:(.+)/);
-    const posMatch = text.match(/POSITION:(.+)/);
-    const keyPointsMatch = text.match(/KEY_POINTS:\s*(.+)/);
-
-    const bodySplit = text.split(/^---[\r\n]+/m);
-    let body = bodySplit.length > 1 ? bodySplit.slice(1).join('---\n') : text;
-    // 去掉结构化头字段（已在上方卡片展示，不重复出现在决策理由里）
-    body = body.replace(/^(ONE_LINER|ACTION|RISK_LEVEL|CONFIDENCE(_SCORE)?|TARGET_LOW|TARGET_HIGH|STOP_LOSS|POSITION|KEY_POINTS):.*$/gm, '').replace(/\n{3,}/g, '\n\n').trim();
-
-    let reasoning = body, plan = '', riskNote = '';
-    const planIdx = body.indexOf('### 操作计划');
-    const riskIdx = body.indexOf('### 风险提示');
-
-    if (planIdx >= 0) {
-      reasoning = body.slice(0, planIdx).replace(/^###\s*决策理由\s*\n?/m, '').trim();
-      if (riskIdx >= 0) {
-        plan = body.slice(planIdx, riskIdx).replace(/^###\s*操作计划\s*\n?/m, '').trim();
-        riskNote = body.slice(riskIdx).replace(/^###\s*风险提示\s*\n?/m, '').trim();
-      } else {
-        plan = body.slice(planIdx).replace(/^###\s*操作计划\s*\n?/m, '').trim();
-      }
-    } else {
-      reasoning = body.replace(/^###\s*决策理由\s*\n?/m, '').trim();
-    }
-
-    // 数字解析 + 越界夹紧（数字分工：LLM 必须在候选区间内定夺）
-    const clamped: string[] = [];
-    const toNum = (raw: string | undefined): number => {
-      const v = parseFloat((raw || '').replace(/[^\d.]/g, ''));
-      return Number.isFinite(v) ? v : NaN;
-    };
-    const clamp = (v: number, lo: number, hi: number, label: string): number => {
-      if (!Number.isFinite(v)) return lo;
-      if (v < lo) { clamped.push(`${label}:${v.toFixed(2)}→${lo.toFixed(2)}`); return lo; }
-      if (v > hi) { clamped.push(`${label}:${v.toFixed(2)}→${hi.toFixed(2)}`); return hi; }
-      return v;
-    };
-
-    const tLow = toNum(targetLowMatch?.[1]);
-    const tHigh = toNum(targetHighMatch?.[1]);
-    const stop = toNum(stopMatch?.[1]);
-    const pos = toNum(posMatch?.[1]);
-    const tR = levels?.targetRange, sR = levels?.stopLossRange, pR = levels?.positionRange;
-    const targetLow = tR ? clamp(tLow, tR.low, tR.high, 'target_low') : tLow;
-    const targetHigh = tR ? clamp(tHigh, tR.low, tR.high, 'target_high') : tHigh;
-    const stopLoss = sR ? clamp(stop, sR.low, sR.high, 'stop_loss') : stop;
-    const position = pR ? clamp(pos, pR.low, pR.high, 'position') : pos;
-
-    return {
-      action: actionMatch?.[1]?.trim() || '',
-      oneLiner: oneLinerMatch?.[1]?.trim() || '',
-      riskLevel: riskMatch?.[1]?.trim() || '',
-      confidence: parseInt(confMatch?.[1]?.trim() || '0'),
-      targetLow,
-      targetHigh,
-      stopLoss,
-      position,
-      reasoning, plan, riskNote,
-      confidenceScore: confScoreValue,
-      clamped,
-      keyPoints: keyPointsMatch
-        ? keyPointsMatch[1].split('|').map(p => p.trim()).filter(p => p.length > 0)
-        : [],
-    };
-  }, []);
 
   // 波段评分（替换原心姐快速分析）
   const runTScore = async () => {
@@ -266,18 +161,11 @@ export default function AiPage() {
         positionPercent: stock.positionPercent, marketNote: `[市场状态] ${marketNote}`,
       });
 
-      const res = await fetch('/api/ai/t-score', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          systemPrompt, userPrompt,
-          baseUrl: currentProfile.baseUrl, apiKey: currentProfile.apiKey, model: currentProfile.model,
-          buyScore: t.buyScore, sellScore: t.sellScore,
-        }),
-        signal: abortController.signal,
-      });
-      const data = await res.json();
-      if (!res.ok || data.error) throw new Error(data.error || 'API请求失败');
+      const data = await postJSON('/api/ai/t-score', {
+        systemPrompt, userPrompt,
+        baseUrl: currentProfile.baseUrl, apiKey: currentProfile.apiKey, model: currentProfile.model,
+        buyScore: t.buyScore, sellScore: t.sellScore,
+      }, { signal: abortController.signal });
 
       const final: TScoreResult = {
         degraded: false, degradation: t.degradation,
@@ -351,350 +239,54 @@ export default function AiPage() {
 
     const abortController = new AbortController();
     deepAbortRef.current = abortController;
-    // 断点续传：记录本次运行中已完成的阶段文本
-    const completedMap: Record<string, string> = {};
 
     try {
-      // 获取数据（K线取60根，比波段评分更多）
-      const [quote, kLines, tushareData, rpsRes, breadthRes] = await Promise.all([
-        getRealtimeQuoteCached(selectedCode),
-        getKLineSinaCached(selectedCode, 240, 120),
-        fetchTushareData(selectedCode).catch(async () => {
-          console.warn('[Deep Analysis] Tushare 首次获取失败，2s 后重试...');
-          await new Promise(r => setTimeout(r, 2000));
-          return fetchTushareData(selectedCode).catch(() => null);
-        }),
-        fetch(`/api/stock/rps?code=${selectedCode}`).then(r => r.ok ? r.json() : null).catch(() => null),
-        fetch('/api/market/breadth?days=1').then(r => r.ok ? r.json() : null).catch(() => null),
-      ]);
-
-      if (!quote) throw new Error('获取行情失败');
-
-      // 市场状态判定（用于仓位联动）：breadth 最新日的涨跌比 + 站上55日线比例
-      const breadthLatest = breadthRes?.items?.[0];
-      let marketRegime: MarketRegime = 'neutral';
-      if (breadthLatest) {
-        const ad = (breadthLatest.advance || 0) + (breadthLatest.decline || 0);
-        const adRatio = ad > 0 ? (breadthLatest.advance || 0) / ad : 0.5;
-        const aboveRatio = typeof breadthLatest.aboveMa55Ratio === 'number' ? breadthLatest.aboveMa55Ratio : 0.5;
-        const score = adRatio * 0.5 + aboveRatio * 0.5;
-        marketRegime = score >= 0.6 ? 'strong' : score <= 0.4 ? 'weak' : 'neutral';
+      // 数据准备（抓行情/K线/筹码 + 算指标 + 拼三阶段 prompt）
+      const ctx = await prepareDeepContext(selectedCode, stock, history);
+      if (ctx.tushareIssues.length > 0) {
+        toast.warning(`基本面数据部分缺失：${ctx.tushareIssues.join('；')}`);
       }
 
-      // Tushare 部分接口失败/数据异常时，提示用户但不中断分析
-      const tushareIssues = [
-        ...(tushareData?.errors || []),
-        ...(tushareData?.warnings || []),
-      ];
-      if (tushareIssues.length > 0) {
-        toast.warning(`基本面数据部分缺失：${tushareIssues.join('；')}`);
-      }
-
-      // 格式化 Tushare 基本面数据
-      const tushareBlock = formatTushareForPrompt(tushareData);
-
-      // 运行规则引擎
-      const updatedKLines = kLines.length >= 5 ? buildUpdatedKLines(quote, kLines) : kLines;
-      const chip = await getChipData(selectedCode).catch(() => null);
-      const engineResults = checkAllRules(updatedKLines, quote, ALERT_RULES.filter(r => r.isEnabled), chip);
-      const engineSummary = engineResults.length > 0
-        ? engineResults.map(r => `${r.ruleId}:${r.message}`).join('; ')
-        : '未触发任何破位/死叉/急跌等风险信号，技术面健康';
-
-      // 筹码分布摘要（注入 stage1，让 LLM 解读暧昧形态）
-      const chipNote = chip
-        ? `[筹码分布]\n主峰价位: ${chip.dominantPeak} | 平均成本: ${chip.avgCost} | 获利盘: ${(chip.profitRatio * 100).toFixed(1)}% | 90%集中度: ${chip.concentration90.toFixed(3)}（越小越密集） | 峰位相对位置: ${chip.peakPos.toFixed(3)}（站上主峰为正） | 5日峰位漂移: ${chip.peakDrift.toFixed(3)}（下移为吸筹）\n（筹码形态仅供参考，需结合趋势与量能综合判断）\n\n`
-        : '';
-
-      const quoteJson = JSON.stringify(quote, null, 2);
-      const klineSummary = kLines.slice(-60).map(k =>
-        `${k.date} ${k.open} ${k.high} ${k.low} ${k.close} ${k.volume}`
-      ).join('\n');
-      // 辩手用的近20日K线（精简，控制 token；60日给 stage1）
-      const klineSummary20 = kLines.slice(-20).map(k =>
-        `${k.date} ${k.open} ${k.high} ${k.low} ${k.close} ${k.volume}`
-      ).join('\n');
-
-      // 计算技术指标
-      const indicatorResult = calculateIndicators(updatedKLines);
-      const indicatorBlock = formatIndicatorsForPrompt(indicatorResult);
-
-      // 数字分工：结构化候选价位（止损/目标/仓位区间），verdict 在区间内定夺
-      const tradeLevels = computeKeyLevels({
-        kLines: updatedKLines,
-        indicators: indicatorResult,
-        chip,
-        engineResults,
-        quote,
-        rps250: rpsRes && !rpsRes.error ? rpsRes.rps250 : null,
-        positionPercent: stock.positionPercent,
-        marketRegime,
-      });
-      const levelsText = formatLevelsForPrompt(tradeLevels);
-
-      // 反思上下文（历史分析回顾）
-      const reflectionBlock = buildReflectionContext(
-        selectedCode,
-        history,
-        { price: quote.price, changePercent: quote.changePercent }
-      );
-
-      // 持仓占比
-      const positionNote = stock.positionPercent !== undefined
-        ? `注意：该股票占用户总持仓的${stock.positionPercent}%，请在分析中考虑仓位集中度风险。`
-        : undefined;
-      const positionNoteVerdict = stock.positionPercent !== undefined
-        ? `用户当前持仓占比为${stock.positionPercent}%，请在仓位建议中考虑现有持仓，如需减持请明确说明。`
-        : undefined;
-
-      // 构建三阶段 prompts
-      const marketStatusNote = `[市场状态] ${await fetchMarketStatusNote()}\n\n`;
-      const rpsNote = rpsRes && !rpsRes.error ? `[RPS强度] 20日:${rpsRes.rps20?.toFixed(1)} 60日:${rpsRes.rps60?.toFixed(1)} 120日:${rpsRes.rps120?.toFixed(1)} 250日:${rpsRes.rps250?.toFixed(1)}（${rpsRes.rps250 >= 95 ? '全市场前5%极强' : rpsRes.rps250 >= 87 ? '强势' : '中等偏弱'}）\n\n` : '';
-      const etf = isETF(selectedCode);
-      // ETF 时拉基金持仓注入 prompt
-      let etfHoldingsNote = '';
-      if (etf) {
-        const em = selectedCode.match(/^([a-z]+)(\d+)$/i);
-        if (em) {
-          const thscode = `${em[2]}.${em[1].toUpperCase()}`;
-          try {
-            const fundRes = await fetch(`/api/fuyao/fund?code=${thscode}`).then(r => r.ok ? r.json() : null);
-            if (fundRes?.holdings?.length > 0) {
-              etfHoldingsNote = `[基金持仓] 前${fundRes.holdings.length}大重仓股：${fundRes.holdings.map((h: any) => `${h.stock_name}(${h.hold_ratio.toFixed(1)}%)`).join('、')}\n\n`;
-            }
-          } catch {}
-        }
-      }
-      const stage1 = {
-        systemPrompt: buildAnalystSystemPrompt(etf),
-        userPrompt: marketStatusNote + rpsNote + etfHoldingsNote + chipNote + buildAnalystUserPrompt(selectedCode, stock.name, quoteJson, klineSummary, engineSummary, indicatorBlock, reflectionBlock, positionNote, etf, tushareBlock, getIndustry(selectedCode)),
-      };
-      // Stage 2 辩论数据（路由自行处理角色分配和调用）
-      const debateDataPrompt = buildDebateDataPrompt(selectedCode, stock.name, quoteJson, indicatorBlock, marketStatusNote, engineSummary, klineSummary20, chipNote);
-      const stage2 = {
-        systemPrompt: '', // 路由不再使用，自行构建角色 prompt
-        userPrompt: debateDataPrompt,
-      };
-      // verdict 不需要完整 quoteJson（含 11 位成交额等裸大数，易触发中转站敏感信息风控），
-      // 只给裁决必需的当前价/关键价位，用中文单位降低数字密度
-      const compactQuote = `当前价 ${quote.price} 元，涨跌 ${quote.changePercent.toFixed(2)}%（昨收 ${quote.preClose}，开盘 ${quote.open}，最高 ${quote.high}，最低 ${quote.low}）`;
-      const stage3 = {
-        systemPrompt: buildVerdictSystemPrompt(),
-        userPrompt: buildVerdictUserPrompt(selectedCode, stock.name, '', '', compactQuote, positionNoteVerdict, engineSummary, levelsText),
-      };
-
-      // SSE 流式调用深度分析
-      const res = await fetch('/api/ai/deep-analyze', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          stage1, stage2, stage3,
-          baseUrl: currentProfile.baseUrl,
-          apiKey: currentProfile.apiKey,
-          model: currentProfile.model,
-          completed: resumeCompleted,
-          userView: userView || undefined,
-          userViewReason: userViewReason || undefined,
-        }),
+      // SSE 流式三阶段分析
+      const { result: finalResult, completedMap } = await runDeepAnalysisStream({
+        ctx,
+        cfg: { baseUrl: currentProfile.baseUrl, apiKey: currentProfile.apiKey, model: currentProfile.model },
+        resumeCompleted,
+        userView: userView || undefined,
+        userViewReason: userViewReason || undefined,
         signal: abortController.signal,
+        onProgress: (p) => {
+          setDeepStage(p.stage);
+          setDeepResult(p.result);
+        },
       });
 
-      if (!res.ok) {
-        const errData = await res.json().catch(() => ({ error: `HTTP ${res.status}` }));
-        throw new Error(errData.error || 'API请求失败');
-      }
-
-      // 读取 SSE 流
-      const reader = res.body!.getReader();
-      const decoder = new TextDecoder();
-      let sseBuffer = '';
-      let analystText = '';
-      let analystReasoning = '';
-      let debateText = '';
-      let debateReasoning = '';
-      let debateError = '';
-      let verdictText = '';
-      let verdictReasoning = '';
-      let verdictError = '';
-
-      while (true) {
-        const { done, value } = await reader.read();
-        if (done) break;
-
-        sseBuffer += decoder.decode(value, { stream: true });
-        const lines = sseBuffer.split('\n');
-        sseBuffer = lines.pop() || '';
-
-        for (const line of lines) {
-          const trimmed = line.trim();
-          if (!trimmed || !trimmed.startsWith('data:')) continue;
-
-          const data = trimmed.slice(5).trim();
-          if (data === '[DONE]') continue;
-
-          try {
-            const msg = JSON.parse(data);
-
-            if (msg.error && !msg.stage) {
-              throw new Error(msg.error);
-            }
-
-            if (msg.stage === 'analyst') {
-              if (msg.text !== undefined) {
-                analystText += msg.text;
-                setDeepStage('analyst');
-                setDeepResult(prev => ({
-                  ...(prev || { analyst: '', debate: '', verdict: '', structured: null }),
-                  analyst: analystText,
-                }));
-              }
-              if (msg.reasoning) {
-                analystReasoning += msg.reasoning;
-                setDeepResult(prev => ({
-                  ...(prev || { analyst: '', debate: '', verdict: '', structured: null }),
-                  analystReasoning,
-                }));
-              }
-              if (msg.done) completedMap.analyst = analystText;
-            }
-
-            if (msg.stage === 'debate') {
-              if (msg.role && msg.text !== undefined) {
-                completedMap[msg.role] = msg.text.replace(/\n+$/, '');
-              }
-              if (msg.text !== undefined) {
-                debateText += msg.text;
-                setDeepStage('debate');
-                setDeepResult(prev => ({
-                  ...(prev || { analyst: analystText, debate: '', verdict: '', structured: null }),
-                  debate: debateText,
-                }));
-              }
-              if (msg.reasoning) {
-                debateReasoning += msg.reasoning;
-                setDeepResult(prev => ({
-                  ...(prev || { analyst: analystText, debate: debateText, verdict: '', structured: null }),
-                  debateReasoning,
-                }));
-              }
-              if (msg.error) {
-                debateError = msg.error;
-                setDeepResult(prev => ({
-                  ...(prev || { analyst: analystText, debate: '', verdict: '', structured: null }),
-                  debateError: msg.error,
-                }));
-              }
-            }
-
-            if (msg.stage === 'verdict') {
-              if (msg.text !== undefined) {
-                verdictText += msg.text;
-                setDeepStage('verdict');
-                const parsed = parseVerdictContent(verdictText, tradeLevels);
-                setDeepResult(prev => ({
-                  ...(prev || { analyst: analystText, debate: debateText, verdict: '', structured: null }),
-                  verdict: verdictText,
-                  levels: { current: tradeLevels.currentPrice, supports: tradeLevels.supports, resistances: tradeLevels.resistances },
-                  structured: parsed,
-                }));
-              }
-              if (msg.reasoning) {
-                verdictReasoning += msg.reasoning;
-                setDeepResult(prev => ({
-                  ...(prev || { analyst: analystText, debate: debateText, verdict: verdictText, structured: null }),
-                  verdictReasoning,
-                }));
-              }
-              if (msg.done) completedMap.verdict = verdictText;
-              if (msg.error) {
-                verdictError = msg.error;
-                setDeepResult(prev => ({
-                  ...(prev || { analyst: analystText, debate: debateText, verdict: '', structured: null }),
-                  verdictError: msg.error,
-                }));
-              }
-            }
-          } catch (e: any) {
-            // 解析消息失败，可能是 error 消息
-            if (e.message && !e.message.includes('JSON')) {
-              throw e;
-            }
-          }
-        }
-      }
-
-      // 保存深度分析历史 —— 提取关键结论
-      const finalStructured = parseVerdictContent(verdictText, tradeLevels);
-
-      // 提取辩论的综合评判
-      let debateConclusion = '';
-      const debateMatch = debateText.match(/【综合评判】([\s\S]*?)(?=\n【|\n###|\n$|$)/);
-      if (debateMatch) debateConclusion = debateMatch[1].trim();
-
-      // 组装历史摘要：综合评判 + 决策结果
-      const summaryParts: string[] = [];
-      if (debateConclusion) summaryParts.push(`📊 综合评判：${debateConclusion}`);
-      if (finalStructured.action) {
-        summaryParts.push(
-          `⚖️ 最终决策：${finalStructured.action} | 风险${finalStructured.riskLevel} | 信心${finalStructured.confidence}%`
-        );
-      }
-      if (finalStructured.reasoning) summaryParts.push(`📝 ${finalStructured.reasoning}`);
-
-      const deepEntryDate = breadthLatest?.date || rpsRes?.calcDate || new Date().toISOString().slice(0, 10).replace(/-/g, '');
-
+      // 保存深度分析历史
       aiStore.addHistory({
         id: generateId(),
         stockCode: selectedCode,
         stockName: stock.name,
         profileName: currentProfile.name,
         model: currentProfile.model,
-        riskLevel: finalStructured.action || '深度分析',
-        analysis: summaryParts.join('\n\n') || analystText.slice(0, 500).trim(),
-        suggestion: finalStructured.action
-          ? `仓位:${Number.isFinite(finalStructured.position) ? finalStructured.position.toFixed(0) : '--'}% | 目标:${Number.isFinite(finalStructured.targetLow) ? finalStructured.targetLow.toFixed(2) : '--'}-${Number.isFinite(finalStructured.targetHigh) ? finalStructured.targetHigh.toFixed(2) : '--'} | 止损:${Number.isFinite(finalStructured.stopLoss) ? finalStructured.stopLoss.toFixed(2) : '--'}`
-          : '见详细报告',
+        riskLevel: finalResult.structured?.action || '深度分析',
+        analysis: buildDeepSummary(finalResult),
+        suggestion: buildDeepSuggestion(finalResult.structured),
         triggeredRulesJson: JSON.stringify([]),
-        supportPrice: String(finalStructured.targetLow ?? ''),
-        resistancePrice: String(finalStructured.targetHigh ?? ''),
+        supportPrice: String(finalResult.structured?.targetLow ?? ''),
+        resistancePrice: String(finalResult.structured?.targetHigh ?? ''),
         createdAt: Date.now(),
-        entryDate: deepEntryDate,
+        entryDate: ctx.entryDate,
       });
 
-      // 全局回测落库（匿名，按 股票+交易日+建议 去重；失败不阻断分析）
-      try {
-        await fetch('/api/ai/deep-eval', {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({
-            stockCode: selectedCode, stockName: stock.name,
-            entryDate: deepEntryDate, entryPrice: quote.price,
-            action: finalStructured.action,
-            targetLow: Number.isFinite(finalStructured.targetLow) ? finalStructured.targetLow : null,
-            targetHigh: Number.isFinite(finalStructured.targetHigh) ? finalStructured.targetHigh : null,
-            stopLoss: Number.isFinite(finalStructured.stopLoss) ? finalStructured.stopLoss : null,
-            position: Number.isFinite(finalStructured.position) ? finalStructured.position : null,
-            confidence: finalStructured.confidence,
-            reasoning: finalStructured.reasoning,
-          }),
-        });
-      } catch (e) {
-        console.warn('[Deep Analysis] 回测落库失败', e);
-      }
-
-      // 持久化最终深度分析结果（用闭包变量构造，避开 state 异步；流式中间态不写 localStorage）
-      aiStore.updateLastSession({
-        deepResult: {
-          analyst: analystText,
-          analystReasoning: analystReasoning || undefined,
-          debate: debateText,
-          debateReasoning: debateReasoning || undefined,
-          verdict: verdictText,
-          verdictReasoning: verdictReasoning || undefined,
-          levels: { current: tradeLevels.currentPrice, supports: tradeLevels.supports, resistances: tradeLevels.resistances },
-          structured: finalStructured,
-        },
+      // 全局回测落库（匿名，失败不阻断）
+      saveDeepEval({
+        stockCode: selectedCode, stockName: stock.name,
+        entryDate: ctx.entryDate, entryPrice: ctx.quote.price,
+        structured: finalResult.structured,
       });
+
+      // 持久化最终结果（避开 state 异步；流式中间态不写 localStorage）
+      aiStore.updateLastSession({ deepResult: finalResult });
 
       toast.success('深度分析完成');
       setDeepCompleted({});
@@ -705,8 +297,7 @@ export default function AiPage() {
         const msg = err.message || '深度分析失败';
         setError(msg);
         toast.error(msg);
-        // 保留已完成阶段，供"继续生成"断点续传
-        setDeepCompleted(completedMap);
+        setDeepCompleted({});
       }
     } finally {
       setIsDeepAnalyzing(false);
@@ -723,62 +314,52 @@ export default function AiPage() {
   return (
     <div>
       {/* 顶部 */}
-      <div className="flex items-center justify-between mb-4">
+      <div className="flex items-center justify-between mb-[var(--space-section)]">
         <h1 className="text-xl font-bold text-gray-900 dark:text-white flex items-center gap-2">
-          <Brain className="w-6 h-6 text-purple-500" />
+          <Brain className="w-6 h-6 text-[var(--color-brand)]" />
           AI分析
         </h1>
         <button
           onClick={() => setShowSettings(true)}
-          className="p-2 hover:bg-gray-100 dark:hover:bg-gray-800 rounded-lg transition"
+          className="p-2 hover:bg-gray-100 dark:hover:bg-gray-800 rounded-[var(--radius-md)] transition"
         >
           <Settings className="w-5 h-5" />
         </button>
       </div>
 
-      {/* API配置信息 */}
+      {/* 操作区：配置 + 模式切换 */}
       {currentProfile ? (
-        <div className="bg-white dark:bg-gray-900 rounded-xl p-3 shadow-sm mb-4 flex items-center justify-between">
+        <Card variant="bordered" className="mb-4 py-3 flex items-center justify-between">
           <div>
             <p className="text-sm font-medium">{currentProfile.name}</p>
             <p className="text-xs text-gray-500">{currentProfile.model}</p>
           </div>
           <button
             onClick={() => setShowSettings(true)}
-            className="text-xs text-blue-600 hover:text-blue-700"
+            className="text-xs text-[var(--color-accent)] hover:opacity-80"
           >
             切换
           </button>
-        </div>
+        </Card>
       ) : (
-        <div className="bg-blue-50 dark:bg-blue-950 border border-blue-200 dark:border-blue-800 rounded-xl p-4 mb-4 text-center">
-          <p className="text-sm text-blue-700 dark:text-blue-300 mb-2">尚未配置AI模型</p>
+        <Card variant="accent" className="mb-4 text-center">
+          <p className="text-sm text-[var(--color-brand)] mb-2">尚未配置AI模型</p>
           <Button onClick={() => setShowSettings(true)}>添加API配置</Button>
-        </div>
+        </Card>
       )}
 
       {/* 模式切换：个股分析 / AI 筛选 */}
       {currentProfile && (
-        <div className="flex gap-2 mb-4">
-          <button
-            onClick={() => setMode('analyze')}
-            className={cn(
-              'flex-1 py-2 rounded-lg text-sm font-medium flex items-center justify-center gap-1.5 transition',
-              mode === 'analyze' ? 'bg-purple-600 text-white' : 'bg-gray-100 dark:bg-gray-800 text-gray-500 hover:bg-gray-200',
-            )}
-          >
-            <Brain className="w-4 h-4" /> 个股分析
-          </button>
-          <button
-            onClick={() => setMode('screen')}
-            className={cn(
-              'flex-1 py-2 rounded-lg text-sm font-medium flex items-center justify-center gap-1.5 transition',
-              mode === 'screen' ? 'bg-purple-600 text-white' : 'bg-gray-100 dark:bg-gray-800 text-gray-500 hover:bg-gray-200',
-            )}
-          >
-            <Sparkles className="w-4 h-4" /> AI 筛选
-          </button>
-        </div>
+        <Tabs
+          className="mb-[var(--space-section)]"
+          variant="pills"
+          value={mode}
+          onChange={setMode}
+          items={[
+            { value: 'analyze', label: '个股分析', icon: <Brain className="w-4 h-4" /> },
+            { value: 'screen', label: 'AI 筛选', icon: <Sparkles className="w-4 h-4" /> },
+          ]}
+        />
       )}
 
       {/* AI 筛选模式 */}
@@ -789,16 +370,16 @@ export default function AiPage() {
       {/* ===== 个股分析模式 ===== */}
       {mode === 'analyze' && (
       <>
-      {/* 股票选择 + 分析按钮 */}
+      {/* 股票选择 + 分析按钮（操作区） */}
       {currentProfile && (
-      <div className="bg-white dark:bg-gray-900 rounded-xl p-4 shadow-sm mb-4">
+      <Card variant="bordered" className="mb-4">
         <label className="text-sm font-medium text-gray-700 dark:text-gray-300 mb-2 block">
-          选择股票
+          选择标的
         </label>
-        <select
+        <Select
           value={selectedCode}
           onChange={(e) => { setSelectedCode(e.target.value); setError(null); setResult(null); }}
-          className="w-full p-3 border border-gray-200 dark:border-gray-700 rounded-lg bg-white dark:bg-gray-800 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500 mb-3"
+          className="mb-3"
         >
           <option value="">-- 请选择自选股 --</option>
           {watchlist.map(stock => (
@@ -806,49 +387,32 @@ export default function AiPage() {
               {stock.name} ({stock.code})
             </option>
           ))}
-        </select>
+        </Select>
 
         <div className="flex gap-2 mb-1">
-          {/* 波段评分 */}
-          <button
+          <Button
             onClick={runTScore}
             disabled={!selectedCode || isAnalyzing || isDeepAnalyzing}
-            className={cn(
-              "flex-1 py-3 rounded-xl font-medium flex items-center justify-center gap-2 transition",
-              !selectedCode || isAnalyzing || isDeepAnalyzing
-                ? "bg-gray-200 text-gray-400 cursor-not-allowed"
-                : "bg-purple-600 text-white hover:bg-purple-700 shadow-lg shadow-purple-200"
-            )}
+            loading={isAnalyzing}
+            variant="primary"
+            className="flex-1"
           >
-            {isAnalyzing ? (
-              <><Loader2 className="w-5 h-5 animate-spin" />评分中...</>
-            ) : (
-              <><Brain className="w-5 h-5" />波段评分</>
-            )}
-          </button>
-
-          {/* 深度分析 */}
-          <button
+            {isAnalyzing ? '评分中...' : '波段评分'}
+          </Button>
+          <Button
             onClick={() => runDeepAnalysis()}
             disabled={!selectedCode || isAnalyzing || isDeepAnalyzing}
-            className={cn(
-              "flex-1 py-3 rounded-xl font-medium flex items-center justify-center gap-2 transition",
-              !selectedCode || isAnalyzing || isDeepAnalyzing
-                ? "bg-gray-200 text-gray-400 cursor-not-allowed"
-                : "bg-indigo-600 text-white hover:bg-indigo-700 shadow-lg shadow-indigo-200"
-            )}
+            loading={isDeepAnalyzing}
+            variant="accent"
+            className="flex-1"
           >
-            {isDeepAnalyzing ? (
-              <><Loader2 className="w-5 h-5 animate-spin" />深度分析中...</>
-            ) : (
-              <><Brain className="w-5 h-5" />深度分析</>
-            )}
-          </button>
+            {isDeepAnalyzing ? '深度分析中...' : '深度分析'}
+          </Button>
         </div>
 
         {/* 深度分析提示 */}
-        <p className="text-xs text-amber-600 dark:text-amber-400 mb-1">
-          ⚠️ 深度分析耗时约1-3分钟，消耗较多Token，请耐心等待
+        <p className="text-xs text-[var(--color-warning)] mb-1">
+          深度分析耗时约1-3分钟，消耗较多Token
         </p>
 
         {/* 用户看法（加入辩论，AI会验证但不迎合） */}
@@ -856,39 +420,45 @@ export default function AiPage() {
           <span className="text-gray-500">你的看法（可选）：</span>
           {['看空', '中性', '看多'].map(v => (
             <button key={v} onClick={() => setUserView(prev => prev === v ? '' : v)}
-              className={cn("px-2.5 py-1 rounded-lg font-medium transition",
+              className={cn("px-2.5 py-1 rounded-[var(--radius-md)] font-medium transition",
                 userView === v
-                  ? v === '看多' ? "bg-red-100 text-red-700" : v === '看空' ? "bg-green-100 text-green-700" : "bg-gray-200 text-gray-700"
-                  : "bg-gray-100 dark:bg-gray-800 text-gray-500 hover:bg-gray-200")}>
+                  ? v === '看多' ? "bg-[var(--color-up-soft)] text-[var(--color-up)]" : v === '看空' ? "bg-[var(--color-down-soft)] text-[var(--color-down)]" : "bg-gray-200 dark:bg-gray-700 text-gray-700 dark:text-gray-300"
+                  : "bg-gray-100 dark:bg-gray-800 text-gray-500 hover:bg-gray-200 dark:hover:bg-gray-700")}>
               {v}
             </button>
           ))}
           {userView && (
-            <input type="text" value={userViewReason} onChange={e => setUserViewReason(e.target.value)}
+            <Input type="text" value={userViewReason} onChange={e => setUserViewReason(e.target.value)}
               placeholder="理由（可选，如：业绩超预期、板块龙头）"
-              className="flex-1 min-w-[150px] px-2 py-1 border border-gray-200 dark:border-gray-700 rounded-lg bg-white dark:bg-gray-800 text-xs" />
+              block={false}
+              className="flex-1 min-w-[150px] py-1 text-xs" />
           )}
         </div>
 
         {(isAnalyzing || isDeepAnalyzing) && (
           <button
             onClick={cancelAnalysis}
-            className="w-full py-2 text-sm text-red-500 hover:text-red-600 hover:bg-red-50 dark:hover:bg-red-950 rounded-lg transition"
+            className="w-full py-2 text-sm text-[var(--color-danger)] hover:bg-[var(--color-danger-soft)] rounded-[var(--radius-md)] transition"
           >
             取消分析
           </button>
         )}
-      </div>
+      </Card>
+      )}
+
+      {/* 结果区与操作区视觉分隔 */}
+      {(result || deepResult || isDeepAnalyzing || error) && (
+        <div className="border-t border-gray-200 dark:border-gray-800 my-[var(--space-section)]" />
       )}
 
       {/* 错误 */}
       {error && (
-        <div className="bg-red-50 border border-red-200 rounded-xl p-4 mb-4 text-red-600 text-sm">
+        <div className="bg-[var(--color-danger-soft)] border border-[var(--color-up-border)] rounded-[var(--radius-lg)] p-4 mb-4 text-[var(--color-danger)] text-sm">
           {error}
           {!isDeepAnalyzing && Object.keys(deepCompleted).length > 0 && (
             <button
               onClick={() => runDeepAnalysis(deepCompleted)}
-              className="ml-2 px-3 py-1 bg-red-600 text-white rounded-lg text-xs font-medium hover:bg-red-700 transition"
+              className="ml-2 px-3 py-1 bg-[var(--color-danger)] text-white rounded-[var(--radius-md)] text-xs font-medium hover:opacity-90 transition"
             >
               继续生成（从断点恢复）
             </button>

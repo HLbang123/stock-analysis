@@ -1,14 +1,24 @@
 import { create } from 'zustand';
 import { persist } from 'zustand/middleware';
-import { Stock, AlertRecord, AlertRule } from '@/types';
+import { Stock, AlertRecord, AlertRule, WatchlistGroup } from '@/types';
+import { generateId } from '@/lib/utils';
+
+/** 默认分组固定 id，不可删除/重命名 */
+export const DEFAULT_GROUP_ID = 'default';
+export const DEFAULT_GROUP_NAME = '默认分组';
 
 interface StockState {
   // 自选股
   watchlist: Stock[];
-  addToWatchlist: (stock: Stock) => void;
+  groups: WatchlistGroup[];
+  addToWatchlist: (stock: Stock, groupId?: string) => void;
   removeFromWatchlist: (code: string) => void;
   isInWatchlist: (code: string) => boolean;
   updateStockPosition: (code: string, positionPercent: number | undefined) => void;
+  moveStockToGroup: (code: string, groupId: string) => void;
+  addGroup: (name: string) => boolean;
+  renameGroup: (groupId: string, name: string) => boolean;
+  deleteGroup: (groupId: string) => void;
 
   // 预警记录
   alerts: AlertRecord[];
@@ -32,10 +42,11 @@ export const useStockStore = create<StockState>()(
     (set, get) => ({
       // 自选股
       watchlist: [],
-      addToWatchlist: (stock) => {
+      groups: [{ id: DEFAULT_GROUP_ID, name: DEFAULT_GROUP_NAME }],
+      addToWatchlist: (stock, groupId) => {
         const { watchlist } = get();
         if (!watchlist.some(s => s.code === stock.code)) {
-          set({ watchlist: [...watchlist, stock] });
+          set({ watchlist: [...watchlist, { ...stock, groupId: groupId ?? DEFAULT_GROUP_ID }] });
         }
       },
       removeFromWatchlist: (code) => {
@@ -52,6 +63,37 @@ export const useStockStore = create<StockState>()(
         set({
           watchlist: get().watchlist.map(s =>
             s.code === code ? { ...s, positionPercent } : s
+          ),
+        });
+      },
+      moveStockToGroup: (code, groupId) => {
+        set({
+          watchlist: get().watchlist.map(s =>
+            s.code === code ? { ...s, groupId } : s
+          ),
+        });
+      },
+      addGroup: (name) => {
+        const trimmed = name.trim();
+        if (!trimmed || trimmed.length > 12) return false;
+        if (get().groups.some(g => g.name === trimmed)) return false;
+        set({ groups: [...get().groups, { id: generateId(), name: trimmed }] });
+        return true;
+      },
+      renameGroup: (groupId, name) => {
+        const trimmed = name.trim();
+        if (!trimmed || trimmed.length > 12 || groupId === DEFAULT_GROUP_ID) return false;
+        if (get().groups.some(g => g.id !== groupId && g.name === trimmed)) return false;
+        set({ groups: get().groups.map(g => g.id === groupId ? { ...g, name: trimmed } : g) });
+        return true;
+      },
+      deleteGroup: (groupId) => {
+        if (groupId === DEFAULT_GROUP_ID) return;
+        const { groups, watchlist } = get();
+        set({
+          groups: groups.filter(g => g.id !== groupId),
+          watchlist: watchlist.map(s =>
+            s.groupId === groupId ? { ...s, groupId: DEFAULT_GROUP_ID } : s
           ),
         });
       },
@@ -113,7 +155,24 @@ export const useStockStore = create<StockState>()(
         watchlist: state.watchlist,
         alerts: state.alerts,
         rules: state.rules,
+        groups: state.groups,
       }),
+      // 旧数据(version 0)升级：自建组初始化 + 存量自选逐项补默认分组
+      version: 1,
+      migrate: (persistedState: any) => {
+        const state = persistedState ?? {};
+        return {
+          ...state,
+          groups:
+            Array.isArray(state.groups) && state.groups.length > 0
+              ? state.groups
+              : [{ id: DEFAULT_GROUP_ID, name: DEFAULT_GROUP_NAME }],
+          watchlist: (state.watchlist ?? []).map((s: Stock) => ({
+            ...s,
+            groupId: s.groupId ?? DEFAULT_GROUP_ID,
+          })),
+        };
+      },
     }
   )
 );

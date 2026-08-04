@@ -6,18 +6,19 @@ import { useStockStore } from '@/store';
 import { getRealtimeQuote, getKLineSina, getChipData } from '@/services/stockApi';
 import { ALERT_RULES, checkAllRules, isBuyRule, REFERENCE_RULE_IDS, buyRuleWeight } from '@/services/alertRules';
 import { AlertRecord } from '@/types';
-import { formatTime, cn, getAlertLevelColor } from '@/lib/utils';
+import { formatTime, cn } from '@/lib/utils';
 import { buildUpdatedKLines } from '@/lib/stock-helpers';
-import { AlertTriangle, RefreshCw, Trash2, BookOpen } from 'lucide-react';
+import { AlertTriangle, Trash2, BookOpen } from 'lucide-react';
 import { UpdateLog } from '@/components/UpdateLog';
 import { AlertRulesModal } from '@/components/AlertRulesModal';
+import { Button } from '@/components/ui/button';
 
 /** 买入共振强度档位：按买入信号加权分(A级=2/B级=1)映射到情绪档位 */
 const buyTier = (score: number) => {
-  if (score >= 4) return { label: '强烈共振', emoji: '🚀', cls: 'bg-green-600 text-white border-green-600' };
-  if (score === 3) return { label: '较强看多', emoji: '🟢', cls: 'bg-green-100 text-green-700 border-green-300 dark:bg-green-950 dark:text-green-400 dark:border-green-800' };
-  if (score === 2) return { label: '温和看多', emoji: '🟢', cls: 'bg-green-50 text-green-600 border-green-200 dark:bg-green-950/60 dark:text-green-400 dark:border-green-900' };
-  return { label: '弱观察', emoji: '🟡', cls: 'bg-amber-50 text-amber-600 border-amber-200 dark:bg-amber-950/60 dark:text-amber-400 dark:border-amber-900' };
+  if (score >= 4) return { label: '强烈共振', dot: 'bg-[var(--color-up)]', cls: 'bg-[var(--color-up)] text-white border-transparent' };
+  if (score === 3) return { label: '较强看多', dot: 'bg-[var(--color-up)]', cls: 'bg-[var(--color-up-soft)] text-[var(--color-up)] border-[var(--color-up-border)]' };
+  if (score === 2) return { label: '温和看多', dot: 'bg-[var(--color-up)]/60', cls: 'bg-[var(--color-up-soft)]/60 text-[var(--color-up)] border-[var(--color-up-border)]' };
+  return { label: '弱观察', dot: 'bg-[var(--color-warning)]', cls: 'bg-[var(--color-warning-soft)] text-[var(--color-warning)] border-[var(--color-warning)]/30' };
 };
 
 /** 该条买入预警是否为"放量确认"（读 extraData 的 volConfirmed，R05/R06/R09/R10/R11/R12/R13 写入） */
@@ -87,26 +88,31 @@ export default function HomePage() {
   // 未读数
   const unreadCount = alerts.filter(a => !a.isRead).length;
 
-  // 单条预警行渲染
-  const renderAlertRow = (alert: AlertRecord) => (
-    <div
-      key={alert.id}
-      className={cn(
-        "flex items-start gap-2 text-sm p-2 rounded-lg",
-        alert.isExpired ? "bg-gray-100 opacity-60" : "bg-black/5"
-      )}
-    >
-      <span>
-        {alert.isExpired ? '⚪' :
-          alert.alertLevel === 'CRITICAL' ? '🔴' :
-          alert.alertLevel === 'WARNING' ? '🟡' : '🟢'}
-      </span>
-      <div className={cn("flex-1", alert.isExpired && "line-through")}>
-        <p>{alert.alertMessage}</p>
-        <p className="text-xs opacity-75 mt-0.5">建议: {alert.suggestion}</p>
+  // 单条预警行渲染：用左侧色条区分买卖/风险/参考方向，弱化 emoji
+  const renderAlertRow = (alert: AlertRecord) => {
+    const toneBar = alert.isExpired
+      ? 'bg-gray-300 dark:bg-gray-600'
+      : alert.alertLevel === 'CRITICAL'
+        ? 'bg-[var(--color-up)]'
+        : alert.alertLevel === 'WARNING'
+          ? 'bg-[var(--color-warning)]'
+          : 'bg-[var(--color-down)]';
+    return (
+      <div
+        key={alert.id}
+        className={cn(
+          "flex items-stretch gap-2.5 text-sm py-2 px-2.5 rounded-[var(--radius-md)]",
+          alert.isExpired ? "bg-gray-50 dark:bg-gray-800/40 opacity-60" : "bg-gray-50 dark:bg-gray-800/60"
+        )}
+      >
+        <span className={cn("w-1 rounded-full shrink-0", toneBar)} />
+        <div className={cn("flex-1 min-w-0", alert.isExpired && "line-through")}>
+          <p className="text-gray-800 dark:text-gray-200">{alert.alertMessage}</p>
+          <p className="text-xs text-gray-500 dark:text-gray-400 mt-0.5">建议：{alert.suggestion}</p>
+        </div>
       </div>
-    </div>
-  );
+    );
+  };
 
   // 检查预警
   const checkAlerts = async () => {
@@ -203,72 +209,60 @@ export default function HomePage() {
 
   return (
     <div>
-      {/* Header */}
-      <div className="flex items-center justify-between mb-4">
+      {/* 页面头部：标题 + 操作 */}
+      <div className="flex items-center justify-between mb-[var(--space-section)]">
         <div className="flex items-center gap-1">
           <UpdateLog />
           <h1 className="text-xl font-bold text-gray-900 dark:text-white">预警</h1>
+          {unreadCount > 0 && (
+            <span className="ml-1 bg-[var(--color-danger)] text-white text-xs px-2 py-0.5 rounded-full font-medium">
+              {unreadCount}
+            </span>
+          )}
         </div>
         <div className="flex items-center gap-2">
+          <button
+            onClick={() => setShowRules(true)}
+            className="flex items-center gap-1 px-3 py-1.5 text-sm text-gray-600 dark:text-gray-300 hover:bg-gray-100 dark:hover:bg-gray-800 rounded-[var(--radius-md)] transition"
+            title="查看预警规则说明"
+          >
+            <BookOpen className="w-4 h-4" />
+            规则说明
+          </button>
+          {alerts.length > 0 && (
             <button
-              onClick={() => setShowRules(true)}
-              className="flex items-center gap-1 px-3 py-1.5 text-sm text-gray-600 dark:text-gray-300 hover:bg-gray-100 dark:hover:bg-gray-800 rounded-lg transition"
-              title="查看预警规则说明"
+              onClick={() => clearAllAlerts()}
+              className="px-3 py-1.5 text-sm text-[var(--color-danger)] hover:bg-[var(--color-danger-soft)] rounded-[var(--radius-md)] transition"
             >
-              <BookOpen className="w-4 h-4" />
-              规则说明
+              清除全部
             </button>
-            {alerts.length > 0 && (
-              <button
-                onClick={() => clearAllAlerts()}
-                className="px-3 py-1.5 text-sm text-red-600 hover:bg-red-50 rounded-lg transition"
-              >
-                清除全部
-              </button>
-            )}
-            {unreadCount > 0 && (
-              <span className="bg-red-500 text-white text-xs px-2 py-0.5 rounded-full">
-                {unreadCount}
-              </span>
-            )}
-          </div>
+          )}
         </div>
+      </div>
 
-      {/* 检查按钮 */}
-        <button
-          onClick={checkAlerts}
-          disabled={isCheckingAlerts || watchlist.length === 0}
-          className={cn(
-            "w-full py-4 rounded-xl font-medium flex items-center justify-center gap-2 transition-all",
-            isCheckingAlerts
-              ? "bg-gray-300 text-gray-500 cursor-not-allowed"
-              : "bg-blue-600 hover:bg-blue-700 text-white shadow-lg shadow-blue-200"
-          )}
-        >
-          {isCheckingAlerts ? (
-            <>
-              <RefreshCw className="w-5 h-5 animate-spin" />
-              正在检测预警...
-            </>
-          ) : (
-            <>
-              <RefreshCw className="w-5 h-5" />
-              检查预警
-            </>
-          )}
-        </button>
+      {/* 操作区 */}
+      <Button
+        onClick={checkAlerts}
+        disabled={isCheckingAlerts || watchlist.length === 0}
+        loading={isCheckingAlerts}
+        variant="accent"
+        size="lg"
+        className="w-full"
+      >
+        {isCheckingAlerts ? '正在检测预警...' : '检查预警'}
+      </Button>
 
-        {/* 结果提示 */}
-        {resultMessage && (
-          <div className={cn(
-            "mt-4 p-3 rounded-lg text-center text-sm",
-            resultMessage.includes('失败')
-              ? "bg-red-50 text-red-600"
-              : "bg-green-50 text-green-600"
-          )}>
-            {resultMessage}
-          </div>
-        )}
+      {/* 结果提示 */}
+      {resultMessage && (
+        <div className={cn(
+          "mt-4 p-3 rounded-[var(--radius-md)] text-center text-sm",
+          resultMessage.includes('失败')
+            ? "bg-[var(--color-danger-soft)] text-[var(--color-danger)]"
+            : "bg-[var(--color-down-soft)] text-[var(--color-down)]"
+        )}>
+          {resultMessage}
+        </div>
+      )}
 
         {/* 预警列表 */}
         {groupedAlerts.length === 0 ? (
@@ -278,91 +272,87 @@ export default function HomePage() {
             <p className="text-sm mt-2">添加自选股后点击上方按钮开始检测</p>
           </div>
         ) : (
-          <div className="mt-6 space-y-4">
+          <div className="mt-[var(--space-section)] space-y-3">
             {groupedAlerts.map((group) => (
               <div
                 key={group.stockCode}
                 onClick={() => router.push(`/stock/${group.stockCode}`)}
                 className={cn(
-                  "border-2 rounded-xl overflow-hidden transition-all hover:shadow-md cursor-pointer",
-                  group.alerts.every(a => a.isExpired) ? "opacity-50 border-gray-300" : getAlertLevelColor(group.worstLevel)
+                  "bg-white dark:bg-gray-900 rounded-[var(--radius-lg)] shadow-[var(--shadow-card)] overflow-hidden transition-shadow hover:shadow-[var(--shadow-hover)] cursor-pointer",
+                  group.alerts.every(a => a.isExpired) && "opacity-50"
                 )}
               >
-                <div className="p-4">
-                  {/* 股票头部 */}
-                  <div className="flex items-center justify-between mb-3">
-                    <div>
-                      <div className="flex items-center gap-2">
-                        <h3 className="font-semibold">{group.stockName}</h3>
-                        {group.alerts.some(a => !a.isExpired && a.triggeredAt > Date.now() - 5000) && (
-                          <span className="text-xs bg-green-500 text-white px-1.5 py-0.5 rounded font-bold">NEW</span>
-                        )}
-                        {group.alerts.every(a => a.isExpired) && (
-                          <span className="text-xs bg-gray-300 text-gray-600 px-1.5 py-0.5 rounded">已消失</span>
-                        )}
-                      </div>
-                      <p className="text-sm opacity-75">{group.stockCode}</p>
+                {/* 扫读层：股名 + 强度 + 时间，一眼获取关键信息 */}
+                <div className="px-4 pt-3.5 pb-3 border-b border-gray-100 dark:border-gray-800">
+                  <div className="flex items-center justify-between gap-2">
+                    <div className="flex items-center gap-2 min-w-0">
+                      <h3 className="font-semibold text-gray-900 dark:text-white truncate">{group.stockName}</h3>
+                      {group.alerts.some(a => !a.isExpired && a.triggeredAt > Date.now() - 5000) && (
+                        <span className="text-[10px] bg-[var(--color-up)] text-white px-1.5 py-0.5 rounded font-bold shrink-0">NEW</span>
+                      )}
+                      {group.alerts.every(a => a.isExpired) && (
+                        <span className="text-[10px] bg-gray-200 dark:bg-gray-700 text-gray-500 dark:text-gray-400 px-1.5 py-0.5 rounded shrink-0">已消失</span>
+                      )}
                     </div>
-                    <div className="flex items-center gap-2">
+                    <div className="flex items-center gap-2 shrink-0">
                       {group.buyTier && (
                         <span
-                          title={group.buyVolumeBoost ? `买入强度：含放量确认 +1档` : '买入强度'}
-                          className={cn('text-xs px-1.5 py-0.5 rounded border whitespace-nowrap', group.buyTier.cls)}
+                          title={group.buyVolumeBoost ? '买入强度：含放量确认 +1档' : '买入强度'}
+                          className={cn('text-xs px-2 py-0.5 rounded-[var(--radius-sm)] border font-medium whitespace-nowrap flex items-center gap-1', group.buyTier.cls)}
                         >
-                          {group.buyTier.emoji} {group.buyTier.label}
+                          <span className={cn('w-1.5 h-1.5 rounded-full', group.buyTier.dot)} />
+                          {group.buyTier.label}
                         </span>
                       )}
-                      <span className="text-sm opacity-75">{group.alerts.length}条预警</span>
                       <button
-                        onClick={() => clearAlerts(group.stockCode)}
-                        className="p-1.5 hover:bg-black/10 rounded-lg transition"
+                        onClick={(e) => { e.stopPropagation(); clearAlerts(group.stockCode); }}
+                        className="p-1 text-gray-400 hover:text-[var(--color-danger)] hover:bg-[var(--color-danger-soft)] rounded-[var(--radius-sm)] transition"
                         title="清除此股预警"
                       >
                         <Trash2 className="w-4 h-4" />
                       </button>
                     </div>
                   </div>
-
-                  {/* 预警详情 */}
-                  <div className="space-y-2">
-                    {/* 卖出/风险信号：保持原样平铺 */}
-                    {group.sellAlerts.map(alert => renderAlertRow(alert))}
-
-                    {/* 参考级弱提醒（R14/R15 筹码峰）：平铺，不计入共振 */}
-                    {group.referenceAlerts.map(alert => renderAlertRow(alert))}
-
-                    {/* 买入信号：≥2 条聚合成"共振"，可展开看明细；否则平铺 */}
-                    {group.buyResonance ? (
-                      <div className="rounded-lg bg-green-500/10 border border-green-500/30 overflow-hidden">
-                        <button
-                          type="button"
-                          onClick={(e) => { e.stopPropagation(); toggleBuyExpand(group.stockCode); }}
-                          className="w-full flex items-center gap-2 text-sm p-2 text-left hover:bg-green-500/10 transition"
-                        >
-                          <span>🟢</span>
-                          <span className="font-medium whitespace-nowrap">买入共振 · {group.buyAlerts.length}条</span>
-                          <span className="text-xs opacity-70 truncate">
-                            {group.buyAlerts.map(a => a.ruleName).join(' / ')}
-                          </span>
-                          <span className="ml-auto text-xs opacity-70 whitespace-nowrap">
-                            {buyExpanded.has(group.stockCode) ? '收起 ▲' : '展开 ▼'}
-                          </span>
-                        </button>
-                        {buyExpanded.has(group.stockCode) && (
-                          <div className="space-y-1 px-2 pb-2">
-                            {group.buyAlerts.map(alert => renderAlertRow(alert))}
-                          </div>
-                        )}
-                      </div>
-                    ) : (
-                      group.buyAlerts.map(alert => renderAlertRow(alert))
-                    )}
+                  <div className="flex items-center justify-between mt-1">
+                    <p className="text-xs text-gray-400">{group.stockCode}</p>
+                    <p className="text-xs text-gray-400">{formatTime(group.latestTime)}</p>
                   </div>
+                </div>
 
-                  {/* 时间 */}
-                  <p className="text-xs opacity-50 mt-3">
-                    {formatTime(group.latestTime)}
-                  </p>
+                {/* 明细层：信号列表 */}
+                <div className="px-4 py-3 space-y-1.5">
+                  {/* 卖出/风险信号 */}
+                  {group.sellAlerts.map(alert => renderAlertRow(alert))}
+
+                  {/* 参考级弱提醒（R14/R15 筹码峰） */}
+                  {group.referenceAlerts.map(alert => renderAlertRow(alert))}
+
+                  {/* 买入信号：≥2 条聚合成"共振" */}
+                  {group.buyResonance ? (
+                    <div className="rounded-[var(--radius-md)] bg-[var(--color-up-soft)] border border-[var(--color-up-border)] overflow-hidden">
+                      <button
+                        type="button"
+                        onClick={(e) => { e.stopPropagation(); toggleBuyExpand(group.stockCode); }}
+                        className="w-full flex items-center gap-2 text-sm px-2.5 py-2 text-left hover:bg-[var(--color-up)]/5 transition"
+                      >
+                        <span className="w-1.5 h-1.5 rounded-full bg-[var(--color-up)] shrink-0" />
+                        <span className="font-medium text-[var(--color-up)] whitespace-nowrap">买入共振 · {group.buyAlerts.length}条</span>
+                        <span className="text-xs text-gray-500 dark:text-gray-400 truncate">
+                          {group.buyAlerts.map(a => a.ruleName).join(' / ')}
+                        </span>
+                        <span className="ml-auto text-xs text-gray-400 whitespace-nowrap">
+                          {buyExpanded.has(group.stockCode) ? '收起 ▲' : '展开 ▼'}
+                        </span>
+                      </button>
+                      {buyExpanded.has(group.stockCode) && (
+                        <div className="space-y-1 px-2.5 pb-2.5">
+                          {group.buyAlerts.map(alert => renderAlertRow(alert))}
+                        </div>
+                      )}
+                    </div>
+                  ) : (
+                    group.buyAlerts.map(alert => renderAlertRow(alert))
+                  )}
                 </div>
               </div>
             ))}

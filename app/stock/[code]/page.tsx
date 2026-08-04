@@ -10,6 +10,8 @@ import { computeSupportResistance, type SupportResistance } from '@/services/dee
 import { RealtimeQuote, KLineData, RuleCheckResult } from '@/types';
 import { formatPrice, formatChange, formatVolume, cn, getAlertLevelColor } from '@/lib/utils';
 import { buildUpdatedKLines } from '@/lib/stock-helpers';
+import { getJSON, getJSONOr } from '@/services/api';
+import type { StockRpsResp, FuyaoAnomalyResp, FuyaoFundResp, TushareStockDataResp } from '@/types/api';
 import { ArrowLeft, RefreshCw, TrendingUp, Loader2 } from 'lucide-react';
 import Link from 'next/link';
 import { KLineChart } from '@/components/KLineChart';
@@ -17,8 +19,15 @@ import { MinuteChart } from '@/components/MinuteChart';
 import { EChart } from '@/components/market/EChart';
 import { Button } from '@/components/ui/button';
 import { Card } from '@/components/ui/card';
+import { Tabs } from '@/components/ui/tabs';
 import { Badge } from '@/components/ui/badge';
 import { Spinner } from '@/components/ui/spinner';
+
+interface AnomalyItem {
+  tag_name?: string;
+  keyword_list?: string[];
+  analysis_content?: string;
+}
 
 export default function StockDetailPage() {
   const params = useParams();
@@ -33,11 +42,11 @@ export default function StockDetailPage() {
   const [isLoading, setIsLoading] = useState(true);
   const [chartTab, setChartTab] = useState<'kline' | 'minute'>('minute');
   const [error, setError] = useState<string | null>(null);
-  const [rpsData, setRpsData] = useState<any>(null);
+  const [rpsData, setRpsData] = useState<StockRpsResp | null>(null);
   const [fundData, setFundData] = useState<any>(null);
   const [fundLoading, setFundLoading] = useState(false);
-  const [anomaly, setAnomaly] = useState<any>(null);
-  const [fundInfo, setFundInfo] = useState<any>(null);
+  const [anomaly, setAnomaly] = useState<AnomalyItem | null>(null);
+  const [fundInfo, setFundInfo] = useState<FuyaoFundResp | null>(null);
   const [srData, setSrData] = useState<SupportResistance | null>(null);
 
   const stock = watchlist.find(s => s.code === code);
@@ -95,17 +104,21 @@ export default function StockDetailPage() {
   // 拉 RPS + 基本面 + 异动原因（主数据加载后异步）
   useEffect(() => {
     if (!code) return;
-    fetch(`/api/stock/rps?code=${code}`).then(r => r.ok ? r.json() : null).then(d => d && !d.error && setRpsData(d)).catch(() => {});
+    getJSONOr<StockRpsResp | null>(`/api/stock/rps?code=${code}`, null).then(d => { if (d && !d.error) setRpsData(d); });
     setFundLoading(true);
-    fetch(`/api/tushare/stock-data?code=${code}`).then(r => r.json()).then(d => { if (d.success) setFundData(d.data); }).catch(() => {}).finally(() => setFundLoading(false));
+    getJSONOr<TushareStockDataResp | null>(`/api/tushare/stock-data?code=${code}`, null)
+      .then(d => { if (d?.success) setFundData(d.data); })
+      .finally(() => setFundLoading(false));
     // 异动原因：code 格式 sz002463 → 002463.SZ
     const m = code.match(/^([a-z]+)(\d+)$/i);
     if (m) {
       const thscode = `${m[2]}.${m[1].toUpperCase()}`;
-      fetch(`/api/fuyao/anomaly?code=${thscode}`).then(r => r.ok ? r.json() : null).then(d => { if (d?.item?.length > 0) setAnomaly(d.item[0]); }).catch(() => {});
+      getJSONOr<FuyaoAnomalyResp | null>(`/api/fuyao/anomaly?code=${thscode}`, null)
+        .then(d => { if (d?.item && d.item.length > 0) setAnomaly(d.item[0] as AnomalyItem); });
       // ETF 时拉基金持仓
       if (isETF(code)) {
-        fetch(`/api/fuyao/fund?code=${thscode}`).then(r => r.ok ? r.json() : null).then(d => { if (d?.holdings?.length > 0) setFundInfo(d); }).catch(() => {});
+        getJSONOr<FuyaoFundResp | null>(`/api/fuyao/fund?code=${thscode}`, null)
+          .then(d => { if (d?.holdings && d.holdings.length > 0) setFundInfo(d); });
       }
     }
   }, [code]);
@@ -231,10 +244,10 @@ export default function StockDetailPage() {
       </div>
 
       {error ? (
-        <div className="bg-red-50 text-red-600 p-6 rounded-xl text-center">
-          <p>{error}</p>
-          <button onClick={loadData} className="mt-3 text-sm underline">重试</button>
-        </div>
+        <Card variant="warning" className="p-6 text-center">
+          <p className="text-[var(--color-warning)]">{error}</p>
+          <button onClick={loadData} className="mt-3 text-sm text-[var(--color-accent)] hover:underline">重试</button>
+        </Card>
       ) : (
         <>
           {/* 实时行情卡片 */}
@@ -298,16 +311,16 @@ export default function StockDetailPage() {
             {rpsData && (
               <>
                 {[
-                  { label: 'RPS20', val: rpsData.rps20, ret: rpsData.ret20 },
-                  { label: 'RPS60', val: rpsData.rps60, ret: rpsData.ret60 },
-                  { label: 'RPS120', val: rpsData.rps120, ret: rpsData.ret120 },
-                  { label: 'RPS250', val: rpsData.rps250, ret: rpsData.ret250 },
+                  { label: 'RPS20', val: rpsData.rps20, ret: (rpsData as any).ret20 },
+                  { label: 'RPS60', val: rpsData.rps60, ret: (rpsData as any).ret60 },
+                  { label: 'RPS120', val: rpsData.rps120, ret: (rpsData as any).ret120 },
+                  { label: 'RPS250', val: rpsData.rps250, ret: (rpsData as any).ret250 },
                 ].map(r => r.val != null && (
                   <span key={r.label} className={cn(
-                    "px-2 py-1 rounded-lg text-xs font-mono font-semibold",
-                    r.val >= 95 ? "bg-red-100 text-red-700" :
-                    r.val >= 87 ? "bg-orange-100 text-orange-700" :
-                    "bg-blue-100 text-blue-700"
+                    "px-2 py-1 rounded-[var(--radius-md)] text-xs font-mono font-semibold",
+                    r.val >= 95 ? "bg-[var(--color-up-soft)] text-[var(--color-up)]" :
+                    r.val >= 87 ? "bg-[var(--color-warning-soft)] text-[var(--color-warning)]" :
+                    "bg-[var(--color-accent-soft)] text-[var(--color-accent)]"
                   )} title={`${r.label} 涨幅 ${r.ret?.toFixed(1)}%`}>
                     {r.label} {r.val.toFixed(1)}
                   </span>
@@ -349,30 +362,17 @@ export default function StockDetailPage() {
           )}
 
           {/* 图表切换 */}
-          <div className="flex gap-2 mb-4">
-            <button
-              onClick={() => setChartTab('minute')}
-              className={cn(
-                "px-4 py-2 rounded-lg text-sm font-medium transition",
-                chartTab === 'minute'
-                  ? "bg-blue-600 text-white"
-                  : "bg-white dark:bg-gray-900 text-gray-600 dark:text-gray-400 hover:bg-gray-100"
-              )}
-            >
-              分时图
-            </button>
-            <button
-              onClick={() => setChartTab('kline')}
-              className={cn(
-                "px-4 py-2 rounded-lg text-sm font-medium transition",
-                chartTab === 'kline'
-                  ? "bg-blue-600 text-white"
-                  : "bg-white dark:bg-gray-900 text-gray-600 dark:text-gray-400 hover:bg-gray-100"
-              )}
-            >
-              日K线
-            </button>
-          </div>
+          <Tabs
+            className="mb-4"
+            variant="pills"
+            activeCls="bg-[var(--color-accent)] text-white"
+            value={chartTab}
+            onChange={setChartTab}
+            items={[
+              { value: 'minute', label: '分时图' },
+              { value: 'kline', label: '日K线' },
+            ]}
+          />
 
           {/* 分时图 */}
           {chartTab === 'minute' && (
@@ -491,7 +491,7 @@ export default function StockDetailPage() {
           )}
 
           {/* ETF 基金持仓（仅 ETF 显示） */}
-          {fundInfo && (
+          {fundInfo?.holdings && (
             <Card className="p-4 mb-4">
               <div className="flex items-center justify-between mb-3">
                 <h2 className="font-semibold text-sm">基金持仓（前{fundInfo.holdings.length}大重仓股）</h2>

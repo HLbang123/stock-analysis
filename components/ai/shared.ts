@@ -6,6 +6,4 @@ export const PRESET_PLATFORMS: { name: string; baseUrl: string; model: string }[
   { name: 'OpenAI', baseUrl: 'https://api.openai.com/v1', model: 'gpt-4o-mini' },
 ];
 
-export function generateId() {
-  return Date.now().toString(36) + Math.random().toString(36).slice(2);
-}
+export { generateId } from '@/lib/utils';

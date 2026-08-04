@@ -11,7 +11,7 @@ const tabs = [
   { href: ROUTES.market, label: "大盘", icon: LineChart },
   { href: ROUTES.watchlist, label: "自选", icon: Star },
   { href: ROUTES.ai, label: "AI分析", icon: Brain },
-  { href: ROUTES.scanner, label: "筛选", icon: Search },
+  { href: ROUTES.scanner, label: "全市场扫描", icon: Search },
 ];
 
 export function BottomNav() {
@@ -22,7 +22,10 @@ export function BottomNav() {
       <div className="flex h-16 items-center justify-around">
         {tabs.map((tab) => {
           const Icon = tab.icon;
-          const isActive = pathname === tab.href;
+          // 与 sidebar 一致的激活判断：首页精确匹配，其余前缀匹配（子路径也高亮）
+          const isActive = tab.href === "/"
+            ? pathname === tab.href
+            : pathname === tab.href || pathname.startsWith(tab.href);
           return (
             <Link
               key={tab.href}

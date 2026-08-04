@@ -303,7 +303,9 @@ function RunResult({
           )}
           <span className="text-xs text-gray-400">RPS{run.rpsPeriod}</span>
         </div>
-        {run.degradation.length > 0 && (
+        {/* 降级警告只在结果未走成 AI 重排(纯规则兜底)时显示；
+            补救/重排成功后 degradation 是历史留痕(rescued_by_later_token 等)，不再提示 */}
+        {!run.llmReranked && run.degradation.length > 0 && (
           <div className="text-xs text-amber-600 flex items-start gap-1 mb-2">
             <AlertTriangle className="w-3.5 h-3.5 mt-0.5 shrink-0" />
             <span>降级：{run.degradation.slice(0, 3).join('；')}{run.degradation.length > 3 ? '…' : ''}</span>

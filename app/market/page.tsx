@@ -3,7 +3,15 @@
 import { useState, useEffect, useCallback } from 'react';
 import { EChart } from '@/components/market/EChart';
 import { Card } from '@/components/ui/card';
+import { Select } from '@/components/ui/input';
 import { cn } from '@/lib/utils';
+import { getJSON, getJSONOr } from '@/services/api';
+import type {
+  BreadthResp, BreadthItem, NorthboundResp, NorthboundItem, MarginResp, MarginItem,
+  RpsSectorsResp, RpsSectorItem, SectorFlowResp, SectorFlowItem, SectorIndexResp, SectorIndexItem,
+  IndexValuationResp, LimitUpResp, HotStocksResp,
+} from '@/types/api';
+import { MARKET_COLORS } from '@/lib/constants';
 import { LineChart, Loader2 } from 'lucide-react';
 
 const IDX_OPTIONS = [
@@ -20,30 +28,30 @@ const yi = (wan: number | null) => (wan == null ? null : Number((wan / 10000).to
 const yi2 = (yuan: number | null) => (yuan == null ? null : Number((yuan / 1e8).toFixed(2))); // 元→亿
 
 export default function MarketPage() {
-  const [breadth, setBreadth] = useState<any[]>([]);
-  const [northbound, setNorthbound] = useState<any[]>([]);
-  const [margin, setMargin] = useState<any[]>([]);
-  const [sectors, setSectors] = useState<any[]>([]);
+  const [breadth, setBreadth] = useState<BreadthItem[]>([]);
+  const [northbound, setNorthbound] = useState<NorthboundItem[]>([]);
+  const [margin, setMargin] = useState<MarginItem[]>([]);
+  const [sectors, setSectors] = useState<RpsSectorItem[]>([]);
   const [idxCode, setIdxCode] = useState('000001.SH');
-  const [idxVal, setIdxVal] = useState<any>(null);
+  const [idxVal, setIdxVal] = useState<IndexValuationResp | null>(null);
   const [loading, setLoading] = useState(true);
-  const [limitUp, setLimitUp] = useState<any>(null);
-  const [hotStocks, setHotStocks] = useState<any>(null);
-  const [sectorFlow, setSectorFlow] = useState<any[]>([]);
-  const [sectorIndex, setSectorIndex] = useState<any[]>([]);
+  const [limitUp, setLimitUp] = useState<LimitUpResp | null>(null);
+  const [hotStocks, setHotStocks] = useState<HotStocksResp | null>(null);
+  const [sectorFlow, setSectorFlow] = useState<SectorFlowItem[]>([]);
+  const [sectorIndex, setSectorIndex] = useState<SectorIndexItem[]>([]);
 
   const fetchAll = useCallback(async () => {
     setLoading(true);
     try {
       const [b, n, m, s, lu, hs, sf, si] = await Promise.all([
-        fetch('/api/market/breadth?days=60').then(r => r.json()),
-        fetch('/api/market/northbound?days=120').then(r => r.json()),
-        fetch('/api/market/margin?days=120').then(r => r.json()),
-        fetch('/api/rps/sectors?period=250&min=87').then(r => r.json()),
-        fetch('/api/limit-up').then(r => r.ok ? r.json() : null).catch(() => null),
-        fetch('/api/fuyao/hot-stocks').then(r => r.ok ? r.json() : null).catch(() => null),
-        fetch('/api/market/sector-flow?days=5').then(r => r.json()).catch(() => null),
-        fetch('/api/market/sector-index?days=1').then(r => r.json()).catch(() => null),
+        getJSON<BreadthResp>('/api/market/breadth?days=60'),
+        getJSON<NorthboundResp>('/api/market/northbound?days=120'),
+        getJSON<MarginResp>('/api/market/margin?days=120'),
+        getJSON<RpsSectorsResp>('/api/rps/sectors?period=250&min=87'),
+        getJSONOr<LimitUpResp | null>('/api/limit-up', null),
+        getJSONOr<HotStocksResp | null>('/api/fuyao/hot-stocks', null),
+        getJSONOr<SectorFlowResp | null>('/api/market/sector-flow?days=5', null),
+        getJSONOr<SectorIndexResp | null>('/api/market/sector-index?days=1', null),
       ]);
       if (b.items) setBreadth(b.items);
       if (n.items) setNorthbound(n.items);
@@ -53,14 +61,14 @@ export default function MarketPage() {
       if (hs && !hs.error) setHotStocks(hs);
       if (sf?.sectors) setSectorFlow(sf.sectors);
       if (si?.sectors) setSectorIndex(si.sectors);
-    } catch { /* ignore */ } finally { setLoading(false); }
+    } catch { /* 整体失败时保持已有数据 */ } finally { setLoading(false); }
   }, []);
 
   const fetchIdx = useCallback(async (code: string) => {
     try {
-      const r = await fetch(`/api/market/index-valuation?ts_code=${code}`).then(r => r.json());
+      const r = await getJSON<IndexValuationResp>(`/api/market/index-valuation?ts_code=${code}`);
       setIdxVal(r);
-    } catch { /* ignore */ }
+    } catch { /* 指数估值失败不阻塞页面 */ }
   }, []);
 
   useEffect(() => { fetchAll(); }, [fetchAll]);
@@ -105,8 +113,8 @@ export default function MarketPage() {
                   xAxis: { type: 'category', data: dates, axisLabel: { fontSize: 10 } },
                   yAxis: { type: 'value' },
                   series: [
-                    { name: '上涨', type: 'bar', data: breadth.map(b => b.advance), itemStyle: { color: '#ef4444' } },
-                    { name: '下跌', type: 'bar', data: breadth.map(b => b.decline ? -b.decline : 0), itemStyle: { color: '#22c55e' } },
+                    { name: '上涨', type: 'bar', data: breadth.map(b => b.advance), itemStyle: { color: MARKET_COLORS.up } },
+                    { name: '下跌', type: 'bar', data: breadth.map(b => b.decline ? -b.decline : 0), itemStyle: { color: MARKET_COLORS.down } },
                   ],
                 }} />
               ) : <Empty />}
@@ -189,22 +197,21 @@ export default function MarketPage() {
           <Card className="p-4">
             <div className="flex items-center justify-between mb-1">
               <h3 className="font-medium">指数估值历史分位</h3>
-              <select value={idxCode} onChange={e => setIdxCode(e.target.value)}
-                className="px-2 py-1 border border-gray-200 dark:border-gray-700 rounded bg-white dark:bg-gray-800 text-xs">
+              <Select value={idxCode} onChange={e => setIdxCode(e.target.value)} block={false} className="px-2 py-1 text-xs w-auto">
                 {IDX_OPTIONS.map(o => <option key={o.code} value={o.code}>{o.name}</option>)}
-              </select>
+              </Select>
             </div>
             <p className="text-xs text-gray-500 mb-2">
-              {idxVal?.name} · PE-TTM {idxVal?.currentPeTtm ?? '--'} · PB {idxVal?.currentPb ?? '--'} · 分位 <b className={idxVal?.percentile >= 70 ? 'text-red-600' : idxVal?.percentile <= 30 ? 'text-green-600' : ''}>{idxVal?.percentile ?? '--'}%</b>
+              {idxVal?.name} · PE-TTM {idxVal?.currentPeTtm ?? '--'} · PB {idxVal?.currentPb ?? '--'} · 分位 <b className={(idxVal?.percentile ?? 0) >= 70 ? 'text-red-600' : (idxVal?.percentile ?? 100) <= 30 ? 'text-green-600' : ''}>{idxVal?.percentile ?? '--'}%</b>
             </p>
             <div className="h-56">
-              {idxVal?.history?.length > 0 ? (
+              {(idxVal?.history?.length ?? 0) > 0 ? (
                 <EChart option={{
                   tooltip: { trigger: 'axis' },
                   grid: { left: 40, right: 15, top: 15, bottom: 25 },
-                  xAxis: { type: 'category', data: idxVal.history.map((h: any) => md(h.date)), axisLabel: { fontSize: 10 } },
+                  xAxis: { type: 'category', data: (idxVal?.history ?? []).map(h => md(h.date)), axisLabel: { fontSize: 10 } },
                   yAxis: { type: 'value', scale: true },
-                  series: [{ type: 'line', data: idxVal.history.map((h: any) => h.pe), smooth: true, showSymbol: false, lineStyle: { width: 1.5 } }],
+                  series: [{ type: 'line', data: (idxVal?.history ?? []).map(h => h.pe), smooth: true, showSymbol: false, lineStyle: { width: 1.5 } }],
                 }} />
               ) : <Empty />}
             </div>
@@ -222,7 +229,7 @@ export default function MarketPage() {
                   xAxis: { type: 'category', data: northbound.map(n => md(n.date)), axisLabel: { fontSize: 10 } },
                   yAxis: { type: 'value', name: '净流入', scale: true },
                   series: [
-                    { name: '日净流入', type: 'bar', data: northbound.map(n => yi(n.northMoney)), itemStyle: { color: (p: any) => (p.value >= 0 ? '#ef4444' : '#22c55e') } },
+                    { name: '日净流入', type: 'bar', data: northbound.map(n => yi(n.northMoney)), itemStyle: { color: (p: any) => (p.value >= 0 ? MARKET_COLORS.up : MARKET_COLORS.down) } },
                   ],
                 }} />
               ) : <Empty />}
@@ -243,7 +250,7 @@ export default function MarketPage() {
                   yAxis: [{ type: 'value', name: '余额', scale: true }, { type: 'value', name: '净变化', scale: true }],
                   series: [
                     { name: '融资余额', type: 'line', data: margin.map(m => yi2(m.rzye)), smooth: true, showSymbol: false },
-                    { name: '净变化', type: 'bar', yAxisIndex: 1, data: margin.map(m => yi2(m.netChange)), itemStyle: { color: (p: any) => (p.value >= 0 ? '#ef4444' : '#22c55e') } },
+                    { name: '净变化', type: 'bar', yAxisIndex: 1, data: margin.map(m => yi2(m.netChange ?? null)), itemStyle: { color: (p: any) => (p.value >= 0 ? MARKET_COLORS.up : MARKET_COLORS.down) } },
                   ],
                 }} />
               ) : <Empty />}
@@ -253,23 +260,23 @@ export default function MarketPage() {
           {/* 7. 涨停情绪（Tushare limit_list_d） */}
           <Card className="p-4">
             <h3 className="font-medium mb-1">涨停情绪</h3>
-            {limitUp?.items?.up?.length > 0 ? (
+            {(limitUp?.items?.up?.length ?? 0) > 0 ? (
               <>
                 <p className="text-xs text-gray-500 mb-2">
-                  今日涨停 <b className="text-red-600">{limitUp.count.up}</b> 只
-                  · 跌停 <b className="text-green-600">{limitUp.count.down}</b> 只
-                  {limitUp.count.broken > 0 && <span className="text-gray-400"> · 炸板 {limitUp.count.broken}</span>}
+                  今日涨停 <b className="text-red-600">{limitUp?.count.up}</b> 只
+                  · 跌停 <b className="text-green-600">{limitUp?.count.down}</b> 只
+                  {(limitUp?.count.broken ?? 0) > 0 && <span className="text-gray-400"> · 炸板 {limitUp?.count.broken}</span>}
                 </p>
                 <div className="space-y-1 max-h-64 overflow-y-auto">
-                  {limitUp.items.up.map((s: any) => (
+                  {(limitUp?.items.up ?? []).map((s) => (
                     <div key={s.tsCode} className="flex items-center gap-2 text-xs py-1 border-b border-gray-50 dark:border-gray-800/50">
                       <span className={cn("px-1.5 py-0.5 rounded font-medium shrink-0",
-                        s.limitTimes >= 3 ? "bg-red-100 text-red-700" : "bg-orange-100 text-orange-700")}>
+                        (s.limitTimes ?? 0) >= 3 ? "bg-red-100 text-red-700" : "bg-orange-100 text-orange-700")}>
                         {s.limitTimes}板
                       </span>
                       <span className="font-medium shrink-0">{s.name}</span>
                       <span className="text-gray-400 shrink-0">{s.firstTime}</span>
-                      {s.openTimes > 0 && <span className="text-orange-500 shrink-0">炸{s.openTimes}次</span>}
+                      {(s.openTimes ?? 0) > 0 && <span className="text-orange-500 shrink-0">炸{s.openTimes}次</span>}
                       {s.fdAmount != null && <span className="text-gray-400 shrink-0">封单{(s.fdAmount / 1e4).toFixed(0)}万</span>}
                       <span className="text-gray-500 truncate">{s.upStat}</span>
                     </div>
@@ -316,11 +323,11 @@ export default function MarketPage() {
           {/* 8. 热度排行 */}
           <Card className="p-4">
             <h3 className="font-medium mb-1">热度排行</h3>
-            {hotStocks?.hot?.item?.length > 0 ? (
+            {(hotStocks?.hot?.item?.length ?? 0) > 0 ? (
               <>
                 <p className="text-xs text-gray-500 mb-2">热股 Top10（24h）</p>
                 <div className="space-y-1 mb-3">
-                  {hotStocks.hot.item.slice(0, 10).map((s: any) => (
+                  {(hotStocks?.hot?.item ?? []).slice(0, 10).map((s) => (
                     <div key={s.thscode} className="flex items-center gap-2 text-xs py-0.5">
                       <span className={cn("w-5 text-center font-bold shrink-0",
                         s.rank <= 3 ? "text-red-500" : "text-gray-400")}>{s.rank}</span>
@@ -328,21 +335,21 @@ export default function MarketPage() {
                       <span className={cn("text-xs shrink-0",
                         s.rank_trend === 'up' ? "text-red-500" : s.rank_trend === 'down' ? "text-green-500" : "text-gray-400")}>
                         {s.rank_trend === 'up' ? '↑' : s.rank_trend === 'down' ? '↓' : '—'}
-                        {s.rank_change !== 0 && Math.abs(s.rank_change)}
+                        {(s.rank_change ?? 0) !== 0 && Math.abs(s.rank_change ?? 0)}
                       </span>
                       <span className="text-gray-400 ml-auto">{(Number(s.heat) / 10000).toFixed(0)}万</span>
                     </div>
                   ))}
                 </div>
-                {hotStocks?.skyrocket?.item?.length > 0 && (
+                {(hotStocks?.skyrocket?.item?.length ?? 0) > 0 && (
                   <>
                     <p className="text-xs text-gray-500 mb-1 mt-3">飙升 Top5（1h）</p>
                     <div className="space-y-1">
-                      {hotStocks.skyrocket.item.slice(0, 5).map((s: any) => (
+                      {(hotStocks?.skyrocket?.item ?? []).slice(0, 5).map((s) => (
                         <div key={s.thscode} className="flex items-center gap-2 text-xs py-0.5">
                           <span className="w-5 text-center font-bold text-orange-500 shrink-0">{s.rank}</span>
                           <span className="font-medium shrink-0">{s.name}</span>
-                          {s.rank_change > 0 && <span className="text-orange-500 shrink-0">↑{s.rank_change}</span>}
+                          {(s.rank_change ?? 0) > 0 && <span className="text-orange-500 shrink-0">↑{s.rank_change}</span>}
                         </div>
                       ))}
                     </div>
@@ -359,8 +366,10 @@ export default function MarketPage() {
 
 function Empty() {
   return (
-    <div className="h-full flex items-center justify-center text-xs text-gray-400">
-      数据未生成，请在服务器运行 run-daily
+    <div className="h-full min-h-[120px] flex flex-col items-center justify-center text-gray-400 gap-2">
+      <LineChart className="w-8 h-8 opacity-20" />
+      <p className="text-xs">数据未生成</p>
+      <p className="text-[10px] text-gray-300 dark:text-gray-600">请在服务器运行 run-daily</p>
     </div>
   );
 }

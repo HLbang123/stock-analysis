@@ -8,8 +8,9 @@
 
 import { useState, useEffect, useCallback } from 'react';
 import { Card } from '@/components/ui/card';
-import { Loader2, RefreshCw, TrendingUp, TrendingDown, Activity } from 'lucide-react';
+import { Activity } from 'lucide-react';
 import { cn } from '@/lib/utils';
+import { pct, signed, toneCls, Metric, StatsHeader, StatsEmpty } from './stats-primitives';
 
 interface Stats {
   primaryN: number;
@@ -19,9 +20,6 @@ interface Stats {
   llmAB: any[];
   eventSignals: any[];
 }
-
-const pct = (v: number | null | undefined, d = 1) => (v == null ? '--' : v.toFixed(d));
-const signed = (v: number | null | undefined, d = 2) => (v == null ? '--' : `${v >= 0 ? '+' : ''}${v.toFixed(d)}`);
 
 export function AiScreenStats() {
   const [stats, setStats] = useState<Stats | null>(null);
@@ -53,16 +51,13 @@ export function AiScreenStats() {
 
   return (
     <div className="space-y-4">
-      <div className="flex items-center justify-between">
-        <p className="text-xs text-gray-500 dark:text-gray-400">
-          基于 T+{stats?.primaryN ?? 5} 绝对收益&gt;0 胜率。数据从部署后累积,样本不足时显示 --。
-        </p>
-        <button onClick={load} disabled={loading} className="text-xs text-purple-600 flex items-center gap-1 disabled:opacity-50">
-          {loading ? <Loader2 className="w-3.5 h-3.5 animate-spin" /> : <RefreshCw className="w-3.5 h-3.5" />} 刷新
-        </button>
-      </div>
+      <StatsHeader
+        note={<>基于 T+{stats?.primaryN ?? 5} 绝对收益&gt;0 胜率。数据从部署后累积,样本不足时显示 --。</>}
+        onRefresh={load}
+        loading={loading}
+      />
 
-      {!stats && !loading && <div className="text-center py-12 text-gray-400 text-sm">暂无回测数据</div>}
+      {!stats && !loading && <StatsEmpty>暂无回测数据</StatsEmpty>}
 
       {stats && (
         <>
@@ -181,15 +176,6 @@ export function AiScreenStats() {
           )}
         </>
       )}
-    </div>
-  );
-}
-
-function Metric({ label, value, tone }: { label: string; value: string; tone?: 'up' | 'down' }) {
-  return (
-    <div>
-      <div className="text-xs text-gray-400">{label}</div>
-      <div className={cn('text-lg font-semibold mt-0.5', tone === 'up' ? 'text-red-600' : tone === 'down' ? 'text-green-600' : 'text-gray-900 dark:text-white')}>{value}</div>
     </div>
   );
 }
