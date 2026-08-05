@@ -1,39 +1,41 @@
 /**
- * GET /api/market/sector-flow?days=5 — 板块资金流向（按行业聚合主力净流入）
- * 返回近 N 日各行业的主力净流入额，降序排列
+ * GET /api/market/sector-flow?days=5 — 板块资金流向（同花顺 THS 行业口径，2026-08 起）
+ * 返回近 N 个交易日各行业的资金净额（亿元），按净额降序
  */
 export async function GET(request: Request) {
   const days = Math.min(parseInt(new URL(request.url).searchParams.get("days") || "5"), 30);
   try {
     const { prisma } = await import("@/lib/db");
-    // 取最近 N 个交易日的 moneyflow，按 industry 聚合
-    // trade_date 为 YYYYMMDD 文本，用 OFFSET 取第 N 个最近交易日作为下界
-    const rows: any[] = await prisma.$queryRawUnsafe(
-      `SELECT s.industry,
-              COUNT(DISTINCT m.ts_code)::int AS stock_count,
-              SUM(m.net_mf_amount) AS total_net,
-              SUM(m.buy_elg_amount) AS total_elg,
-              SUM(m.buy_lg_amount) AS total_lg,
-              COUNT(DISTINCT m.trade_date)::int AS days_covered
-       FROM stock_moneyflow m
-       JOIN stocks s ON m.ts_code = s.ts_code
-       WHERE s.is_active = true AND s.industry IS NOT NULL AND s.industry != ''
-         AND m.trade_date >= (
-           SELECT trade_date FROM stock_moneyflow ORDER BY trade_date DESC LIMIT 1 OFFSET $1 - 1
-         )
-       GROUP BY s.industry
-       HAVING COUNT(DISTINCT m.ts_code) >= 3
-       ORDER BY total_net DESC NULLS LAST`,
+    // 最近 N 个交易日（industry_moneyflow_ths 按日全行业）
+    const dayRows: any[] = await prisma.$queryRawUnsafe(
+      `SELECT DISTINCT trade_date FROM industry_moneyflow_ths ORDER BY trade_date DESC LIMIT $1`,
       days
     );
+    if (dayRows.length === 0) return Response.json({ days, sectors: [] });
+    const dates = dayRows.map((r: any) => r.trade_date);
+
+    const rows: any[] = await prisma.$queryRawUnsafe(
+      `SELECT industry,
+              SUM(net_amount) AS total_net,
+              AVG(pct_change) AS avg_pct,
+              COUNT(DISTINCT trade_date)::int AS days_covered,
+              MAX(lead_stock) AS lead_stock,
+              MAX(company_num)::int AS company_num
+       FROM industry_moneyflow_ths
+       WHERE trade_date = ANY($1::varchar[])
+       GROUP BY industry
+       ORDER BY total_net DESC NULLS LAST`,
+      dates
+    );
     return Response.json({
-      days,
+      days: dates.length,
       sectors: rows.map((r) => ({
         industry: r.industry,
-        stockCount: r.stock_count,
         totalNet: r.total_net != null ? Number(r.total_net) : null,
-        totalElg: r.total_elg != null ? Number(r.total_elg) : null,
-        totalLg: r.total_lg != null ? Number(r.total_lg) : null,
+        avgPct: r.avg_pct != null ? Number(r.avg_pct) : null,
+        daysCovered: r.days_covered,
+        leadStock: r.lead_stock,
+        companyNum: r.company_num,
       })),
     });
   } catch (e: any) {

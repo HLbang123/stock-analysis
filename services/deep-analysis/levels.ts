@@ -106,10 +106,10 @@ function calcATR(kLines: KLineData[]): number {
   return slice.reduce((a, b) => a + b, 0) / slice.length;
 }
 
-/** 从 engineResults 解析 R11 箱体上沿 */
+/** 从 engineResults 解析 R10 箱体上沿 */
 function extractBoxHigh(engineResults: RuleCheckResult[]): number | null {
   for (const r of engineResults) {
-    if (!r.triggered || r.ruleId !== 'R11' || !r.extraData) continue;
+    if (!r.triggered || r.ruleId !== 'R10' || !r.extraData) continue;
     try {
       const d = JSON.parse(r.extraData);
       if (d.type === 'breakout' && typeof d.boxHigh === 'number') return d.boxHigh;
@@ -120,7 +120,7 @@ function extractBoxHigh(engineResults: RuleCheckResult[]): number | null {
 
 /** 买入类规则触发数（仓位基准用） */
 function countBuySignals(engineResults: RuleCheckResult[]): number {
-  const buyIds = new Set(['R05', 'R06', 'R09', 'R10', 'R11', 'R12', 'R13']);
+  const buyIds = new Set(['R04', 'R05', 'R08', 'R09', 'R10', 'R11', 'R12']);
   return engineResults.filter(r => r.triggered && r.ruleId && buyIds.has(r.ruleId)).length;
 }
 

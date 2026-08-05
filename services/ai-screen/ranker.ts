@@ -15,13 +15,18 @@ import { buildRankingPrompt } from './prompt';
 
 const RANK_WEIGHT = 0.4;
 const MIN_COVERAGE = 0.6;
-const MAX_RETRIES = 2;
+const MAX_RETRIES = 1;
 // 非流式单层超时：覆盖中转慢生成整段耗时（07-30 非流式 90s 曾超时，放宽到 300s）
 const LLM_TIMEOUT_MS = 300_000;
-// 思考型模型（deepseek-v4-flash 会先吐 reasoning_content）会把生成预算烧在思考上，
-// 候选越多思考越长：18 只时 8192 曾让 content 为空/只剩前奏 → 3 次 json_parse_failed 全降级纯规则。
-// 16384 = 18 只候选 JSON(≈4.5k token) + 思考余量；中转若把 max_tokens 卡得更小会 400，callLlm 内自动降级重试 8192。
-const LLM_MAX_TOKENS = 16384;
+// 轻量化（08-05）：输出字段 12→8（后恢复 tags/watch_items/invalidators 到 11，保住 UI 跟踪/证伪点与复盘 tag 维度）+ 输入字段瘦身后，正文 ≈2k token。
+// max_tokens 对思考型模型 = 思考+正文总预算，卡太紧会"思考烧光→正文截断→解析失败→降级纯规则"。
+// 12288 = 2k 正文 + 10k 思考余量：保住思考深度不撞线，真实花费仍随输入/输出瘦身降 ~40%。
+// 中转若把 max_tokens 卡得更小会 400，callLlm 内自动降级重试 4096。
+const LLM_MAX_TOKENS = 12288;
+// LLM 重排候选数上限。08-05 曾降到 15（瘦身），审计发现 15→20 单次仅多 ¥0.003~0.006
+// （DeepSeek V4 Flash 官方价），却让展示列表 16-20 名失去 LLM 介入（final=纯规则分），
+// 捞不上低分强催化票——恢复 20，与 maxOutput 对齐。省钱的正确方向是思考预算，不是候选数。
+const LLM_TOPK_CAP = 20;
 
 export interface RankResult {
   picks: AiPick[];
@@ -262,9 +267,9 @@ async function callLlm(prompt: string, cfg: LlmConfig): Promise<LlmTextResult> {
       data = (await post(LLM_MAX_TOKENS)) as ChatCompletionResponse;
     } catch (e: unknown) {
       const msg = e instanceof Error ? e.message : String(e);
-      // 400 且错误含 max_tokens 字样（厂商卡上限）→ 用 8192 重试，避免把「可降级」变成「调用失败」
+      // 400 且错误含 max_tokens 字样（厂商卡上限）→ 用 4096 重试，避免把「可降级」变成「调用失败」
       if (/400|max[_ -]?tokens?|max completion/i.test(msg)) {
-        data = (await post(8192)) as ChatCompletionResponse;
+        data = (await post(4096)) as ChatCompletionResponse;
       } else {
         throw e;
       }
@@ -348,8 +353,8 @@ export async function rankCandidates(
     return emptyFallback(picks, preset, degradation);
   }
 
-  // 送 LLM 的候选数 = maxOutput(20)。旧版 3 倍封顶 30 让输出逼近 max_tokens 触发覆盖率回退，降到 20 保证可靠交付
-  const topK = Math.min(Math.max(preset.maxOutput, 10), picks.length);
+  // 送 LLM 的候选数 = min(maxOutput, 20)。与 maxOutput 对齐（08-05 审计后从 15 恢复）：池尾不再有"展示但无 LLM 介入"的断层
+  const topK = Math.min(LLM_TOPK_CAP, Math.max(preset.maxOutput, 10), picks.length);
   const candidates = [...picks].sort((a, b) => b.screenScore - a.screenScore).slice(0, topK);
   const candidateMap = new Map(candidates.map((k) => [normalizeCode(k.tsCode), k]));
   // 池外候选先按规则分排好，作为 LLM 命中后的尾部

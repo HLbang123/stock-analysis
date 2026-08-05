@@ -71,8 +71,8 @@ function breakout20dPct(closes: number[], highs: number[]): number | null {
   return ((closes[n - 1] - hi) / hi) * 100;
 }
 
-/** CRITICAL 级卖出规则（R01/R02/R04），触发时买入分兜底 */
-const CRITICAL_SELL_IDS = new Set(['R01', 'R02', 'R04']);
+/** CRITICAL 级卖出规则（R01/R02），触发时买入分兜底 */
+const CRITICAL_SELL_IDS = new Set(['R01', 'R02']);
 
 /** 日级趋势（做T信号可信度门控：升势信底背离/超卖，降势信顶背离/超买） */
 function dailyTrend(closes: number[]): 'up' | 'down' | 'sideways' {

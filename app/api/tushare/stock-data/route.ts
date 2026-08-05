@@ -32,16 +32,12 @@ export async function GET(request: NextRequest) {
 
   // 2. 其余并行；大盘指数用 trade_date 一次取回全部指数
   //    （index_dailybasic / index_daily 不支持逗号分隔 ts_code，按 trade_date 查返回当日全部指数）
-  const [finaRes, moneyflowRes, holderRes, marginRes, hkHoldRes, forecastRes, topListRes, indexBasicRes, indexDailyRes] = await Promise.allSettled([
+  //    moneyflow 已改从 stock_moneyflow_ths 表读（同花顺口径），不再实时调接口
+  const [finaRes, holderRes, marginRes, hkHoldRes, forecastRes, topListRes, indexBasicRes, indexDailyRes] = await Promise.allSettled([
     callTushare(
       "fina_indicator",
       { ts_code: tsCode, limit: 4 },
       "ts_code,ann_date,end_date,roe,roe_dt,roa,grossprofit_margin,netprofit_margin,debt_to_assets,or_yoy,profit_dedt,basic_eps_yoy,equity_yoy,op_yoy,tr_yoy,current_ratio,quick_ratio,ocf_to_or"
-    ),
-    callTushare(
-      "moneyflow",
-      { ts_code: tsCode, limit: 5 },
-      "ts_code,trade_date,buy_elg_amount,sell_elg_amount,net_mf_amount,buy_lg_amount,sell_lg_amount,net_lg_amount,buy_md_amount,sell_md_amount,net_md_amount,buy_sm_amount,sell_sm_amount,net_sm_amount"
     ),
     callTushare(
       "stk_holdernumber",
@@ -92,10 +88,22 @@ export async function GET(request: NextRequest) {
       ? toRecords(finaRes.value)
       : (errors.push("fina_indicator: " + finaRes.reason?.message), []);
 
-  const moneyflow =
-    moneyflowRes.status === "fulfilled"
-      ? toRecords(moneyflowRes.value)
-      : (errors.push("moneyflow: " + moneyflowRes.reason?.message), []);
+  // moneyflow：THS 表近 30 日（同花顺口径：净流入万元 + 大中小单占比）
+  let moneyflow: any[] = [];
+  try {
+    const { prisma } = await import("@/lib/db");
+    moneyflow = await prisma.stockMoneyflowThs.findMany({
+      where: { tsCode },
+      orderBy: { tradeDate: "desc" },
+      take: 30,
+      select: {
+        tradeDate: true, netAmount: true, netD5Amount: true,
+        buyLgAmount: true, buyLgRate: true, buyMdRate: true, buySmRate: true,
+      },
+    });
+  } catch (e: any) {
+    errors.push("moneyflow: " + e.message);
+  }
 
   const holderNumber =
     holderRes.status === "fulfilled"

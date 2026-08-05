@@ -3,7 +3,7 @@
  * GET /api/chip?code=000001  → ChipDistribution JSON
  *
  * 数据来自 daily_bars（含 turnover_rate），走 lib/chip.ts 换手率转移模型。
- * 用于预警 R14/R15、AI 深度分析、对话工具。
+ * 用于预警 R13/R14、AI 深度分析、对话工具。
  */
 import { NextRequest, NextResponse } from 'next/server';
 import { getChipDistribution } from '@/lib/chip';

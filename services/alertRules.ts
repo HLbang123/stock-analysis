@@ -34,13 +34,19 @@ function calculateMaxVolume(kLines: KLineData[], period: number): number {
  * 当日起始根 bar 的"等效全日量"：盘中合成 bar 只是半天累积量，
  * 除以时间进度系数折算（非今日 bar / 盘后 pace=1 时原样返回）。
  * 所有"今日量 vs 基线"的放量/缩量判断一律用它，否则上午漏报放量、盘中误报缩量。
+ *
+ * 折算保护上限（08-05 全规则统一）：折算系数下限 0.5 → 等效量最多 = 当前累积量 × 2。
+ * 早盘量能前置(高开抢筹/U形失效)会让 pace 折算把半天量放大多倍，数值虚大导致
+ * 巨量见顶/放量离场/反包/箱体突破等所有量能类规则盘中集体误报；
+ * 真正的大放量盘后折算=1 不受影响；代价是 10:00 前需当日已接近日均量才算"放量"，可接受。
  */
 function effectiveTodayVolume(kLines: KLineData[], quote: RealtimeQuote | null): number {
   const today = kLines[kLines.length - 1];
   if (!today) return 0;
   if (today.date !== beijingTodayStr()) return today.volume; // 周末/节假日：最后一根是已完成日K
   const pace = intradayVolumePace(quote?.updateTime);
-  return pace >= 1 ? today.volume : today.volume / pace;
+  const effVol = pace >= 1 ? today.volume : today.volume / pace;
+  return Math.min(effVol, today.volume * 2);
 }
 
 /**
@@ -78,7 +84,7 @@ interface CandleShape {
 /**
  * 统一K线形态分类（长上影/长下影/纺锤线/十字星）。
  * 定义严格按用户规则：用影线/实体比，长上影与纺锤线互斥、长下影与纺锤线互斥。
- * 长上影/长下影/纺锤线方向中性——是顶部还是底部信号由调用方按位置上下文判断（R01 顶部 vs R07 底部）。
+ * 长上影/长下影/纺锤线方向中性——是顶部还是底部信号由调用方按位置上下文判断（R01 顶部 vs R06 底部）。
  */
 function classifyCandle(k: KLineData): CandleShape {
   const body = Math.abs(k.close - k.open);
@@ -225,16 +231,17 @@ function priceCrossedAboveWithin(kLines: KLineData[], ma: number[], idx: number,
  * extraData 列出全部命中的子信号（供 UI 展示）。这样同类信号在一个规则内统一力度，杜绝跨规则矛盾。
  *
  * 子信号严重度：对子顶(5) > 巨量见顶/第二波见顶/长上影+放量/涨停炸板(4) > 长上影/跳空衰竭/纺锤线/长下影见顶(3) > 涨停封板(2) > 巨量异动(1)
- * K线形态均要求"连续上涨后"上下文；长下影在连涨后=顶部承接乏力（R01），在下跌末段=底部锤子（R07），同形态靠位置分流。
+ * K线形态均要求"连续上涨后"上下文；长下影在连涨后=顶部承接乏力（R01），在下跌末段=底部锤子（R06），同形态靠位置分流。
  */
-function checkTopPattern(kLines: KLineData[], quote: RealtimeQuote | null, rule: AlertRule): RuleCheckResult {
+function checkTopPattern(kLines: KLineData[], quote: RealtimeQuote | null, rule: AlertRule, limitMap?: LimitPriceMap | null): RuleCheckResult {
   if (kLines.length < 5) return { triggered: false };
   const idx = kLines.length - 1;
   const today = kLines[idx];
   const prev1 = kLines[idx - 1];
   const shape = classifyCandle(today);
   const avg5 = calculateAvgVolume(kLines.slice(0, -1), 5);
-  const effVol = effectiveTodayVolume(kLines, quote); // 盘中折算等效全日量
+  // 等效全日量（折算保护已内置于 effectiveTodayVolume，全规则统一）
+  const effVol = effectiveTodayVolume(kLines, quote);
   const isHighVol = avg5 > 0 && effVol > avg5 * 1.2;
   const uptrend = isUptrendRecently(kLines, idx);
   const threshold = rule.thresholdValue ?? 1.20;
@@ -245,29 +252,35 @@ function checkTopPattern(kLines: KLineData[], quote: RealtimeQuote | null, rule:
   // 否则低位/横盘放量（可能是底部启动）也报"见顶"，且行情热时全市场普涨量会集体误报。
   const high60 = Math.max(...kLines.slice(-60).map(k => k.high));
   const atTop = (high60 > 0 && today.close >= high60 * 0.92) || uptrend;
+  // 第二波见顶：第一波高潮后（近5日之外的历史天量），近5日再现接近第一波高潮的放量（≥90%），且仍处高位。
+  // 旧实现第一波窗口 slice(0,-1) 只排除今日、却含第二波窗口——历史天量恰在近10日时自己印证自己恒真触发
+  // （海康威视 7-27 天量 2.9亿 既当第一波又当第二波，之后量能仅为其 59% 仍每日报"第二波见顶"）。
+  // 第一波须是真高潮（≥1.5×20日均量）——否则量能平稳的票，任何普通放量日都会"接近第一波"恒真触发。
   let secondWave = false;
-  if (kLines.length >= 60) {
-    const firstWaveMax = Math.max(...kLines.slice(0, -1).map(k => k.volume));
-    const recentMax = Math.max(...kLines.slice(-10).map(k => k.volume));
-    if (firstWaveMax > 0 && recentMax >= firstWaveMax * 0.9) secondWave = true;
+  if (kLines.length >= 30) {
+    const firstWaveMax = Math.max(...kLines.slice(0, -5).map(k => k.volume));
+    const secondWaveMax = Math.max(...kLines.slice(-5, -1).map(k => k.volume));
+    const avg20Wave = calculateAvgVolume(kLines.slice(0, -5), 20);
+    if (firstWaveMax > 0 && firstWaveMax >= avg20Wave * 1.5 && secondWaveMax >= firstWaveMax * 0.9 && atTop) secondWave = true;
   }
-  // 量能极端度：今日量(等效全日)在过去120日的分位数 ≥95% 且 对20日均量 ≥2 倍。
-  // 分位数口径对每支票自身历史分布自适应，冷门票/热门票公平，行情热时基线同步抬升；
-  // 旧口径"超5日最高量×1.2 / 区间天量×0.95"基准窗太短且会自己锚定自己，已废。
-  const volHistory = kLines.map(k => k.volume);
-  const volPctRank = volHistory.filter(v => v <= effVol).length / volHistory.length;
+  // 量能极端：今日等效全日量 ≥ 2 倍 20 日均量（对自身历史自适应，行情热基线同步抬升）。
+  // 弃用"120日分位 ≥95%"口径：盘中折算后分位恒饱和到 100%，无区分度且让文案数值虚大。
   const volRatio20 = avg20 > 0 ? effVol / avg20 : 0;
-  const volExtreme = volPctRank >= 0.95 && volRatio20 >= 2.0;
-  // 派发确认：天量必须"没换来价"才算见顶——滞涨(|涨跌幅|<2%) / 阴线 / 长上影(≥2%) 三选一。
-  // 放量大阳线/涨停是启动不是派发，交给突破类规则(R09/箱体)报，R01 不两头喊。
+  const volExtreme = volRatio20 >= 2.0;
+  // 派发确认：天量必须"没换来价"才算见顶——滞涨(|涨跌幅|<2%) / 阴线 / 长上影(≥3%，2%太常见) 三选一。
+  // 放量大阳线/涨停是启动不是派发，交给突破类规则(R08/箱体)报，R01 不两头喊。
   const dayChgPct = prev1.close > 0 ? ((today.close - prev1.close) / prev1.close) * 100 : 0;
   const stagnant = Math.abs(dayChgPct) < 2;
   const bearishCandle = today.close < today.open;
-  const rejection = shape.upperShadowPct >= 2;
+  const rejection = shape.upperShadowPct >= 3;
   const distribution = stagnant || bearishCandle || rejection;
-  // 高位 + 量能罕见 + 派发痕迹，三条件各管一件事：在哪、量多大、价怎么回应
+  // 高位 + 量能极端 + 派发痕迹，三条件各管一件事：在哪、量多大、价怎么回应
   const isPeak = atTop && volExtreme && distribution;
-  const isVolumeAbnormal = avg5 > 0 && effVol > avg5 * threshold;
+  // 巨量异动（severity 1 弱提醒）：用"已成交量"不折算（确认性优先，宁缺毋滥）。
+  // 盘中折算依赖"时段量能与历史分布一致"假设，但放量日的量能恰恰最易集中上午
+  // （哈药 8/05 11:12 已成交 391万手≈当日全天的 97%，pace 折算却按 50% 估成 781万手 → 误报放量85%）。
+  // 强信号（巨量见顶 volRatio20≥2）保留折算抓上午；弱信号等已成交量确认。
+  const isVolumeAbnormal = avg5 > 0 && today.volume > avg5 * threshold;
 
   // [severity, label, message]
   const triggered: Array<[number, string, string]> = [];
@@ -284,33 +297,37 @@ function checkTopPattern(kLines: KLineData[], quote: RealtimeQuote | null, rule:
     if (stagnant) traces.push(`放量滞涨(涨跌幅 ${dayChgPct.toFixed(1)}%)`);
     if (bearishCandle) traces.push('阴线');
     if (rejection) traces.push(`上影 ${shape.upperShadowPct.toFixed(1)}%`);
-    triggered.push([4, '巨量见顶', `🔴 巨量见顶：高位天量(量比 ${volRatio20.toFixed(1)}，120日分位 ${(volPctRank * 100).toFixed(0)}%)+${traces.join('、')}，派发嫌疑，止盈减仓`]);
+    triggered.push([4, '巨量见顶', `🔴 巨量见顶：高位天量(量比 ${volRatio20.toFixed(1)})+${traces.join('、')}，派发嫌疑，止盈减仓`]);
   }
   if (secondWave) {
-    triggered.push([4, '第二波见顶', `🔴 第二波见顶：近期量能接近第一波高潮，资金兑现出逃，止盈`]);
+    const firstWaveMax = Math.max(...kLines.slice(0, -5).map(k => k.volume));
+    const secondWaveMax = Math.max(...kLines.slice(-5, -1).map(k => k.volume));
+    triggered.push([4, '第二波见顶', `🔴 第二波见顶：近5日放量 ${secondWaveMax} 已达第一波高潮(${firstWaveMax})的 ${(secondWaveMax / firstWaveMax * 100).toFixed(0)}%，资金兑现出逃，止盈`]);
   }
   // K线形态（要求"连续上涨后"上下文）
+  // 08-05 回测（790票×500日）显示形态类见顶无预测力（胜率≈基准46.4%、均值微正），降级为弱提醒保留观察价值
   if (uptrend) {
     if (shape.isLongUpper) {
-      triggered.push([isHighVol ? 4 : 3, '长上影见顶', `${isHighVol ? '🔴' : '⚠️'} 长上影见顶：上影 ${shape.upperShadowPct.toFixed(1)}%（≥实体2倍）${isHighVol ? '+放量' : ''}，上方抛压沉重，止盈`]);
+      triggered.push([isHighVol ? 3 : 2, '长上影见顶', `${isHighVol ? '🔴' : '⚠️'} 长上影见顶：上影 ${shape.upperShadowPct.toFixed(1)}%（≥实体2倍）${isHighVol ? '+放量' : ''}，上方抛压沉重，止盈`]);
     }
     const gap = gapUpPercent(today, prev1.close);
     const smallBody = shape.body > 0 && shape.body / today.close < 0.015;
     if (gap > 0.5 && smallBody && shape.upperShadow > 0 && shape.lowerShadow > 0) {
-      triggered.push([3, '跳空衰竭', `⚠️ 跳空衰竭：跳空高开 ${gap.toFixed(1)}% 收小阳+双向影线，多头动能衰竭，止盈`]);
+      triggered.push([2, '跳空衰竭', `⚠️ 跳空衰竭：跳空高开 ${gap.toFixed(1)}% 收小阳+双向影线，多头动能衰竭，止盈`]);
     }
     if (shape.isSpinning) {
-      triggered.push([3, '纺锤线见顶', `⚠️ 纺锤线见顶：实体极小+双向长影，多空分歧极大，顶部信号，止盈`]);
+      triggered.push([2, '纺锤线见顶', `⚠️ 纺锤线见顶：实体极小+双向长影，多空分歧极大，顶部信号，止盈`]);
     }
     if (shape.isLongLower) {
-      triggered.push([3, '长下影见顶', `⚠️ 长下影见顶：下影 ${shape.lowerShadowPct.toFixed(1)}%（≥实体2倍），连续上涨后多头承接无力，空头反扑，止盈`]);
+      triggered.push([2, '长下影见顶', `⚠️ 长下影见顶：下影 ${shape.lowerShadowPct.toFixed(1)}%（≥实体2倍），连续上涨后多头承接无力，空头反扑，止盈`]);
     }
   }
   // 涨停（触及涨停价，注意开板风险）
-  const limitPct = limitUpPct(quote?.code ?? '', quote?.name ?? '');
+  // 精确价优先（stk_limit 表，前端预取）；未命中回落板块规则推算（10%/20%/ST 5%）
   const prevClose = quote?.preClose ?? (idx >= 1 ? kLines[idx - 1].close : today.close);
   if (prevClose > 0) {
-    const limitPrice = Math.round(prevClose * (1 + limitPct) * 100) / 100;
+    const exactUp = limitMap?.[toTushareCode(quote?.code ?? '')]?.up;
+    const limitPrice = exactUp && exactUp > 0 ? exactUp : Math.round(prevClose * (1 + limitUpPct(quote?.code ?? '', quote?.name ?? '')) * 100) / 100;
     if (today.high >= limitPrice - 0.001) {
       const sealed = today.close >= limitPrice - 0.001;
       if (sealed) {
@@ -322,7 +339,8 @@ function checkTopPattern(kLines: KLineData[], quote: RealtimeQuote | null, rule:
   }
   // 巨量异动（最弱）
   if (isVolumeAbnormal && !isPeak) {
-    triggered.push([1, '巨量异动', `⚠️ 巨量异动：成交量 ${today.volume}，近5日均量 ${Math.round(avg5)}，放量 ${Math.round(effVol / avg5 * 100 - 100)}%`]);
+    // 已成交量口径：三个数字同一基数（today.volume / avg5），不再出现"量 391万 < 均量 422万 却放量85%"的矛盾
+    triggered.push([1, '巨量异动', `⚠️ 巨量异动：成交量 ${today.volume.toLocaleString()}，近5日均量 ${Math.round(avg5).toLocaleString()}，放量 ${Math.round(today.volume / avg5 * 100 - 100)}%`]);
   }
 
   if (triggered.length === 0) return { triggered: false };
@@ -343,7 +361,7 @@ function checkTopPattern(kLines: KLineData[], quote: RealtimeQuote | null, rule:
  * extraData 列出全部命中的子信号。同类信号在一个规则内统一力度，杜绝"一条清仓一条减仓"的跨规则矛盾。
  *
  * 子信号严重度：急跌(5) > 5/13死叉/5/10死叉/破趋势线+破MA60(4,清仓) > 有效跌破10日线/放量离场(3,大减仓) > 跌破5日线/破趋势线(2,减仓) > 跌破10日线待确认/MA5拐头(1,适当减仓) > 缩量破位(0,观望)
- * 死叉清仓覆盖前序减仓；10日线为卖出主线（控回撤），买入仍看 5/13 金叉（R05）。
+ * 死叉清仓覆盖前序减仓；10日线为卖出主线（控回撤），买入仍看 5/13 金叉（R04）。
  */
 function checkTieredExit(kLines: KLineData[], quote: RealtimeQuote | null, rule: AlertRule): RuleCheckResult {
   if (kLines.length < 6) return { triggered: false };
@@ -405,10 +423,7 @@ function checkTieredExit(kLines: KLineData[], quote: RealtimeQuote | null, rule:
     }
   }
 
-  // 放量离场 — 减仓
-  if (volRatio >= 2.0 && (today.close < ma5[idx] || today.close < trendLine)) {
-    triggered.push([3, '放量离场', `🔴 放量离场：量比 ${volRatio.toFixed(1)}倍 + 价格破位（收${today.close}），果断离场！`]);
-  }
+  // 放量离场 — 已删（08-05 回测：无区分度，胜率45.3%≈基准46.4%、均值-0.01%；破趋势线+破MA60 已覆盖同类场景）
 
   // 跌破5日线 — 减仓
   if (!isNaN(ma5[idx]) && today.close < ma5[idx] && effVol > prev1.volume * 1.1) {
@@ -425,10 +440,7 @@ function checkTieredExit(kLines: KLineData[], quote: RealtimeQuote | null, rule:
     triggered.push([1, 'MA5拐头', `⚠️ MA5拐头向下，趋势转弱，减仓30-40%（MA5 ${ma5[idx].toFixed(2)} → ${ma5[idx - 1].toFixed(2)} → ${ma5[idx - 2].toFixed(2)}）`]);
   }
 
-  // 缩量破位 — 观望
-  if (!isNaN(ma5[idx]) && today.close < ma5[idx] && effVol < prev1.volume * 0.9 && prev1.close < ma5[idx - 1]) {
-    triggered.push([0, '缩量破位', `🟡 缩量破位：连续两日收<MA5，缩量，减仓观望`]);
-  }
+  // 缩量破位 — 已删（08-05 回测：反向信号，胜率46.8%高于基准46.4%、均值+0.23%，信号后反而微涨）
 
   if (triggered.length === 0) return { triggered: false };
   triggered.sort((a, b) => b[0] - a[0]);
@@ -462,25 +474,7 @@ function checkBreakMa55(kLines: KLineData[], quote: RealtimeQuote | null, rule: 
 }
 
 /**
- * R04: 妇联定律 — 工业富联大涨>8% 警惕科技板块大分歧
- */
-function checkFuliLaw(kLines: KLineData[], quote: RealtimeQuote | null, rule: AlertRule): RuleCheckResult {
-  if (quote?.code !== 'sh601138') return { triggered: false };
-
-  const change = quote.changePercent;
-  if (change > 8.0) {
-    return {
-      triggered: true,
-      ruleId: 'R04',
-      message: `🔴 妇联定律：工业富联大涨 ${change.toFixed(2)}%，警惕科技板块大分歧！`,
-      extraData: JSON.stringify({ change })
-    };
-  }
-  return { triggered: false };
-}
-
-/**
- * R05: 5/13 金叉 — MA5 上穿 MA13
+ * R04: 5/13 金叉 — MA5 上穿 MA13
  * 放量+站上55日线 → 强买(A级·WARNING)；否则 → 谨慎(B级·INFO)
  */
 function checkMa5Cross13Golden(kLines: KLineData[], quote: RealtimeQuote | null, rule: AlertRule): RuleCheckResult {
@@ -510,7 +504,7 @@ function checkMa5Cross13Golden(kLines: KLineData[], quote: RealtimeQuote | null,
   }
   return {
     triggered: true,
-    ruleId: 'R05',
+    ruleId: 'R04',
     message,
     extraData: JSON.stringify({ ma5: ma5[idx], ma13: ma13[idx], volConfirmed, aboveMa55 }),
     barIndex: idx
@@ -518,8 +512,8 @@ function checkMa5Cross13Golden(kLines: KLineData[], quote: RealtimeQuote | null,
 }
 
 /**
- * R06: 5/10 金叉 — MA5 上穿 MA10。短线波段启动，放量确认更可信。
- * 与 R05 5/13 金叉同时出现属多重确认（买入信号叠加确认，不互斥）。
+ * R05: 5/10 金叉 — MA5 上穿 MA10。短线波段启动，放量确认更可信。
+ * 与 R04 5/13 金叉同时出现属多重确认（买入信号叠加确认，不互斥）。
  */
 function checkMa5Cross10Golden(kLines: KLineData[], quote: RealtimeQuote | null, rule: AlertRule): RuleCheckResult {
   if (kLines.length < 12) return { triggered: false };
@@ -537,7 +531,7 @@ function checkMa5Cross10Golden(kLines: KLineData[], quote: RealtimeQuote | null,
     : `ℹ️ 5日金叉10日：MA5 ${ma5[idx].toFixed(2)} > MA10 ${ma10[idx].toFixed(2)}，缩量，需量能确认`;
   return {
     triggered: true,
-    ruleId: 'R06',
+    ruleId: 'R05',
     message,
     extraData: JSON.stringify({ ma5: ma5[idx], ma10: ma10[idx], volConfirmed }),
     barIndex: idx
@@ -545,7 +539,7 @@ function checkMa5Cross10Golden(kLines: KLineData[], quote: RealtimeQuote | null,
 }
 
 /**
- * R07: 止跌企稳 — 抛压释放(>10%) + 新低区域锤子线/十字星
+ * R06: 止跌企稳 — 抛压释放(>10%) + 新低区域锤子线/十字星
  */
 function checkBottomStabilize(kLines: KLineData[], quote: RealtimeQuote | null, rule: AlertRule): RuleCheckResult {
   if (kLines.length < 15) return { triggered: false };
@@ -571,7 +565,7 @@ function checkBottomStabilize(kLines: KLineData[], quote: RealtimeQuote | null, 
   if (sig) {
     return {
       triggered: true,
-      ruleId: 'R07',
+      ruleId: 'R06',
       message: `🟢 止跌企稳：抛压已释放 ${(dropRange * 100).toFixed(0)}%，新低区域出现${sig}，关注低吸`,
       extraData: JSON.stringify({ dropRange, lowerShadowPct: shape.lowerShadowPct, isHammer }),
       barIndex: idx
@@ -581,8 +575,8 @@ function checkBottomStabilize(kLines: KLineData[], quote: RealtimeQuote | null, 
 }
 
 /**
- * R08: RSI 超卖 — 仅保留 RSI(6)<20 超卖，并加趋势过滤：强下行趋势（MA20 下行 + 收盘破 MA20）
- * 中的超卖可靠性低（接飞刀），不报。底背离分支已移除，底部信号统一交给 R07 止跌企稳（右侧K线确认）。
+ * R07: RSI 超卖 — 仅保留 RSI(6)<20 超卖，并加趋势过滤：强下行趋势（MA20 下行 + 收盘破 MA20）
+ * 中的超卖可靠性低（接飞刀），不报。底背离分支已移除，底部信号统一交给 R06 止跌企稳（右侧K线确认）。
  */
 function checkRsiBottom(kLines: KLineData[], quote: RealtimeQuote | null, rule: AlertRule): RuleCheckResult {
   if (kLines.length < 25) return { triggered: false };
@@ -602,7 +596,7 @@ function checkRsiBottom(kLines: KLineData[], quote: RealtimeQuote | null, rule: 
   if (rsi6 < 20) {
     return {
       triggered: true,
-      ruleId: 'R08',
+      ruleId: 'R07',
       message: `🟢 RSI超卖：RSI(6)=${rsi6.toFixed(1)} < 20，进入超卖区（非强下行趋势），适合逢低布局`,
       extraData: JSON.stringify({ rsi6 }),
       barIndex: idx
@@ -612,7 +606,7 @@ function checkRsiBottom(kLines: KLineData[], quote: RealtimeQuote | null, rule: 
 }
 
 /**
- * R09: 反包入场 — 回调后放量反包突破（放量为硬条件：等效全日量 > 昨日×1.2）
+ * R08: 反包入场 — 回调后放量反包突破（放量为硬条件：等效全日量 > 昨日×1.2）
  */
 function checkReboundEntry(kLines: KLineData[], quote: RealtimeQuote | null, rule: AlertRule): RuleCheckResult {
   if (kLines.length < 20) return { triggered: false };
@@ -631,7 +625,7 @@ function checkReboundEntry(kLines: KLineData[], quote: RealtimeQuote | null, rul
   if (change >= 5.0 && hasPullback && today.close >= recentMaxBefore * 0.98 && volConfirmed) {
     return {
       triggered: true,
-      ruleId: 'R09',
+      ruleId: 'R08',
       message: `🟢 反包入场：大涨 ${change.toFixed(2)}%，放量反包，W型/C浪企稳突破`,
       extraData: JSON.stringify({ change, volConfirmed }),
       barIndex: idx
@@ -641,7 +635,7 @@ function checkReboundEntry(kLines: KLineData[], quote: RealtimeQuote | null, rul
 }
 
 /**
- * R10: 黄金位反弹 — 回调至黄金位(38.2%-61.8%)放量反弹
+ * R09: 黄金位反弹 — 回调至黄金位(38.2%-61.8%)放量反弹
  */
 function checkGoldenRebound(kLines: KLineData[], quote: RealtimeQuote | null, rule: AlertRule): RuleCheckResult {
   if (kLines.length < 30) return { triggered: false };
@@ -660,7 +654,7 @@ function checkGoldenRebound(kLines: KLineData[], quote: RealtimeQuote | null, ru
   if (ratio >= 0.382 && ratio <= 0.618 && change > 3.0 && effectiveTodayVolume(kLines, quote) > prev1.volume * 1.2) {
     return {
       triggered: true,
-      ruleId: 'R10',
+      ruleId: 'R09',
       message: `🟢 黄金位反弹：回调至 ${(ratio * 100).toFixed(0)}% + 放量阳线 ${change.toFixed(1)}%`,
       extraData: JSON.stringify({ ratio, change, volConfirmed: true }),
       barIndex: idx
@@ -670,7 +664,7 @@ function checkGoldenRebound(kLines: KLineData[], quote: RealtimeQuote | null, ru
 }
 
 /**
- * R11: 箱体信号 — 突破(40日箱体上沿>3%+放量)优先；否则 吸筹(60日箱体+放量小阳)
+ * R10: 箱体信号 — 突破(40日箱体上沿>3%+放量)优先；否则 吸筹(60日箱体+放量小阳)
  * 突破(40日箱体上沿>3%+放量)优先；否则 吸筹(60日箱体+放量小阳)
  */
 function checkBoxSignal(kLines: KLineData[], quote: RealtimeQuote | null, rule: AlertRule): RuleCheckResult {
@@ -688,7 +682,7 @@ function checkBoxSignal(kLines: KLineData[], quote: RealtimeQuote | null, rule: 
     if (breakoutPct >= 3.0 && avgVol20 > 0 && effVol >= avgVol20 * 1.2) {
       return {
         triggered: true,
-        ruleId: 'R11',
+        ruleId: 'R10',
         message: `🟢 箱体突破：40日箱体上沿${boxHigh40.toFixed(2)}，突破${breakoutPct.toFixed(1)}% + 放量确认`,
         extraData: JSON.stringify({ boxHigh: boxHigh40, breakoutPct, type: 'breakout', volConfirmed: true }),
         barIndex: idx
@@ -707,7 +701,7 @@ function checkBoxSignal(kLines: KLineData[], quote: RealtimeQuote | null, rule: 
       if (change >= 1.0 && change <= 4.0 && avgVol20 > 0 && effVol > avgVol20 * 1.3) {
         return {
           triggered: true,
-          ruleId: 'R11',
+          ruleId: 'R10',
           message: `🟢 箱体吸筹：放量小阳线 ${change.toFixed(2)}%，关注标的`,
           extraData: JSON.stringify({ change, type: 'accumulate', volConfirmed: true }),
           barIndex: idx
@@ -719,7 +713,7 @@ function checkBoxSignal(kLines: KLineData[], quote: RealtimeQuote | null, rule: 
 }
 
 /**
- * R12: 均线多头排列 — MA5>MA13>MA55 且股价站上MA55，且多头排列刚刚形成
+ * R11: 均线多头排列 — MA5>MA13>MA55 且股价站上MA55，且多头排列刚刚形成
  * 仅在近2根内 MA5上穿MA13 或 价格上穿MA55 时触发，避免每日重复
  */
 function checkMaBullAlignment(kLines: KLineData[], quote: RealtimeQuote | null, rule: AlertRule): RuleCheckResult {
@@ -744,7 +738,7 @@ function checkMaBullAlignment(kLines: KLineData[], quote: RealtimeQuote | null, 
     : `ℹ️ 均线多头排列：MA5 ${ma5[idx].toFixed(2)} > MA13 ${ma13[idx].toFixed(2)} > MA55 ${ma55[idx].toFixed(2)}，但缩量，弱势多头需量能确认`;
   return {
     triggered: true,
-    ruleId: 'R12',
+    ruleId: 'R11',
     message,
     extraData: JSON.stringify({ ma5: ma5[idx], ma13: ma13[idx], ma55: ma55[idx], volConfirmed }),
     barIndex: idx
@@ -752,7 +746,7 @@ function checkMaBullAlignment(kLines: KLineData[], quote: RealtimeQuote | null, 
 }
 
 /**
- * R13: 站稳五日线加仓 — 连续3日收盘站上MA5，且MA5上行、站稳刚刚形成
+ * R12: 站稳五日线加仓 — 连续3日收盘站上MA5，且MA5上行、站稳刚刚形成
  * （站稳前一日在MA5之下，避免上行趋势中每日重复触发）。加仓信号。
  */
 function checkHoldMa5(kLines: KLineData[], quote: RealtimeQuote | null, rule: AlertRule): RuleCheckResult {
@@ -786,17 +780,17 @@ function checkHoldMa5(kLines: KLineData[], quote: RealtimeQuote | null, rule: Al
 
   return {
     triggered: true,
-    ruleId: 'R13',
+    ruleId: 'R12',
     message,
     extraData: JSON.stringify({ ma5: ma5[idx], holdDays, volRatio, volConfirmed }),
     barIndex: idx
   };
 }
 
-// ==================== 筹码峰弱提醒（R14 买 / R15 卖，B级参考，不计入共振硬聚合） ====================
+// ==================== 筹码峰弱提醒（R13 买 / R14 卖，B级参考，不计入共振硬聚合） ====================
 
 /**
- * R14 筹码低位密集（买入弱提醒）
+ * R13 筹码低位密集（买入弱提醒）
  * 触发：90%集中度<0.18（密集）AND 获利盘>0.6 AND 主峰≤现价×1.03（峰在附近或下方）
  * 数据来源：调用方从 DB 取筹码分布传入（chip 参数），缺数据不触发
  */
@@ -810,7 +804,7 @@ function checkChipLowConcentrate(
   if (chip.concentration90 < 0.18 && chip.profitRatio > 0.6 && chip.dominantPeak <= price * 1.03) {
     return {
       triggered: true,
-      ruleId: 'R14',
+      ruleId: 'R13',
       message: `🟡 筹码低位密集：90%集中度${chip.concentration90.toFixed(3)}，获利盘${(chip.profitRatio * 100).toFixed(0)}%，主峰${chip.dominantPeak.toFixed(2)}接近/低于现价，结构偏多（参考级）`,
       extraData: JSON.stringify({ concentration90: chip.concentration90, profitRatio: chip.profitRatio, dominantPeak: chip.dominantPeak, avgCost: chip.avgCost }),
     };
@@ -819,7 +813,7 @@ function checkChipLowConcentrate(
 }
 
 /**
- * R15 筹码高位套牢（卖出弱提醒）
+ * R14 筹码高位套牢（卖出弱提醒）
  * 触发：获利盘<0.4 AND 主峰>现价×1.05（上方重峰）AND 20日涨幅>15%（避免底部误判）
  */
 function checkChipHighTrap(
@@ -835,7 +829,7 @@ function checkChipHighTrap(
   if (chip.profitRatio < 0.4 && chip.dominantPeak > price * 1.05 && ret20d > 15) {
     return {
       triggered: true,
-      ruleId: 'R15',
+      ruleId: 'R14',
       message: `🟡 筹码高位套牢：获利盘仅${(chip.profitRatio * 100).toFixed(0)}%，主峰${chip.dominantPeak.toFixed(2)}高于现价，20日涨${ret20d.toFixed(0)}%后上方压力大（参考级）`,
       extraData: JSON.stringify({ profitRatio: chip.profitRatio, dominantPeak: chip.dominantPeak, ret20d }),
     };
@@ -843,14 +837,14 @@ function checkChipHighTrap(
   return { triggered: false };
 }
 
-// ==================== 预警规则配置（15条） ====================
+// ==================== 预警规则配置（14条） ====================
 
 export const ALERT_RULES: AlertRule[] = [
-  // -------- 卖出 / 风险（4条：2个阶梯 + R03 + R04） --------
+  // -------- 卖出 / 风险（3条：2个阶梯 + R03） --------
   {
     id: 'R01',
     name: '见顶阶梯',
-    description: '见顶/过热/量能出逃信号合并阶梯：对子顶/巨量见顶/第二波见顶/长上影/跳空衰竭/纺锤线/长下影见顶/涨停封板/涨停炸板/巨量异动，按严重度择优只出一条预警',
+    description: '见顶/过热/量能出逃信号合并阶梯：对子顶/巨量见顶/第二波见顶/长上影/跳空衰竭/纺锤线/长下影见顶（弱提醒）/涨停封板/涨停炸板/巨量异动，按严重度择优只出一条预警',
     category: 'PATTERN' as any,
     level: 'CRITICAL' as any,
     suggestion: '见顶信号，适当减仓；对子顶/巨量见顶等强信号应更果断',
@@ -860,7 +854,7 @@ export const ALERT_RULES: AlertRule[] = [
   {
     id: 'R02',
     name: '离场阶梯',
-    description: '破位/离场信号合并阶梯：急跌/5/13死叉/5/10死叉/破趋势线+破MA60/有效跌破10日线/放量离场/跌破5日线/破趋势线/MA5拐头/跌破10日线待确认/缩量破位，按严重度择优只出一条预警',
+    description: '破位/离场信号合并阶梯：急跌/5/13死叉/5/10死叉/破趋势线+破MA60/有效跌破10日线/跌破5日线/破趋势线/MA5拐头/跌破10日线待确认，按严重度择优只出一条预警',
     category: 'MOVING_AVG' as any,
     level: 'CRITICAL' as any,
     suggestion: '阶梯减仓控回撤：拐头/破5日线先减、有效破10日线大减、死叉/急跌/破MA60清仓；10日线为卖出主线',
@@ -875,18 +869,9 @@ export const ALERT_RULES: AlertRule[] = [
     suggestion: '非多头区域不轻易做多，等待重新站上55日线',
     isEnabled: true
   },
+  // -------- 买入 / 机会（9条） --------
   {
     id: 'R04',
-    name: '妇联定律',
-    description: '工业富联sh601138大涨>8%预警',
-    category: 'SENTIMENT' as any,
-    level: 'CRITICAL' as any,
-    suggestion: '警惕科技板块大分歧，减仓',
-    isEnabled: true
-  },
-  // -------- 买入 / 机会（8条） --------
-  {
-    id: 'R05',
     name: '5/13金叉',
     description: 'MA5上穿MA13；放量+站上55日线→强买(A级)，否则谨慎(B级)',
     category: 'OPPORTUNITY' as any,
@@ -895,7 +880,7 @@ export const ALERT_RULES: AlertRule[] = [
     isEnabled: true
   },
   {
-    id: 'R06',
+    id: 'R05',
     name: '5/10金叉',
     description: 'MA5上穿MA10；放量确认短线启动，与5/13金叉同时出现属多重确认',
     category: 'OPPORTUNITY' as any,
@@ -904,7 +889,7 @@ export const ALERT_RULES: AlertRule[] = [
     isEnabled: true
   },
   {
-    id: 'R07',
+    id: 'R06',
     name: '止跌企稳',
     description: '抛压释放(>10%)+新低区锤子线(下影≥实体×2+上影<1%)或十字星',
     category: 'OPPORTUNITY' as any,
@@ -913,7 +898,7 @@ export const ALERT_RULES: AlertRule[] = [
     isEnabled: true
   },
   {
-    id: 'R08',
+    id: 'R07',
     name: 'RSI超卖',
     description: 'RSI(6)<20超卖，且非强下行趋势（MA20下行+破MA20时过滤，避免接飞刀）',
     category: 'RSI' as any,
@@ -922,7 +907,7 @@ export const ALERT_RULES: AlertRule[] = [
     isEnabled: true
   },
   {
-    id: 'R09',
+    id: 'R08',
     name: '反包入场',
     description: '回调后放量反包突破',
     category: 'OPPORTUNITY' as any,
@@ -931,7 +916,7 @@ export const ALERT_RULES: AlertRule[] = [
     isEnabled: true
   },
   {
-    id: 'R10',
+    id: 'R09',
     name: '黄金位反弹',
     description: '回调至黄金位(38.2%-61.8%)放量反弹',
     category: 'OPPORTUNITY' as any,
@@ -940,7 +925,7 @@ export const ALERT_RULES: AlertRule[] = [
     isEnabled: true
   },
   {
-    id: 'R11',
+    id: 'R10',
     name: '箱体信号',
     description: '箱体突破(40日振幅<20%+突破>3%+放量)或箱体吸筹(60日箱体+放量小阳)，突破优先',
     category: 'OPPORTUNITY' as any,
@@ -949,7 +934,7 @@ export const ALERT_RULES: AlertRule[] = [
     isEnabled: true
   },
   {
-    id: 'R12',
+    id: 'R11',
     name: '均线多头排列',
     description: 'MA5>MA13>MA55且股价站上MA55，且多头排列刚刚形成',
     category: 'MOVING_AVG' as any,
@@ -958,7 +943,7 @@ export const ALERT_RULES: AlertRule[] = [
     isEnabled: true
   },
   {
-    id: 'R13',
+    id: 'R12',
     name: '站稳五日线加仓',
     description: '连续3日收盘站上MA5且MA5上行，站稳刚刚形成（站稳前一日在MA5之下），加仓信号',
     category: 'OPPORTUNITY' as any,
@@ -968,7 +953,7 @@ export const ALERT_RULES: AlertRule[] = [
   },
   // -------- 筹码峰弱提醒（2条，B级参考，不计入共振硬聚合） --------
   {
-    id: 'R14',
+    id: 'R13',
     name: '筹码低位密集',
     description: '筹码90%集中度<0.18且获利盘>60%且主峰接近/低于现价，结构偏多（参考级）',
     category: 'PATTERN' as any,
@@ -977,7 +962,7 @@ export const ALERT_RULES: AlertRule[] = [
     isEnabled: true
   },
   {
-    id: 'R15',
+    id: 'R14',
     name: '筹码高位套牢',
     description: '获利盘<40%且主峰高于现价5%且20日涨幅>15%，上方套牢盘重（参考级）',
     category: 'PATTERN' as any,
@@ -987,35 +972,45 @@ export const ALERT_RULES: AlertRule[] = [
   }
 ];
 
+/** sina 格式(sz002415/sh600664) → Tushare 格式(002415.SZ/600664.SH)；已 Tushare 格式原样返回 */
+export function toTushareCode(c: string): string {
+  const m = c.match(/^([a-z]{2})(\d{6})$/i);
+  return m ? `${m[2]}.${m[1].toUpperCase()}` : c;
+}
+
+/** 当日全市场涨跌停价表（stk_limit，前端预取传入）：Tushare code → { up, down }。未传入/未命中回落规则推算 */
+export type LimitPriceMap = Record<string, { up: number; down: number }>;
+
 /**
  * 检查所有启用的规则
+ * @param limitMap 可选：当日精确涨跌停价表（/api/stock-limit 预取），R01 涨停封板/炸板判定用
  */
 export function checkAllRules(
   kLines: KLineData[],
   quote: RealtimeQuote | null,
   enabledRules: AlertRule[] = ALERT_RULES.filter(r => r.isEnabled),
-  chip?: ChipDistribution | null
+  chip?: ChipDistribution | null,
+  limitMap?: LimitPriceMap | null
 ): RuleCheckResult[] {
   const results: RuleCheckResult[] = [];
 
   for (const rule of enabledRules) {
     let result: RuleCheckResult;
     switch (rule.id) {
-      case 'R01': result = checkTopPattern(kLines, quote, rule); break;
+      case 'R01': result = checkTopPattern(kLines, quote, rule, limitMap); break;
       case 'R02': result = checkTieredExit(kLines, quote, rule); break;
       case 'R03': result = checkBreakMa55(kLines, quote, rule); break;
-      case 'R04': result = checkFuliLaw(kLines, quote, rule); break;
-      case 'R05': result = checkMa5Cross13Golden(kLines, quote, rule); break;
-      case 'R06': result = checkMa5Cross10Golden(kLines, quote, rule); break;
-      case 'R07': result = checkBottomStabilize(kLines, quote, rule); break;
-      case 'R08': result = checkRsiBottom(kLines, quote, rule); break;
-      case 'R09': result = checkReboundEntry(kLines, quote, rule); break;
-      case 'R10': result = checkGoldenRebound(kLines, quote, rule); break;
-      case 'R11': result = checkBoxSignal(kLines, quote, rule); break;
-      case 'R12': result = checkMaBullAlignment(kLines, quote, rule); break;
-      case 'R13': result = checkHoldMa5(kLines, quote, rule); break;
-      case 'R14': result = checkChipLowConcentrate(kLines, quote, rule, chip); break;
-      case 'R15': result = checkChipHighTrap(kLines, quote, rule, chip); break;
+      case 'R04': result = checkMa5Cross13Golden(kLines, quote, rule); break;
+      case 'R05': result = checkMa5Cross10Golden(kLines, quote, rule); break;
+      case 'R06': result = checkBottomStabilize(kLines, quote, rule); break;
+      case 'R07': result = checkRsiBottom(kLines, quote, rule); break;
+      case 'R08': result = checkReboundEntry(kLines, quote, rule); break;
+      case 'R09': result = checkGoldenRebound(kLines, quote, rule); break;
+      case 'R10': result = checkBoxSignal(kLines, quote, rule); break;
+      case 'R11': result = checkMaBullAlignment(kLines, quote, rule); break;
+      case 'R12': result = checkHoldMa5(kLines, quote, rule); break;
+      case 'R13': result = checkChipLowConcentrate(kLines, quote, rule, chip); break;
+      case 'R14': result = checkChipHighTrap(kLines, quote, rule, chip); break;
       default: result = { triggered: false };
     }
 
@@ -1035,18 +1030,17 @@ const RULE_RELIABILITY: Record<string, { level: string; role: string }> = {
   R01: { level: 'A', role: '通用' },
   R02: { level: 'A', role: '风控专家' },
   R03: { level: 'B', role: '技术分析师' },
-  R04: { level: 'A', role: '通用' },
-  R05: { level: 'A', role: '技术分析师' },
-  R06: { level: 'B', role: '技术分析师' },
-  R07: { level: 'A', role: '通用' },
-  R08: { level: 'A', role: '技术分析师' },
+  R04: { level: 'A', role: '技术分析师' },
+  R05: { level: 'B', role: '技术分析师' },
+  R06: { level: 'A', role: '通用' },
+  R07: { level: 'A', role: '技术分析师' },
+  R08: { level: 'B', role: '技术分析师' },
   R09: { level: 'B', role: '技术分析师' },
   R10: { level: 'B', role: '技术分析师' },
   R11: { level: 'B', role: '技术分析师' },
   R12: { level: 'B', role: '技术分析师' },
-  R13: { level: 'B', role: '技术分析师' },
+  R13: { level: 'B', role: '结构参考' },
   R14: { level: 'B', role: '结构参考' },
-  R15: { level: 'B', role: '结构参考' },
 };
 
 /**
@@ -1081,14 +1075,14 @@ export function formatTriggeredRulesForAI(results: RuleCheckResult[]): string {
 }
 
 /**
- * 卖出/风险侧规则 ID（与 ALERT_RULES 分组同源：R01/R02/R03/R04/R15）。
- * R15 筹码高位套牢归卖出侧。其余 ruleId 均为买入/机会侧。
+ * 卖出/风险侧规则 ID（与 ALERT_RULES 分组同源：R01/R02/R03/R14）。
+ * R14 筹码高位套牢归卖出侧。其余 ruleId 均为买入/机会侧。
  * 用于 UI 把同日多个买入信号聚合成"共振"展示。
  */
-export const SELL_RULE_IDS = new Set(['R01', 'R02', 'R03', 'R04', 'R15']);
+export const SELL_RULE_IDS = new Set(['R01', 'R02', 'R03', 'R14']);
 
-/** 参考级弱提醒规则 ID（R14/R15）：从买入共振≥2 硬聚合计数剔除，仅作展示提示 */
-export const REFERENCE_RULE_IDS = new Set(['R14', 'R15']);
+/** 参考级弱提醒规则 ID（R13/R14）：从买入共振≥2 硬聚合计数剔除，仅作展示提示 */
+export const REFERENCE_RULE_IDS = new Set(['R13', 'R14']);
 
 /** 判断 ruleId 是否为买入/机会侧（非卖出/风险侧） */
 export function isBuyRule(ruleId?: string): boolean {

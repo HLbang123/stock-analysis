@@ -1,0 +1,233 @@
+'use client';
+
+/**
+ * 本周回顾 — 手动入口弹窗（首页「周报」按钮）。
+ * 数据源 /api/weekly-review（周五 18:00 cron 生成的快照，单一事实源）。
+ * 设计为截图友好：白底宽版、大数字、色块徽章；底部"复制小结"一键复制纯文本版便于发群。
+ * 不自动弹出（用户要求：想看自己点入口）。
+ */
+
+import { useEffect, useState, useCallback } from 'react';
+import { Modal } from '@/components/ui/modal';
+import { Calendar, Copy, Check } from 'lucide-react';
+import { cn } from '@/lib/utils';
+
+interface WeeklyReviewPayload {
+  weekStart: string;
+  weekLabel: string;
+  generatedAt: string;
+  summary: string;
+  market: { upCount: number; downCount: number; avgChange: number | null; days: { date: string; up: number; down: number }[] };
+  aiScreen: { runs: number; picks: number; evaluatedT1: number; best: { name: string; tsCode: string; t1: number | null }[]; worst: { name: string; tsCode: string; t1: number | null }[] };
+  deep: { count: number; byAction: Record<string, number>; topPicks: { name: string; confidence: number | null; target: number | null }[] };
+  alerts: { total: number; topRules: { label: string; n: number }[]; topStocks: { name: string; n: number }[] };
+}
+
+const signed = (v: number | null | undefined) => (v == null ? '--' : `${v >= 0 ? '+' : ''}${v.toFixed(2)}%`);
+
+/** 纯文本版小结（复制用） */
+function toText(p: WeeklyReviewPayload): string {
+  const lines = [
+    `📊 本周回顾 ${p.weekLabel}`,
+    '',
+    p.summary,
+    '',
+    '【市场】',
+    `涨 ${p.market.upCount} 家 / 跌 ${p.market.downCount} 家，周均涨跌 ${signed(p.market.avgChange)}`,
+    ...p.market.days.map((d) => `  ${d.date}：涨 ${d.up} / 跌 ${d.down}`),
+    '',
+    '【AI 筛选】',
+    `运行 ${p.aiScreen.runs} 次，入选 ${p.aiScreen.picks} 条`,
+    ...(p.aiScreen.best.length ? [`本周 T+1 最佳：${p.aiScreen.best.map((b) => `${b.name} ${signed(b.t1)}`).join('、')}`] : []),
+    ...(p.aiScreen.worst.length ? [`本周 T+1 最差：${p.aiScreen.worst.map((b) => `${b.name} ${signed(b.t1)}`).join('、')}`] : []),
+    '',
+    '【深度分析】',
+    `共 ${p.deep.count} 次：${Object.entries(p.deep.byAction).map(([a, n]) => `${a} ${n}`).join(' / ') || '暂无'}`,
+    ...(p.deep.topPicks.length ? [`高信心买入：${p.deep.topPicks.map((t) => t.name).join('、')}`] : []),
+    '',
+    '【预警】',
+    `本周触发 ${p.alerts.total} 次`,
+    ...(p.alerts.topRules.length ? [`最活跃：${p.alerts.topRules.slice(0, 5).map((r) => `${r.label}×${r.n}`).join('、')}`] : []),
+  ];
+  return lines.join('\n');
+}
+
+export function WeeklyReviewModal({ open, onClose }: { open: boolean; onClose: () => void }) {
+  const [payload, setPayload] = useState<WeeklyReviewPayload | null>(null);
+  const [loading, setLoading] = useState(false);
+  const [copied, setCopied] = useState(false);
+
+  const load = useCallback(async () => {
+    setLoading(true);
+    try {
+      const res = await fetch('/api/weekly-review');
+      const data = await res.json();
+      setPayload(data?.review?.payload ?? null);
+    } catch {
+      setPayload(null);
+    } finally {
+      setLoading(false);
+    }
+  }, []);
+
+  useEffect(() => {
+    if (open) load();
+  }, [open, load]);
+
+  const copy = async () => {
+    if (!payload) return;
+    try {
+      await navigator.clipboard.writeText(toText(payload));
+      setCopied(true);
+      setTimeout(() => setCopied(false), 2000);
+    } catch { /* ignore */ }
+  };
+
+  // 必须守卫 open（在 hooks 之后）：无此守卫时父组件一旦渲染本组件，弹窗永远显示、叉不掉
+  if (!open) return null;
+
+  const p = payload;
+
+  return (
+    <Modal title="本周回顾" onClose={onClose} variant="center" maxWidth="sm:max-w-2xl">
+      <div className="p-5">
+        {loading && <div className="text-center py-16 text-gray-400 text-sm">加载中...</div>}
+        {!loading && !p && (
+          <div className="text-center py-16">
+            <Calendar className="w-12 h-12 mx-auto mb-3 opacity-20" />
+            <p className="text-gray-500">本周回顾尚未生成</p>
+            <p className="text-xs text-gray-400 mt-1">每周五晚自动生成，生成后在这里查看</p>
+          </div>
+        )}
+        {!loading && p && (
+          <div className="space-y-4">
+            {/* 标题区（截图友好） */}
+            <div className="text-center pb-3 border-b border-gray-100 dark:border-gray-800">
+              <div className="text-[10px] text-gray-400 tracking-widest mb-1">WEEKLY REVIEW</div>
+              <h2 className="text-xl font-bold text-gray-900 dark:text-white">本周回顾</h2>
+              <p className="text-xs text-gray-400 mt-0.5">{p.weekLabel}</p>
+            </div>
+
+            {/* 小结（混合结构顶部） */}
+            <div className="bg-[var(--color-brand-soft)]/60 dark:bg-[var(--color-brand-soft)]/30 rounded-[var(--radius-lg)] px-4 py-3">
+              <p className="text-sm text-gray-700 dark:text-gray-200 whitespace-pre-wrap leading-relaxed">{p.summary}</p>
+            </div>
+
+            {/* 市场 */}
+            <div>
+              <h3 className="text-xs font-semibold text-gray-500 mb-2">市场</h3>
+              <div className="flex items-center gap-3 mb-2">
+                <div className="flex-1 text-center bg-[var(--color-up-soft)] rounded-[var(--radius-lg)] py-2">
+                  <div className="text-lg font-bold text-[var(--color-up)]">{p.market.upCount}</div>
+                  <div className="text-[10px] text-gray-400">上涨家数</div>
+                </div>
+                <div className="flex-1 text-center bg-[var(--color-down-soft)] rounded-[var(--radius-lg)] py-2">
+                  <div className="text-lg font-bold text-[var(--color-down)]">{p.market.downCount}</div>
+                  <div className="text-[10px] text-gray-400">下跌家数</div>
+                </div>
+                <div className="flex-1 text-center bg-gray-100 dark:bg-gray-800 rounded-[var(--radius-lg)] py-2">
+                  <div className={cn('text-lg font-bold', (p.market.avgChange ?? 0) >= 0 ? 'text-[var(--color-up)]' : 'text-[var(--color-down)]')}>{signed(p.market.avgChange)}</div>
+                  <div className="text-[10px] text-gray-400">周均涨跌</div>
+                </div>
+              </div>
+              <div className="flex flex-wrap gap-1.5">
+                {p.market.days.map((d) => (
+                  <span key={d.date} className="text-[11px] px-2 py-0.5 rounded-full bg-gray-100 dark:bg-gray-800 text-gray-500">
+                    {d.date} <b className={d.up > d.down ? 'text-[var(--color-up)]' : 'text-[var(--color-down)]'}>{d.up}</b>/{d.down}
+                  </span>
+                ))}
+              </div>
+            </div>
+
+            {/* AI 筛选 */}
+            <div>
+              <h3 className="text-xs font-semibold text-gray-500 mb-2">AI 筛选</h3>
+              <div className="flex items-center gap-3 mb-2">
+                <div className="flex-1 text-center bg-gray-100 dark:bg-gray-800 rounded-[var(--radius-lg)] py-2">
+                  <div className="text-lg font-bold text-gray-800 dark:text-gray-100">{p.aiScreen.runs}</div>
+                  <div className="text-[10px] text-gray-400">运行次数</div>
+                </div>
+                <div className="flex-1 text-center bg-gray-100 dark:bg-gray-800 rounded-[var(--radius-lg)] py-2">
+                  <div className="text-lg font-bold text-gray-800 dark:text-gray-100">{p.aiScreen.picks}</div>
+                  <div className="text-[10px] text-gray-400">入选建议</div>
+                </div>
+              </div>
+              {p.aiScreen.best.length > 0 && (
+                <div className="space-y-1 text-xs">
+                  {p.aiScreen.best.map((b) => (
+                    <div key={b.tsCode} className="flex items-center justify-between px-2.5 py-1.5 rounded-[var(--radius-sm)] bg-[var(--color-up-soft)]">
+                      <span className="text-gray-700 dark:text-gray-200 font-medium">🟢 {b.name} <span className="text-gray-400 text-[10px]">T+1 最佳</span></span>
+                      <span className="font-mono font-semibold text-[var(--color-up)]">{signed(b.t1)}</span>
+                    </div>
+                  ))}
+                  {p.aiScreen.worst.map((b) => (
+                    <div key={b.tsCode} className="flex items-center justify-between px-2.5 py-1.5 rounded-[var(--radius-sm)] bg-[var(--color-down-soft)]">
+                      <span className="text-gray-700 dark:text-gray-200 font-medium">🔻 {b.name} <span className="text-gray-400 text-[10px]">T+1 垫底</span></span>
+                      <span className="font-mono font-semibold text-[var(--color-down)]">{signed(b.t1)}</span>
+                    </div>
+                  ))}
+                </div>
+              )}
+            </div>
+
+            {/* 深度分析 */}
+            <div>
+              <h3 className="text-xs font-semibold text-gray-500 mb-2">深度分析</h3>
+              <div className="flex flex-wrap items-center gap-2 text-xs mb-2">
+                <span className="px-2 py-1 rounded-full bg-gray-100 dark:bg-gray-800 text-gray-600 dark:text-gray-300">共 {p.deep.count} 次</span>
+                {Object.entries(p.deep.byAction).map(([a, n]) => (
+                  <span key={a} className={cn('px-2 py-1 rounded-full', a === '买入' ? 'bg-[var(--color-up-soft)] text-[var(--color-up)]' : a === '卖出' ? 'bg-[var(--color-down-soft)] text-[var(--color-down)]' : 'bg-gray-100 dark:bg-gray-800 text-gray-500')}>
+                    {a} {n}
+                  </span>
+                ))}
+              </div>
+              {p.deep.topPicks.length > 0 && (
+                <p className="text-xs text-gray-500">
+                  高信心买入：<b className="text-[var(--color-up)]">{p.deep.topPicks.map((t) => t.name).join('、')}</b>
+                </p>
+              )}
+            </div>
+
+            {/* 预警 */}
+            <div>
+              <h3 className="text-xs font-semibold text-gray-500 mb-2">预警</h3>
+              <div className="flex items-center gap-3 mb-2">
+                <div className="flex-1 text-center bg-gray-100 dark:bg-gray-800 rounded-[var(--radius-lg)] py-2">
+                  <div className="text-lg font-bold text-gray-800 dark:text-gray-100">{p.alerts.total}</div>
+                  <div className="text-[10px] text-gray-400">本周触发</div>
+                </div>
+                <div className="flex-[2] space-y-1">
+                  {p.alerts.topRules.slice(0, 3).map((r) => (
+                    <div key={r.label} className="flex items-center justify-between text-xs px-2.5 py-1 rounded-[var(--radius-sm)] bg-gray-50 dark:bg-gray-800/50">
+                      <span className="text-gray-600 dark:text-gray-300">{r.label}</span>
+                      <span className="font-mono text-gray-500">×{r.n}</span>
+                    </div>
+                  ))}
+                </div>
+              </div>
+              {p.alerts.topStocks.length > 0 && (
+                <p className="text-xs text-gray-500">
+                  最活跃标的：<b className="text-gray-700 dark:text-gray-200">{p.alerts.topStocks.map((s) => `${s.name}×${s.n}`).join('、')}</b>
+                </p>
+              )}
+            </div>
+
+            {/* 复制 */}
+            <div className="flex justify-center pt-2 border-t border-gray-100 dark:border-gray-800">
+              <button
+                onClick={copy}
+                className={cn(
+                  'flex items-center gap-1.5 px-4 py-2 rounded-[var(--radius-md)] text-sm font-medium transition',
+                  copied ? 'bg-[var(--color-down-soft)] text-[var(--color-down)]' : 'bg-[var(--color-accent)] text-white hover:opacity-90'
+                )}
+              >
+                {copied ? <Check className="w-4 h-4" /> : <Copy className="w-4 h-4" />}
+                {copied ? '已复制，去群里分享吧' : '复制小结'}
+              </button>
+            </div>
+          </div>
+        )}
+      </div>
+    </Modal>
+  );
+}

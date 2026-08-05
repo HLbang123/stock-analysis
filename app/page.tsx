@@ -8,9 +8,10 @@ import { ALERT_RULES, checkAllRules, isBuyRule, REFERENCE_RULE_IDS, buyRuleWeigh
 import { AlertRecord } from '@/types';
 import { formatTime, cn } from '@/lib/utils';
 import { buildUpdatedKLines } from '@/lib/stock-helpers';
-import { AlertTriangle, Trash2, BookOpen } from 'lucide-react';
+import { AlertTriangle, Trash2, BookOpen, CalendarDays } from 'lucide-react';
 import { UpdateLog } from '@/components/UpdateLog';
 import { AlertRulesModal } from '@/components/AlertRulesModal';
+import { WeeklyReviewModal } from '@/components/ai/WeeklyReviewModal';
 import { Button } from '@/components/ui/button';
 import { PageHeader } from '@/components/ui/page-header';
 
@@ -22,7 +23,7 @@ const buyTier = (score: number) => {
   return { label: '弱观察', dot: 'bg-[var(--color-warning)]', cls: 'bg-[var(--color-warning-soft)] text-[var(--color-warning)] border-[var(--color-warning)]/30' };
 };
 
-/** 该条买入预警是否为"放量确认"（读 extraData 的 volConfirmed，R05/R06/R09/R10/R11/R12/R13 写入） */
+/** 该条买入预警是否为"放量确认"（读 extraData 的 volConfirmed，R04/R05/R08/R09/R10/R11/R12 写入） */
 const hasVolumeConfirmed = (a: AlertRecord): boolean => {
   if (!a.extraData) return false;
   try { return JSON.parse(a.extraData)?.volConfirmed === true; } catch { return false; }
@@ -41,7 +42,7 @@ const groupTone = (group: { alerts: AlertRecord[] }): string => {
   if (hasSell) return 'bg-[var(--color-down-soft)] border-[var(--color-down-border)]';
   const hasBuy = active.some(a => isBuyRule(a.ruleId) && !REFERENCE_RULE_IDS.has(a.ruleId));
   if (hasBuy) return 'bg-[var(--color-up-soft)] border-[var(--color-up-border)]';
-  // 仅参考级弱提醒（R14/R15 筹码峰）
+  // 仅参考级弱提醒（R13/R14 筹码峰）
   return 'bg-white dark:bg-gray-900 border-gray-200 dark:border-gray-700';
 };
 
@@ -52,6 +53,7 @@ export default function HomePage() {
   const [resultMessage, setResultMessage] = useState<string | null>(null);
   const [buyExpanded, setBuyExpanded] = useState<Set<string>>(new Set());
   const [showRules, setShowRules] = useState(false);
+  const [showWeekly, setShowWeekly] = useState(false);
   const toggleBuyExpand = (code: string) => {
     setBuyExpanded(prev => {
       const next = new Set(prev);
@@ -115,8 +117,7 @@ export default function HomePage() {
     });
   }, [alerts]);
 
-  // 未读数
-  const unreadCount = alerts.filter(a => !a.isRead).length;
+  // 未读数（badge 已移除，保留口径供后续扩展）
 
   // 单条预警行渲染：左侧色条按方向着色（买红/卖绿/参考黄），弱化 emoji；
   // 行底用半透明白，叠在整卡着色上保持可读
@@ -158,7 +159,19 @@ export default function HomePage() {
     setIsCheckingAlerts(true);
     setResultMessage(null);
 
+    // 触发明细落库行（try 外声明，finally 统一静默写，失败不影响预警流程）
+    const triggerRows: { tsCode: string; stockName: string; ruleId: string; subLabel: string; barDate: string }[] = [];
+    const todayStr = new Date().toLocaleDateString('sv-SE', { timeZone: 'Asia/Shanghai' }).replace(/-/g, '');
+
     try {
+      // 预取当日涨跌停价表（精确涨停判定；失败回落规则推算）
+      let limitMap: Record<string, { up: number; down: number }> | null = null;
+      try {
+        const lr = await fetch(`/api/stock-limit?tradeDate=${todayStr}`);
+        const ld = await lr.json();
+        if (ld?.map) limitMap = ld.map;
+      } catch { /* 静默：回落规则推算 */ }
+
       // 先将所有现有预警标记为"可能已过期"
       const currentAlerts = useStockStore.getState().alerts;
       const revivedIds = new Set<string>();
@@ -179,16 +192,22 @@ export default function HomePage() {
 
         const updatedKLines = buildUpdatedKLines(quote, kLines);
 
-        // 筹码分布（DB 取数，失败返回 null，R14/R15 不触发）
+        // 筹码分布（DB 取数，失败返回 null，R13/R14 不触发）
         const chip = await getChipData(stock.code);
 
         // 检查规则
         const enabledRules = ALERT_RULES.filter(r => r.isEnabled);
-        const results = checkAllRules(updatedKLines, quote, enabledRules, chip);
+        const results = checkAllRules(updatedKLines, quote, enabledRules, chip, limitMap);
 
         for (const result of results) {
           const rule = enabledRules.find(r => r.id === result.ruleId);
           if (rule) {
+            // 落库行：R01/R02 展开 extraData.triggered 各子信号一行；其余规则用规则名
+            const subs: string[] = [];
+            try { const ex = JSON.parse(result.extraData ?? '{}'); subs.push(...(ex.triggered ?? [])); } catch { /* ignore */ }
+            for (const s of (subs.length ? subs : [rule.name])) {
+              triggerRows.push({ tsCode: stock.code, stockName: stock.name || quote.name, ruleId: result.ruleId!, subLabel: s, barDate: todayStr });
+            }
             // 检查是否已有相同预警（同一股票+同一规则）
             const existingKey = `${stock.code}-${result.ruleId}`;
             const existing = currentAlerts.find(a => `${a.stockCode}-${a.ruleId}` === existingKey);
@@ -235,6 +254,14 @@ export default function HomePage() {
       console.error('检查预警失败:', error);
       setResultMessage('检测失败，请稍后重试');
     } finally {
+      // 触发明细静默落库（失败不阻断；同日同信号 upsert 去重）
+      if (triggerRows.length > 0) {
+        fetch('/api/alerts/triggers', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ triggers: triggerRows }),
+        }).catch(() => {});
+      }
       setIsCheckingAlerts(false);
       setTimeout(() => setResultMessage(null), 3000);
     }
@@ -246,13 +273,16 @@ export default function HomePage() {
       <PageHeader
         title="预警"
         icon={<UpdateLog />}
-        badge={unreadCount > 0 && (
-          <span className="bg-[var(--color-danger)] text-white text-xs px-2 py-0.5 rounded-full font-medium">
-            {unreadCount}
-          </span>
-        )}
         actions={
           <>
+            <button
+              onClick={() => setShowWeekly(true)}
+              className="flex items-center gap-1 px-3 py-1.5 text-sm text-gray-600 dark:text-gray-300 hover:bg-gray-100 dark:hover:bg-gray-800 rounded-[var(--radius-md)] transition"
+              title="本周回顾"
+            >
+              <CalendarDays className="w-4 h-4" />
+              周报
+            </button>
             <button
               onClick={() => setShowRules(true)}
               className="flex items-center gap-1 px-3 py-1.5 text-sm text-gray-600 dark:text-gray-300 hover:bg-gray-100 dark:hover:bg-gray-800 rounded-[var(--radius-md)] transition"
@@ -357,7 +387,7 @@ export default function HomePage() {
                   {/* 卖出/风险信号 */}
                   {group.sellAlerts.map(alert => renderAlertRow(alert))}
 
-                  {/* 参考级弱提醒（R14/R15 筹码峰） */}
+                  {/* 参考级弱提醒（R13/R14 筹码峰） */}
                   {group.referenceAlerts.map(alert => renderAlertRow(alert))}
 
                   {/* 买入信号：≥2 条聚合成"共振"（中性边框，方向感只留标题红点，避免绿卡上一整块红） */}
@@ -393,6 +423,7 @@ export default function HomePage() {
         )}
 
       {showRules && <AlertRulesModal onClose={() => setShowRules(false)} />}
+      {showWeekly && <WeeklyReviewModal open={showWeekly} onClose={() => setShowWeekly(false)} />}
     </div>
   );
 }

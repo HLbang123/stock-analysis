@@ -18,10 +18,11 @@ function isWin(action: string, returnPct: number): boolean {
 
 interface ByNAcc {
   count: number; wins: number; sumReturn: number; sumDd: number; sumRu: number;
+  winCnt: number; sumWin: number; lossCnt: number; sumLoss: number;
   targetCount: number; targetHit: number; stopCount: number; stopHit: number;
   bothCount: number; targetOnly: number; stopOnly: number;
 }
-const emptyAcc = (): ByNAcc => ({ count: 0, wins: 0, sumReturn: 0, sumDd: 0, sumRu: 0, targetCount: 0, targetHit: 0, stopCount: 0, stopHit: 0, bothCount: 0, targetOnly: 0, stopOnly: 0 });
+const emptyAcc = (): ByNAcc => ({ count: 0, wins: 0, sumReturn: 0, sumDd: 0, sumRu: 0, winCnt: 0, sumWin: 0, lossCnt: 0, sumLoss: 0, targetCount: 0, targetHit: 0, stopCount: 0, stopHit: 0, bothCount: 0, targetOnly: 0, stopOnly: 0 });
 
 export async function GET(_request: NextRequest) {
   try {
@@ -40,6 +41,9 @@ export async function GET(_request: NextRequest) {
         acc.count++;
         if (isWin(r.action, e.returnPct)) acc.wins++;
         acc.sumReturn += e.returnPct;
+        // 盈亏比素材：按收益符号分桶（仅买入方向在 UI 展示）
+        if (e.returnPct > 0) { acc.winCnt++; acc.sumWin += e.returnPct; }
+        else { acc.lossCnt++; acc.sumLoss += e.returnPct; }
         if (e.maxDrawdownPct != null) acc.sumDd += e.maxDrawdownPct;
         if (e.maxRunupPct != null) acc.sumRu += e.maxRunupPct;
 
@@ -72,15 +76,23 @@ export async function GET(_request: NextRequest) {
     const rate = (hit: number, cnt: number) => (cnt > 0 ? Math.round((hit / cnt) * 1000) / 10 : null);
 
     const byAction = Array.from(byActionMap.entries()).map(([action, byN]) => {
-      const nArr = Array.from(byN.entries()).map(([nDays, g]) => ({
-        nDays,
-        count: g.count,
-        wins: g.wins,
-        winRate: rate(g.wins, g.count) ?? 0,
-        avgReturn: g.count > 0 ? Math.round((g.sumReturn / g.count) * 100) / 100 : 0,
-        avgMaxDrawdown: g.count > 0 ? Math.round((g.sumDd / g.count) * 100) / 100 : null,
-        avgMaxRunup: g.count > 0 ? Math.round((g.sumRu / g.count) * 100) / 100 : null,
-      })).sort((a, b) => a.nDays - b.nDays);
+      const nArr = Array.from(byN.entries()).map(([nDays, g]) => {
+        const avgWin = g.winCnt > 0 ? Math.round((g.sumWin / g.winCnt) * 100) / 100 : null;
+        const avgLoss = g.lossCnt > 0 ? Math.round((g.sumLoss / g.lossCnt) * 100) / 100 : null;
+        return {
+          nDays,
+          count: g.count,
+          wins: g.wins,
+          winRate: rate(g.wins, g.count) ?? 0,
+          avgReturn: g.count > 0 ? Math.round((g.sumReturn / g.count) * 100) / 100 : 0,
+          avgMaxDrawdown: g.count > 0 ? Math.round((g.sumDd / g.count) * 100) / 100 : null,
+          avgMaxRunup: g.count > 0 ? Math.round((g.sumRu / g.count) * 100) / 100 : null,
+          // 盈亏比 = 平均盈 / 平均亏绝对值（仅买入方向语义成立，其余方向置 null 不展示）
+          payoff: action === '买入' && avgWin != null && avgLoss != null && avgLoss < 0
+            ? Math.round((avgWin / Math.abs(avgLoss)) * 100) / 100
+            : null,
+        };
+      }).sort((a, b) => a.nDays - b.nDays);
 
       let targetStop: TargetStopRow[] | undefined;
       if (action === '买入') {
@@ -183,40 +195,82 @@ export async function GET(_request: NextRequest) {
       if (e5.returnPct! > 0) g.wins++;
       perStockBuy.set(r.stockCode, g);
     }
-    const topPicks = records
-      .filter((r) => r.action === '买入')
-      .map((r) => {
-        const g = perStockBuy.get(r.stockCode);
-        const e5 = r.evals.find((e) => e.nDays === 5);
-        return {
-          stockCode: r.stockCode,
-          stockName: r.stockName,
-          entryDate: r.entryDate,
-          entryPrice: r.entryPrice,
-          confidence: r.confidence,
-          position: r.position,
-          targetHigh: r.targetHigh,
-          stopLoss: r.stopLoss,
-          marketRegime: r.marketRegime,
-          reasoning: r.reasoning?.slice(0, 80) ?? null,
-          trackCount: g?.count ?? 0,
-          trackWinRate: g && g.count > 0 ? Math.round((g.wins / g.count) * 1000) / 10 : null,
-          t5Return: e5?.returnPct ?? null,
-        };
-      })
-      // 排序：有历史胜率的优先（高胜率在前），同档按置信度，再按日期
-      .sort((a, b) =>
-        (b.trackWinRate ?? -1) - (a.trackWinRate ?? -1)
-        || (b.confidence ?? 0) - (a.confidence ?? 0)
-        || b.entryDate.localeCompare(a.entryDate)
-      )
-      .slice(0, 30);
+    // 按股票合并：一只票只出现一次（取最近一次买入分析的信息），避免同一票刷屏
+    const perStockPick = new Map<string, {
+      last: (typeof records)[number];
+      buyCount: number;
+      track: { count: number; wins: number };
+    }>();
+    for (const r of records) {
+      if (r.action !== '买入') continue;
+      const g = perStockPick.get(r.stockCode) ?? { last: r, buyCount: 0, track: perStockBuy.get(r.stockCode) ?? { count: 0, wins: 0 } };
+      g.buyCount++;
+      if (r.entryDate > g.last.entryDate) g.last = r;
+      perStockPick.set(r.stockCode, g);
+    }
+    const pickOf = (g: { last: (typeof records)[number]; buyCount: number; track: { count: number; wins: number } }) => {
+      const r = g.last;
+      const e5 = r.evals.find((e) => e.nDays === 5);
+      return {
+        stockCode: r.stockCode,
+        stockName: r.stockName,
+        entryDate: r.entryDate,
+        entryPrice: r.entryPrice,
+        confidence: r.confidence,
+        position: r.position,
+        targetHigh: r.targetHigh,
+        stopLoss: r.stopLoss,
+        marketRegime: r.marketRegime,
+        reasoning: r.reasoning?.slice(0, 80) ?? null,
+        buyCount: g.buyCount,
+        trackCount: g.track.count,
+        trackWinRate: g.track.count > 0 ? Math.round((g.track.wins / g.track.count) * 1000) / 10 : null,
+        t5Return: e5?.returnPct ?? null,
+      };
+    };
+    const picks = Array.from(perStockPick.values()).map(pickOf);
+    // ① 高胜率背书：该票历史买入建议 T+5 胜率 ≥50% 且样本 ≥2，按胜率排
+    const backed = picks
+      .filter((p) => p.trackCount >= 2 && (p.trackWinRate ?? 0) >= 50)
+      .sort((a, b) => (b.trackWinRate ?? 0) - (a.trackWinRate ?? 0) || b.entryDate.localeCompare(a.entryDate));
+    // ② 近期高信心：近 30 天、本次置信度 ≥70，按信心→日期排（剔除已入背书组的票，避免重复）
+    const cutoff = Date.now() - 30 * 24 * 3600 * 1000;
+    const backedSet = new Set(backed.map((p) => p.stockCode));
+    const highConf = picks
+      .filter((p) => !backedSet.has(p.stockCode) && (p.confidence ?? 0) >= 70 && new Date(`${p.entryDate.slice(0, 4)}-${p.entryDate.slice(4, 6)}-${p.entryDate.slice(6, 8)}T00:00:00+08:00`).getTime() >= cutoff)
+      .sort((a, b) => (b.confidence ?? 0) - (a.confidence ?? 0) || b.entryDate.localeCompare(a.entryDate));
+    const topPicks = { backed: backed.slice(0, 15), highConf: highConf.slice(0, 15) };
+
+    // ⑥ 月度趋势：按 entryDate 月份聚合 T+5（验证 P2 校准注入是否逐步起效）
+    const monthMap = new Map<string, { count: number; wins: number; sumReturn: number }>();
+    for (const r of records) {
+      const e5 = r.evals.find((e) => e.nDays === 5 && e.returnPct != null);
+      if (!e5) continue;
+      const m = r.entryDate.slice(0, 6);
+      const g = monthMap.get(m) ?? { count: 0, wins: 0, sumReturn: 0 };
+      g.count++;
+      g.sumReturn += e5.returnPct!;
+      if (isWin(r.action, e5.returnPct!)) g.wins++;
+      monthMap.set(m, g);
+    }
+    const byMonth = Array.from(monthMap.entries())
+      .sort((a, b) => a[0].localeCompare(b[0]))
+      .map(([month, g]) => ({
+        month,
+        count: g.count,
+        winRate: rate(g.wins, g.count),
+        avgReturn: g.count > 0 ? Math.round((g.sumReturn / g.count) * 100) / 100 : null,
+      }));
+
+    // ⑦ 待回填：尚无 T+5 结果的记录数（回测按日补，未满 5 个交易日属正常）
+    const pendingEvals = records.filter((r) => !r.evals.some((e) => e.nDays === 5 && e.returnPct != null)).length;
 
     return NextResponse.json({
       summary: {
         primaryN: 5,
         totalRecords: records.length,
         totalEvals: overall.count,
+        pendingEvals,
         overall: {
           count: overall.count,
           winRate: rate(overall.wins, overall.count),
@@ -233,6 +287,7 @@ export async function GET(_request: NextRequest) {
       confidenceBuckets,
       positionBuckets,
       byRegime,
+      byMonth,
       topPicks,
     });
   } catch (e: any) {

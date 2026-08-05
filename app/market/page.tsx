@@ -166,7 +166,8 @@ export default function MarketPage() {
             {sectorFlow.length > 0 ? (
               <div className="h-72 overflow-y-auto space-y-0.5">
                 {sectorFlow.slice(0, 30).map((s) => {
-                  const yi = s.totalNet != null ? Number(s.totalNet) / 10000 : null;
+                  // THS 行业口径：net_amount 已是亿元
+                  const yi = s.totalNet != null ? Number(s.totalNet) : null;
                   return (
                     <div key={s.industry} className="flex items-center gap-2 text-xs py-0.5">
                       <span className="w-20 truncate text-gray-600 dark:text-gray-400 shrink-0">{s.industry}</span>
@@ -185,7 +186,7 @@ export default function MarketPage() {
                         yi != null && yi >= 0 ? "text-red-600" : "text-green-600")}>
                         {yi != null ? `${yi >= 0 ? '+' : ''}${yi.toFixed(1)}` : '--'}
                       </span>
-                      <span className="text-xs text-gray-400 shrink-0">{s.stockCount}只</span>
+                      <span className="text-xs text-gray-400 shrink-0">{s.leadStock || `${s.companyNum ?? '--'}家`}</span>
                     </div>
                   );
                 })}

@@ -25,6 +25,7 @@ import { ProfileSettingsModal } from '@/components/ai/ProfileSettingsModal';
 import { ProfileFormModal } from '@/components/ai/ProfileFormModal';
 import { AnalysisHistory } from '@/components/ai/AnalysisHistory';
 import { DeepAnalysisStats } from '@/components/ai/DeepAnalysisStats';
+import { AlertRuleHealth } from '@/components/ai/AlertRuleHealth';
 import { AiChat } from '@/components/ai/AiChat';
 import { ReasoningPanel } from '@/components/ai/ReasoningPanel';
 import { AiScreenPanel } from '@/components/ai/AiScreenPanel';
@@ -210,6 +211,20 @@ export default function AiPage() {
 
       // 确定性因子分
       const t = computeTScore({ intraday, engineResults, chip, kLines: updatedKLines });
+      // 因子分在线落库（做T信号回测样本，静默失败不阻断；同票同日同时刻覆盖）
+      try {
+        const todayStr = new Date().toLocaleDateString('sv-SE', { timeZone: 'Asia/Shanghai' }).replace(/-/g, '');
+        fetch('/api/tscore/records', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            tsCode: selectedCode, stockName: stock.name,
+            tradeDate: todayStr, minuteOfDay: intraday.minuteOfDay ?? null,
+            price: quote.price, buyScore: t.buyScore, sellScore: t.sellScore,
+            buyFactors: t.buyFactors, sellFactors: t.sellFactors, degraded: t.degraded,
+          }),
+        }).catch(() => {});
+      } catch { /* 落库失败不阻断评分 */ }
       // 先把因子分结果显示出来（LLM 微调前）
       setResult({
         degraded: false, degradation: t.degradation,
@@ -530,10 +545,7 @@ export default function AiPage() {
           </Button>
         </div>
 
-        {/* 深度分析提示 */}
-        <p className="text-xs text-[var(--color-warning)] mb-1">
-          深度分析耗时约1-3分钟，消耗较多Token
-        </p>
+        {/* 深度分析提示已删：耗时与 Token 成本由裁决页自行感知 */}
 
         {/* P1：本票历史战绩条（有深度分析落库记录才显示） */}
         <StockTrackStrip stockCode={selectedCode} />
@@ -936,7 +948,10 @@ export default function AiPage() {
 
       {/* 胜率复盘 */}
       {deepTab === 'stats' && (
-        <DeepAnalysisStats />
+        <div className="space-y-4">
+          <AlertRuleHealth />
+          <DeepAnalysisStats />
+        </div>
       )}
 
       </>

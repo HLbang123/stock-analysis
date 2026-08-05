@@ -6,7 +6,7 @@
  * 后端按「策略+数据日」去重，首跑者花 token，后续秒取缓存；降级时后续 token 自动补救。
  */
 
-import { useState, useEffect, useCallback, useMemo, Fragment } from 'react';
+import { useState, useEffect, useCallback, useMemo, useRef, Fragment } from 'react';
 import { useRouter } from 'next/navigation';
 import { useAiScreenStore } from '@/store/ai-screen-store';
 import { cn } from '@/lib/utils';
@@ -61,6 +61,20 @@ export function AiScreenPanel({ currentProfile }: { currentProfile: AiProfile })
   const [sector, setSector] = useState('');
   const [level, setLevel] = useState<'L1' | 'L2'>('L1');
   const [board, setBoard] = useState('all');
+  // 阶段指示器：LLM 重排为非流式（中转流式不吐内容），无法给实时百分比——按经验时长推进阶段提示 + 真实等待秒数
+  const [screenStage, setScreenStage] = useState<'idle' | 'candidates' | 'scoring' | 'llm'>('idle');
+  const [elapsed, setElapsed] = useState(0);
+  const stageTimers = useRef<ReturnType<typeof setTimeout>[]>([]);
+
+  const STAGE_LABELS: Record<string, string> = {
+    candidates: '拉取候选池…',
+    scoring: '因子打分…',
+    llm: 'AI 重排中（最耗时，约 10-60 秒）…',
+  };
+
+  useEffect(() => {
+    return () => { stageTimers.current.forEach(clearTimeout); };
+  }, []);
 
   const refresh = useCallback(async () => {
     try {
@@ -87,6 +101,15 @@ export function AiScreenPanel({ currentProfile }: { currentProfile: AiProfile })
     setSector('');
     setBoard('all');
     setLoading(true);
+    setScreenStage('candidates');
+    setElapsed(0);
+    stageTimers.current.forEach(clearTimeout);
+    stageTimers.current = [
+      setTimeout(() => setScreenStage('scoring'), 3000),
+      setTimeout(() => setScreenStage('llm'), 8000),
+    ];
+    const t0 = Date.now();
+    const tick = setInterval(() => setElapsed(Math.floor((Date.now() - t0) / 1000)), 1000);
     try {
       const res = await fetch('/api/ai-screen', {
         method: 'POST',
@@ -109,6 +132,9 @@ export function AiScreenPanel({ currentProfile }: { currentProfile: AiProfile })
     } catch {
       toast.error('请求失败');
     } finally {
+      clearInterval(tick);
+      stageTimers.current.forEach(clearTimeout);
+      setScreenStage('idle');
       setLoading(false);
     }
   };
@@ -191,6 +217,14 @@ export function AiScreenPanel({ currentProfile }: { currentProfile: AiProfile })
           {loading ? <Loader2 className="w-4 h-4 animate-spin" /> : <Sparkles className="w-4 h-4" />}
           {loading ? '筛选中…' : '运行筛选'}
         </button>
+        {/* 阶段指示器 */}
+        {loading && (
+          <div className="mt-3 flex items-center gap-2 text-xs text-gray-500">
+            <span className="w-1.5 h-1.5 rounded-full bg-purple-500 animate-pulse" />
+            <span>{STAGE_LABELS[screenStage]}</span>
+            <span className="ml-auto tabular-nums text-gray-400">{elapsed}s</span>
+          </div>
+        )}
       </Card>
 
       {/* 历史运行 */}

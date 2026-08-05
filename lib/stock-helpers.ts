@@ -84,17 +84,21 @@ export type MaCrossState = 'golden' | 'death' | 'pending';
  * updateTime 形如 "2026-07-18 14:30"（行情自带时间）；缺失时按当前北京时间。
  */
 export function intradayVolumePace(updateTime?: string): number {
-  let mins: number;
+  const T = (h: number, mi: number) => h * 60 + mi;
+  let mins: number | null = null;
+  // 防御：updateTime 可能是 UTC ISO（"2026-08-05T06:50Z"）或过期值，
+  // 解析出的时间必须落在交易时段 9:30~16:00 才采用，否则回落本地北京时间（显式 Asia/Shanghai，与服务器时区无关）
   const m = updateTime?.match(/(\d{1,2}):(\d{2})/);
   if (m) {
-    mins = Number(m[1]) * 60 + Number(m[2]);
-  } else {
+    const cand = Number(m[1]) * 60 + Number(m[2]);
+    if (cand >= T(9, 30) && cand <= T(16, 0)) mins = cand;
+  }
+  if (mins == null) {
     const parts = new Intl.DateTimeFormat('zh-CN', {
-      timeZone: 'Asia/Shanghai', hour: '2-digit', minute: '2-digit', hour12: false,
+      timeZone: 'Asia/Shanghai', hour: '2-digit', minute: '2-digit', hourCycle: 'h23',
     }).formatToParts(new Date());
     mins = Number(parts.find(p => p.type === 'hour')!.value) * 60 + Number(parts.find(p => p.type === 'minute')!.value);
   }
-  const T = (h: number, mi: number) => h * 60 + mi;
   if (mins < T(9, 30)) return 0.1;
   if (mins < T(10, 0)) return 0.1 + (0.3 - 0.1) * (mins - T(9, 30)) / 30;
   if (mins < T(11, 30)) return 0.3 + (0.55 - 0.3) * (mins - T(10, 0)) / 90;

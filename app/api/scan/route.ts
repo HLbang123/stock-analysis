@@ -23,7 +23,7 @@
  *   filterRoe - 是否启用 ROE 过滤（默认 false）
  *   vcp       - 是否启用 VCP 波动率收缩过滤（默认 false）
  *   filterRsi - 是否启用 RSI 过滤（默认 false）
- *   rsiPeriod - RSI 周期 6/12/24（默认 6，与预警 R08 同口径）
+ *   rsiPeriod - RSI 周期 6/12/24（默认 6，与预警 R07 同口径）
  *   rsiMin    - RSI 下限（可选，RSI ≥ 此值）
  *   rsiMax    - RSI 上限（可选，RSI ≤ 此值，如 30 筛超卖）
  *   board     - 板块过滤：all(默认)/main(主板)/gem(创业板)/star(科创板)/bjse(北交所)，按 ts_code 前缀

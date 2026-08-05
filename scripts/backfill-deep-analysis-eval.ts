@@ -36,6 +36,13 @@ function findPrevTradeDay(entryDate: string, dayIndex: Map<string, number>): num
   return null;
 }
 
+/** sina 格式(sz002415/sh600664) → Tushare 格式(002415.SZ/600664.SH)；已 Tushare 格式原样返回。
+ *  record.stockCode 来自前端(sina 口径)，daily_bars.tsCode 是 Tushare 口径——不转换永远查不到 → 全"待数据" */
+function toTushareCode(c: string): string {
+  const m = c.match(/^([a-z]{2})(\d{6})$/i);
+  return m ? `${m[2]}.${m[1].toUpperCase()}` : c;
+}
+
 async function main() {
   const argN = process.argv.find((a) => a.startsWith('--N='));
   const ns = argN ? [parseInt(argN.slice(4), 10)].filter((n) => NS.includes(n)) : NS;
@@ -76,8 +83,9 @@ async function main() {
     if (entryIdx == null) { pending++; continue; }
 
     // entryClose：entryDate 当天收盘（标准化基准，不用用户实时价）
+    const tushareCode = toTushareCode(r.stockCode);
     const entryBar = await prisma.dailyBar.findFirst({
-      where: { tsCode: r.stockCode, tradeDate: sortedDays[entryIdx] },
+      where: { tsCode: tushareCode, tradeDate: sortedDays[entryIdx] },
       select: { close: true },
     });
     if (!entryBar || entryBar.close == null || entryBar.close <= 0) { pending++; continue; }
@@ -90,7 +98,7 @@ async function main() {
       const exitDate = sortedDays[targetIdx];
 
       const bars = await prisma.dailyBar.findMany({
-        where: { tsCode: r.stockCode, tradeDate: { gt: sortedDays[entryIdx], lte: exitDate } },
+        where: { tsCode: tushareCode, tradeDate: { gt: sortedDays[entryIdx], lte: exitDate } },
         orderBy: { tradeDate: 'asc' },
         select: { close: true, high: true, low: true },
       });

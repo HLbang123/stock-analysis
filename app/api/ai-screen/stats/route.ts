@@ -226,12 +226,20 @@ export async function GET(request: NextRequest) {
         for (const p of byFusion) { const r = retOf(p, PRIMARY_N); if (r != null) fusion.push(r); }
         for (const p of byVeto) { const r = retOf(p, PRIMARY_N); if (r != null) veto.push(r); }
       }
+      const pureS = returnStats(pure);
+      const fusionS = returnStats(fusion);
+      const vetoS = returnStats(veto);
       return {
         strategyId: sid,
         strategyName: ps[0]?.strategyName ?? sid,
-        pureScreen: returnStats(pure),
-        fusion: returnStats(fusion),
-        veto: returnStats(veto),
+        pureScreen: pureS,
+        fusion: fusionS,
+        veto: vetoS,
+        // 融合 vs 纯规则 的增量（胜率百分点 + 均值差）：正=LLM 重排加分，负=拖累
+        deltaWin: fusionS.winRate != null && pureS.winRate != null
+          ? Math.round((fusionS.winRate - pureS.winRate) * 10) / 10 : null,
+        deltaAvg: fusionS.avg != null && pureS.avg != null
+          ? Math.round((fusionS.avg - pureS.avg) * 10000) / 10000 : null,
       };
     });
 
@@ -269,14 +277,29 @@ export async function GET(request: NextRequest) {
     const allSelected = picks.filter((p) => p.selected);
     const allReturns = allSelected.map((p) => retOf(p, PRIMARY_N)).filter((r): r is number => r != null);
     const overall = returnStats(allReturns);
+    const pendingEvals = allSelected.length - allReturns.length;
+
+    // ---- 月度趋势：入选建议 T+5 按月聚合（验证规则/LLM 调优随时间的演进）----
+    const monthMap = new Map<string, number[]>();
+    for (const p of allSelected) {
+      const r = retOf(p, PRIMARY_N);
+      if (r == null) continue;
+      const m = p.barDate.slice(0, 6);
+      if (!monthMap.has(m)) monthMap.set(m, []);
+      monthMap.get(m)!.push(r);
+    }
+    const byMonth = [...monthMap.entries()]
+      .sort((a, b) => a[0].localeCompare(b[0]))
+      .map(([month, rets]) => ({ month, ...returnStats(rets) }));
 
     return NextResponse.json({
       primaryN: PRIMARY_N,
-      summary: { ...overall, runCount: new Set(picks.map((p) => p.runId)).size, candidateCount: picks.length, selectedCount: allSelected.length },
+      summary: { ...overall, runCount: new Set(picks.map((p) => p.runId)).size, candidateCount: picks.length, selectedCount: allSelected.length, pendingEvals },
       strategies,
       factorIC,
       llmAB,
       eventSignals,
+      byMonth,
     });
   } catch (e: any) {
     console.error('[api/ai-screen/stats]', e);

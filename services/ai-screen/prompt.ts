@@ -15,7 +15,7 @@ function fmt(n: number | null | undefined, digits = 2): string {
   return n.toFixed(digits);
 }
 
-/** 单个候选的完整描述行 */
+/** 单个候选的完整描述行（瘦身版：删基本面3项/筹码4项/ATR——这些已压缩进 quality/chip 因子分，重复列出纯浪费 token） */
 function candidateFull(k: AiPick): string {
   const fs = Object.entries(k.factorScores)
     .map(([k2, v]) => `${k2}:${v.toFixed(0)}`)
@@ -24,10 +24,7 @@ function candidateFull(k: AiPick): string {
     `- ${k.tsCode} ${k.name}`,
     `  行业:${k.industry || '--'} 现价:${fmt(k.latestClose)} 涨跌:${fmt(k.latestChange)}% 成交额:${fmt(k.latestAmount, 0)}`,
     `  RPS:${fmt(k.rps, 1)} 60日涨幅:${fmt(k.ret60d)}% MACD:${k.macdStatus} RSI:${k.rsiStatus} 信号分:${fmt(k.signalScore, 0)}`,
-    `  波动率:${fmt(k.volatility20d)}% 回撤:${fmt(k.maxDrawdown20d)}% ATR:${fmt(k.atr20)}% 量比:${fmt(k.volumeRatio)}`,
-    `  ROE:${fmt(k.roe, 1)}% 毛利率:${fmt(k.grossprofitMargin, 1)}% 营收增速:${fmt(k.orYoy, 1)}% 行业指数涨幅:${fmt(k.industryChangePct)}%`,
-    `  筹码:集中度${fmt(k.chipConcentration, 3)} 获利盘${fmt(k.chipProfitRatio ? k.chipProfitRatio * 100 : null, 0)}% 峰位${fmt(k.chipPeakPos, 2)} 漂移${fmt(k.chipPeakDrift, 2)}`,
-    `  因子分:${fs} 规则总分:${fmt(k.screenScore, 1)}`,
+    `  波动率:${fmt(k.volatility20d)}% 回撤:${fmt(k.maxDrawdown20d)}% 量比:${fmt(k.volumeRatio)} 因子分:${fs} 规则总分:${fmt(k.screenScore, 1)}`,
   ].join('\n');
 }
 
@@ -58,7 +55,7 @@ ${ctxText}
   const footer = `\n## 输出要求
 只返回 JSON，不要 Markdown，不要解释 JSON 以外的文本。
 **ranked 数组必须包含上方候选列表的全部候选——每个 code 必须与候选列表一致，不得遗漏任何一个，不得编造候选池外的代码。若候选有 N 个，ranked 数组长度必须为 N。**
-**散文字段（thesis/reason/risk/theme/style_fit）每项 ≤30 字；数组字段（catalysts/risk_flags/tags/watch_items/invalidators）每项最多 2 个、每个 ≤8 字。输出越精炼越好。**
+**散文字段（thesis/reason/risk）每项 ≤20 字；数组字段（catalysts/risk_flags/tags/watch_items/invalidators）每项最多 1 个、每个 ≤8 字。输出越精炼越好。**
 格式：
 {
   "market_view": "一句话概括当前候选池和市场背景是否适合该策略",
@@ -69,17 +66,14 @@ ${ctxText}
       "code": "股票代码",
       "llm_score": 0-100,
       "confidence": 0-1,
-      "sector": "行业/主题短标签",
-      "theme": "主要交易逻辑或主题",
       "thesis": "该候选入选的核心假设",
       "reason": "一句话排序理由",
       "risk": "一句话主要风险",
       "catalysts": ["潜在催化1"],
       "risk_flags": ["风险标签1"],
-      "tags": ["趋势", "防守", "流动性"],
-      "style_fit": "与策略风格的匹配度说明",
-      "watch_items": ["后续应跟踪的数据或事件"],
-      "invalidators": ["会推翻该候选逻辑的观察点"]
+      "tags": ["标签1（可选）"],
+      "watch_items": ["观察项1（可选，后续要跟踪什么）"],
+      "invalidators": ["证伪点1（可选，出现什么条件说明判断失效）"]
     }
   ]
 }`;

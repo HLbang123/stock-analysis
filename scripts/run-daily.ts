@@ -11,6 +11,8 @@ const STEPS: { name: string; cmd: string; fatal?: boolean }[] = [
   { name: "日线同步", cmd: "npx tsx scripts/sync-daily.ts" },
   { name: "RPS 计算", cmd: "npx tsx scripts/compute-rps.ts" },
   { name: "资金流向", cmd: "npx tsx scripts/sync-moneyflow.ts" },
+  { name: "基金日线", cmd: "npx tsx scripts/sync-fund-daily.ts", fatal: false },
+  { name: "涨跌停价", cmd: "npx tsx scripts/sync-stock-limit.ts", fatal: false },
   { name: "大盘宽度", cmd: "npx tsx scripts/compute-market-breadth.ts" },
   { name: "行业指数", cmd: "npx tsx scripts/sync-sw-daily.ts" },
   { name: "指数估值", cmd: "npx tsx scripts/sync-index-valuation.ts" },
@@ -20,6 +22,10 @@ const STEPS: { name: string; cmd: string; fatal?: boolean }[] = [
   { name: "AI筛选T+N回填", cmd: "npx tsx scripts/backfill-ai-screen-eval.ts", fatal: false },
   // 深度分析 T+N 回测回填(纯分析,失败不阻断日任务)
   { name: "深度分析T+N回填", cmd: "npx tsx scripts/backfill-deep-analysis-eval.ts", fatal: false },
+  // 预警触发明细 T+N 回填(健康监控/周报数据源)
+  { name: "预警触发T+N回填", cmd: "npx tsx scripts/backfill-alert-triggers.ts", fatal: false },
+  // 波段评分(做T)信号收益回填(日内/隔日)
+  { name: "做T信号收益回填", cmd: "npx tsx scripts/backfill-tscore-records.ts", fatal: false },
   // 基本面(ROE) + 申万成分股 不进每日——按需手动跑
 ];
 

@@ -47,6 +47,7 @@ export default function StockDetailPage() {
   const [fundLoading, setFundLoading] = useState(false);
   const [anomaly, setAnomaly] = useState<AnomalyItem | null>(null);
   const [fundInfo, setFundInfo] = useState<FuyaoFundResp | null>(null);
+  const [fundBars, setFundBars] = useState<{ tradeDate: string; close: number; changePct: number | null }[]>([]);
   const [srData, setSrData] = useState<SupportResistance | null>(null);
 
   const stock = watchlist.find(s => s.code === code);
@@ -115,10 +116,12 @@ export default function StockDetailPage() {
       const thscode = `${m[2]}.${m[1].toUpperCase()}`;
       getJSONOr<FuyaoAnomalyResp | null>(`/api/fuyao/anomaly?code=${thscode}`, null)
         .then(d => { if (d?.item && d.item.length > 0) setAnomaly(d.item[0] as AnomalyItem); });
-      // ETF 时拉基金持仓
+      // ETF 时拉基金持仓 + 净值走势
       if (isETF(code)) {
         getJSONOr<FuyaoFundResp | null>(`/api/fuyao/fund?code=${thscode}`, null)
           .then(d => { if (d?.holdings && d.holdings.length > 0) setFundInfo(d); });
+        getJSONOr<{ bars: { tradeDate: string; close: number; changePct: number | null }[] } | null>(`/api/fund/daily?code=${code}`, null)
+          .then(d => { if (d?.bars?.length) setFundBars(d.bars); });
       }
     }
   }, [code]);
@@ -180,7 +183,7 @@ export default function StockDetailPage() {
         let maxIdx = 0; let maxPrice = 0;
         minuteData.forEach((p, idx) => { if (p.price > maxPrice) { maxPrice = p.price; maxIdx = idx; } });
         index = maxIdx;
-      } else if (['R07', 'R08', 'R09', 'R10', 'R11', 'R13'].includes(ruleId)) {
+      } else if (['R06', 'R07', 'R08', 'R09', 'R10', 'R12'].includes(ruleId)) {
         // 见底/企稳形态 → 最低价位置
         let minIdx = 0; let minPrice = Infinity;
         minuteData.forEach((p, idx) => { if (p.price < minPrice) { minPrice = p.price; minIdx = idx; } });
@@ -425,16 +428,34 @@ export default function StockDetailPage() {
               {/* 资金流向 mini 图 */}
               {fundData.moneyflow?.length > 0 && (
                 <div>
-                  <p className="text-xs text-gray-500 mb-1">主力资金近{fundData.moneyflow.length}日（亿元）</p>
+                  <p className="text-xs text-gray-500 mb-1">主力资金近{fundData.moneyflow.length}日（亿元，同花顺口径）</p>
                   <div className="h-32">
                     <EChart option={{
                       tooltip: { trigger: 'axis', valueFormatter: (v: any) => `${(Number(v) / 10000).toFixed(2)}亿` },
                       grid: { left: 35, right: 10, top: 5, bottom: 20 },
-                      xAxis: { type: 'category', data: fundData.moneyflow.slice().reverse().map((m: any) => m.trade_date?.slice(4, 6) + '-' + m.trade_date?.slice(6, 8)), axisLabel: { fontSize: 9 } },
+                      xAxis: { type: 'category', data: fundData.moneyflow.slice().reverse().map((m: any) => m.tradeDate?.slice(4, 6) + '-' + m.tradeDate?.slice(6, 8)), axisLabel: { fontSize: 9 } },
                       yAxis: { type: 'value', axisLabel: { fontSize: 9, formatter: (v: number) => (v / 10000).toFixed(0) } },
-                      series: [{ type: 'bar', data: fundData.moneyflow.slice().reverse().map((m: any) => m.net_mf_amount), itemStyle: { color: (p: any) => (p.value >= 0 ? '#ef4444' : '#22c55e') } }],
+                      series: [{ type: 'bar', data: fundData.moneyflow.slice().reverse().map((m: any) => m.netAmount), itemStyle: { color: (p: any) => (p.value >= 0 ? '#ef4444' : '#22c55e') } }],
                     }} />
                   </div>
+                  {/* 大中小单结构（最新一日占比） */}
+                  {fundData.moneyflow[0] && (
+                    <div className="flex items-center gap-2 text-xs mt-2 pt-2 border-t border-gray-100 dark:border-gray-800">
+                      <span className="text-gray-500 shrink-0">今日大中小单占比</span>
+                      {[
+                        { label: '大单', rate: fundData.moneyflow[0].buyLgRate, cls: 'text-[var(--color-up)]' },
+                        { label: '中单', rate: fundData.moneyflow[0].buyMdRate, cls: 'text-gray-600 dark:text-gray-300' },
+                        { label: '小单', rate: fundData.moneyflow[0].buySmRate, cls: 'text-[var(--color-down)]' },
+                      ].map((b) => (
+                        <span key={b.label} className={cn('flex items-center gap-1', b.cls)}>
+                          {b.label} <b className="font-mono">{b.rate != null ? `${b.rate.toFixed(1)}%` : '--'}</b>
+                        </span>
+                      ))}
+                      {fundData.moneyflow[0].netD5Amount != null && (
+                        <span className="text-gray-500 ml-auto">5日主力 <b className={cn('font-mono', fundData.moneyflow[0].netD5Amount >= 0 ? 'text-[var(--color-up)]' : 'text-[var(--color-down)]')}>{(fundData.moneyflow[0].netD5Amount / 10000).toFixed(2)}亿</b></span>
+                      )}
+                    </div>
+                  )}
                 </div>
               )}
             </Card>
@@ -481,6 +502,20 @@ export default function StockDetailPage() {
                 <h2 className="font-semibold text-sm">基金持仓（前{fundInfo.holdings.length}大重仓股）</h2>
                 {fundInfo.profile?.fund_name && <span className="text-xs text-gray-400">{fundInfo.profile.fund_name}</span>}
               </div>
+              {fundBars.length > 0 && (
+                <div className="mb-3">
+                  <p className="text-xs text-gray-500 mb-1">净值走势（近{fundBars.length}日）</p>
+                  <div className="h-24">
+                    <EChart option={{
+                      tooltip: { trigger: 'axis' },
+                      grid: { left: 35, right: 10, top: 5, bottom: 20 },
+                      xAxis: { type: 'category', data: fundBars.map(b => b.tradeDate.slice(4, 6) + '-' + b.tradeDate.slice(6, 8)), axisLabel: { fontSize: 9, interval: 9 } },
+                      yAxis: { type: 'value', scale: true, axisLabel: { fontSize: 9 } },
+                      series: [{ type: 'line', data: fundBars.map(b => b.close), smooth: true, symbol: 'none', lineStyle: { color: '#2563eb', width: 1.5 }, areaStyle: { opacity: 0.08 } }],
+                    }} />
+                  </div>
+                </div>
+              )}
               <div className="grid grid-cols-2 sm:grid-cols-5 gap-2">
                 {fundInfo.holdings.map((h: any, i: number) => (
                   <div key={h.thscode} className="p-2 rounded-lg bg-gray-50 dark:bg-gray-800">

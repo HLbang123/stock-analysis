@@ -23,6 +23,18 @@ export function decodeGBK(buffer: ArrayBuffer): string {
   }
 }
 
+/** 北京时区日期时间字符串（YYYY-MM-DD HH:mm），与数据源口径一致。
+ *  勿用 new Date().toISOString()：UTC 时间会被 intradayVolumePace 匹配成"盘前"→ pace=0.1
+ *  → 盘中折算 cap 恒生效，放量百分比普遍虚大 2 倍（2026-08-05 哈药/海康 误报根因）。 */
+function beijingDateTimeStr(): string {
+  const parts = new Intl.DateTimeFormat('zh-CN', {
+    timeZone: 'Asia/Shanghai', year: 'numeric', month: '2-digit', day: '2-digit',
+    hour: '2-digit', minute: '2-digit', hourCycle: 'h23',
+  }).formatToParts(new Date());
+  const get = (t: string) => parts.find(p => p.type === t)!.value;
+  return `${get('year')}-${get('month')}-${get('day')} ${get('hour')}:${get('minute')}`;
+}
+
 /** 构建统一的实时行情响应对象 */
 export function buildQuoteResponse(args: {
   symbol: string;
@@ -50,7 +62,7 @@ export function buildQuoteResponse(args: {
     open,
     volume,
     amount,
-    updateTime: new Date().toISOString(),
+    updateTime: beijingDateTimeStr(),
   };
 }
 

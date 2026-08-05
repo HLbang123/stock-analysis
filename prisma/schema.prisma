@@ -345,3 +345,127 @@ model DeepAnalysisEval {
   @@index([nDays])
   @@map("deep_analysis_evals")
 }
+
+/// 预警触发明细（在线落库 + 回放补历史）— 健康监控 / 周回顾 / 系数标定的数据地基
+/// 同一触发 R01 阶梯可展开多行（extraData.triggered 各子信号一行）；T+N 由回填脚本补算
+model AlertRuleTrigger {
+  id        String  @id @default(uuid()) @db.VarChar(36)
+  tsCode    String  @map("stock_code") @db.VarChar(12)
+  stockName String? @map("stock_name") @db.VarChar(40)
+  ruleId    String  @map("rule_id") @db.VarChar(8)    // R01/R02
+  subLabel  String  @map("sub_label") @db.VarChar(24) // 巨量见顶/第二波见顶/...
+  barDate   String  @map("bar_date") @db.VarChar(8)   // 触发日 YYYYMMDD
+  createdAt String  @map("created_at") @db.VarChar(32)
+  params    String? @db.VarChar(200)                  // 触发参数摘要(量比/比例, JSON), 回放补
+  t5Return  Float?  @map("t5_return")
+  t10Return Float?  @map("t10_return")
+  source    String  @db.VarChar(8) @default("online") // online 在线 / replay 历史回放
+
+  @@unique([tsCode, ruleId, subLabel, barDate, source])
+  @@index([barDate])
+  @@map("alert_rule_triggers")
+}
+
+/// 周回顾快照（周日 cron 生成，固定不随回填变化）— 弹窗/固定入口/未来推送共用单一事实源
+model WeeklyReview {
+  id        String @id @default(uuid()) @db.VarChar(36)
+  weekStart String @map("week_start") @db.VarChar(8) // 周一 YYYYMMDD
+  payload   String @db.Text                          // 完整周报 JSON
+  createdAt String @map("created_at") @db.VarChar(32)
+
+  @@unique([weekStart])
+  @@map("weekly_reviews")
+}
+
+/// 波段评分(做T)信号在线落库 — 每次用户算评分顺手记一条（因子分口径），日内/隔日收益回填
+/// 样本来源是真实使用（无历史分时可回放），攒够后做因子权重扫描
+model TScoreRecord {
+  id           String  @id @default(uuid()) @db.VarChar(36)
+  tsCode       String  @map("stock_code") @db.VarChar(12) // sina 格式(sz002415)
+  stockName    String? @map("stock_name") @db.VarChar(40)
+  tradeDate    String  @map("trade_date") @db.VarChar(8)  // 当日 YYYYMMDD
+  minuteOfDay  Int?    @map("minute_of_day")              // 信号时刻(分钟数, 630=10:30)
+  price        Float?                                     // 信号时刻价格（回填日内收益的基准）
+  buyScore     Float?  @map("buy_score")
+  sellScore    Float?  @map("sell_score")
+  buyFactors   String? @map("buy_factors")                // JSON [{name,score,raw}]
+  sellFactors  String? @map("sell_factors")
+  degraded     Boolean @default(false)
+  createdAt    String  @map("created_at") @db.VarChar(32)
+  intradayReturn Float? @map("intraday_return")           // 信号价 → 当日收盘
+  nextDayReturn  Float? @map("next_day_return")           // 当日收盘 → 次日收盘
+
+  @@unique([tsCode, tradeDate, minuteOfDay])
+  @@index([tradeDate])
+  @@map("tscore_records")
+}
+
+/// 个股资金流向（同花顺 THS 口径，2026-08 起；旧东财口径 stock_moneyflow 保留历史不删）
+model StockMoneyflowThs {
+  tsCode        String  @map("ts_code") @db.VarChar(12)
+  tradeDate     String  @map("trade_date") @db.VarChar(8)
+  name          String? @db.VarChar(40)
+  pctChange     Float?  @map("pct_change")
+  latest        Float?
+  netAmount     Float?  @map("net_amount")          // 资金净流入(万元)
+  netD5Amount   Float?  @map("net_d5_amount")       // 5日主力净额(万元)
+  buyLgAmount   Float?  @map("buy_lg_amount")       // 大单净流入(万元)
+  buyLgRate     Float?  @map("buy_lg_amount_rate")  // 大单净流入占比(%)
+  buyMdAmount   Float?  @map("buy_md_amount")
+  buyMdRate     Float?  @map("buy_md_amount_rate")
+  buySmAmount   Float?  @map("buy_sm_amount")
+  buySmRate     Float?  @map("buy_sm_amount_rate")
+
+  @@id([tsCode, tradeDate])
+  @@index([tradeDate])
+  @@map("stock_moneyflow_ths")
+}
+
+/// 行业资金流向（同花顺 THS 口径，大盘页行业资金数据源）
+model IndustryMoneyflowThs {
+  tsCode        String  @map("ts_code") @db.VarChar(12)
+  tradeDate     String  @map("trade_date") @db.VarChar(8)
+  industry      String? @db.VarChar(40)
+  leadStock     String? @map("lead_stock") @db.VarChar(40)
+  close         Float?
+  pctChange     Float?  @map("pct_change")
+  companyNum    Int?    @map("company_num")
+  netBuyAmount  Float?  @map("net_buy_amount")  // 流入(亿元)
+  netSellAmount Float?  @map("net_sell_amount") // 流出(亿元)
+  netAmount     Float?  @map("net_amount")      // 净额(亿元)
+
+  @@id([tsCode, tradeDate])
+  @@index([tradeDate])
+  @@map("industry_moneyflow_ths")
+}
+
+/// 基金日线（fund_daily：ETF 净值/份额，详情页 ETF 区净值趋势）
+model FundDaily {
+  tsCode    String  @map("ts_code") @db.VarChar(12)
+  tradeDate String  @map("trade_date") @db.VarChar(8)
+  open      Float?
+  high      Float?
+  low       Float?
+  close     Float?
+  preClose  Float?  @map("pre_close")
+  changePct Float?  @map("change_pct")
+  vol       Float?
+  amount    Float?
+
+  @@id([tsCode, tradeDate])
+  @@index([tradeDate])
+  @@map("fund_daily_bars")
+}
+
+/// 涨跌停价（stk_limit，全市场每票每日精确涨停/跌停价，R01 封板/炸板判定用）
+model StockLimit {
+  tsCode    String  @map("ts_code") @db.VarChar(12)
+  tradeDate String  @map("trade_date") @db.VarChar(8)
+  preClose  Float?  @map("pre_close")
+  limitUp   Float?  @map("limit_up")
+  limitDown Float?  @map("limit_down")
+
+  @@id([tsCode, tradeDate])
+  @@index([tradeDate])
+  @@map("stock_limits")
+}
