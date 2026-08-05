@@ -2,7 +2,7 @@
  * 市场宽度 + 占比 预计算（每日，由 run-daily 调用）
  *
  * 从 daily_bars 聚合：涨跌家数 / 涨跌停 / 20日新高新低 / MA55 上方占比
- * 从 rps_scores 聚合：RPS≥87 强势股占比
+ * 从 rps_scores 聚合：RPS60≥87 强势股占比（2026-08-05 由 rps_250 改 rps_60，中期强度反应更快）
  * 结果 upsert 到 market_breadth（一行/交易日）
  *
  * 运行：npx tsx scripts/compute-market-breadth.ts [--init]
@@ -85,11 +85,11 @@ async function computeForDate(tradeDate: string): Promise<BreadthRow> {
   const total = Number(w.total ?? 0);
   const aboveMa55 = Number(w.above_ma55 ?? 0);
 
-  // 3. RPS 强势股占比（rps_scores 当日有数据才有）
+  // 3. RPS 强势股占比（rps_scores 当日有数据才有；用 rps_60 中期强度，与 AI 筛选硬筛口径一致）
   const rps: any[] = await prisma.$queryRawUnsafe(
     `SELECT
        COUNT(*)::int AS total,
-       COUNT(*) FILTER (WHERE rps_250 >= 87)::int AS strong
+       COUNT(*) FILTER (WHERE rps_60 >= 87)::int AS strong
      FROM rps_scores WHERE "calcDate" = $1`,
     tradeDate
   );

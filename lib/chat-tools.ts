@@ -218,7 +218,7 @@ export async function executeTool(name: string, args: any, origin: string): Prom
           `SELECT trade_date, advance, decline, limit_up, limit_down, above_ma55_ratio, strong_rps_ratio FROM market_breadth ORDER BY trade_date DESC LIMIT $1`, days
         );
         if (!rows.length) return "无市场宽度数据";
-        return rows.map((r) => `${r.trade_date}: 涨${r.advance} 跌${r.decline} 涨停${r.limit_up} 跌停${r.limit_down} MA55上方${r.above_ma55_ratio}% RPS≥87占比${r.strong_rps_ratio}%`).join('\n');
+        return rows.map((r) => `${r.trade_date}: 涨${r.advance} 跌${r.decline} 涨停${r.limit_up} 跌停${r.limit_down} MA55上方${r.above_ma55_ratio}% RPS60≥87占比${r.strong_rps_ratio}%`).join('\n');
       }
       case "get_northbound_flow": {
         const days = args.days || 5;

@@ -52,7 +52,10 @@ export interface LimitUpItem {
   fdAmount?: number | null; upStat?: string; [k: string]: any;
 }
 export interface LimitUpResp {
-  count: { up: number; down: number; broken: number };
+  source?: 'ths' | 'tushare';
+  tradeDate?: string | null;
+  fallback?: boolean;
+  count: { up: number; down: number | null; broken: number | null };
   items: { up: LimitUpItem[]; down?: LimitUpItem[]; broken?: LimitUpItem[] };
   error?: string;
 }

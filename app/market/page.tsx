@@ -48,7 +48,7 @@ export default function MarketPage() {
         getJSON<BreadthResp>('/api/market/breadth?days=60'),
         getJSON<NorthboundResp>('/api/market/northbound?days=120'),
         getJSON<MarginResp>('/api/market/margin?days=120'),
-        getJSON<RpsSectorsResp>('/api/rps/sectors?period=250&min=87'),
+        getJSON<RpsSectorsResp>('/api/rps/sectors?period=60&min=87'),
         getJSONOr<LimitUpResp | null>('/api/limit-up', null),
         getJSONOr<HotStocksResp | null>('/api/fuyao/hot-stocks', null),
         getJSONOr<SectorFlowResp | null>('/api/market/sector-flow?days=5', null),
@@ -124,18 +124,22 @@ export default function MarketPage() {
           {/* 2. 大势温度 */}
           <Card className="p-4">
             <h3 className="font-medium mb-1">大势温度（多头占比）</h3>
-            <p className="text-xs text-gray-500 mb-2">MA55 上方占比 & RPS≥87 强势标的占比（%）</p>
+            <p className="text-xs text-gray-500 mb-2">MA55 上方 & RPS60≥87 强势占比 & 20日新高占比（%），短线赚钱效应维度</p>
             <div className="h-56">
               {breadth.length > 0 ? (
                 <EChart option={{
                   tooltip: { trigger: 'axis', valueFormatter: (v: any) => v + '%' },
-                  legend: { data: ['MA55上方', 'RPS≥87'], top: 0 },
+                  legend: { data: ['MA55上方', 'RPS60≥87', '20日新高占比'], top: 0 },
                   grid: { left: 40, right: 15, top: 25, bottom: 25 },
                   xAxis: { type: 'category', data: dates, axisLabel: { fontSize: 10 } },
                   yAxis: { type: 'value', max: 100 },
                   series: [
                     { name: 'MA55上方', type: 'line', data: breadth.map(b => b.aboveMa55Ratio), smooth: true, markLine: { silent: true, lineStyle: { type: 'dashed' }, data: [{ yAxis: 50 }, { yAxis: 30 }] } },
-                    { name: 'RPS≥87', type: 'line', data: breadth.map(b => b.strongRpsRatio), smooth: true },
+                    { name: 'RPS60≥87', type: 'line', data: breadth.map(b => b.strongRpsRatio), smooth: true },
+                    { name: '20日新高占比', type: 'line', data: breadth.map(b => {
+                        const s = (b.newHigh20 ?? 0) + (b.newLow20 ?? 0);
+                        return s > 0 ? Math.round((b.newHigh20! / s) * 1000) / 10 : null;
+                      }), smooth: true, itemStyle: { color: '#f59e0b' } },
                   ],
                 }} />
               ) : <Empty />}
@@ -144,8 +148,8 @@ export default function MarketPage() {
 
           {/* 3. 行业强度榜 */}
           <Card className="p-4">
-            <h3 className="font-medium mb-1">行业强度榜（RPS≥87 占比 %）</h3>
-            <p className="text-xs text-gray-500 mb-2">资金在哪个方向</p>
+            <h3 className="font-medium mb-1">行业强度榜（RPS60≥87 占比 %）</h3>
+            <p className="text-xs text-gray-500 mb-2">资金在哪个方向（行业中期强势占比）</p>
             <div className="h-[30rem]">
               {sectors.length > 0 ? (
                 <EChart option={{
@@ -264,9 +268,13 @@ export default function MarketPage() {
             {(limitUp?.items?.up?.length ?? 0) > 0 ? (
               <>
                 <p className="text-xs text-gray-500 mb-2">
-                  今日涨停 <b className="text-red-600">{limitUp?.count.up}</b> 只
-                  · 跌停 <b className="text-green-600">{limitUp?.count.down}</b> 只
+                  {limitUp?.source === 'ths'
+                    ? <>盘中实时</>
+                    : <>数据日期 <b>{limitUp?.tradeDate}</b>{limitUp?.fallback && <span className="text-orange-500">（当日未更新，展示最近交易日）</span>}</>}
+                  · 涨停 <b className="text-red-600">{limitUp?.count.up}</b> 只
+                  · 跌停 <b className="text-green-600">{limitUp?.count.down ?? '--'}</b> 只
                   {(limitUp?.count.broken ?? 0) > 0 && <span className="text-gray-400"> · 炸板 {limitUp?.count.broken}</span>}
+                  {limitUp?.source === 'ths' && <span className="text-gray-400">（同花顺实时）</span>}
                 </p>
                 <div className="space-y-1 max-h-64 overflow-y-auto">
                   {(limitUp?.items.up ?? []).map((s) => (
