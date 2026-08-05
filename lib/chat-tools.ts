@@ -59,7 +59,7 @@ export const CHAT_TOOLS = [
     type: "function",
     function: {
       name: "get_market_breadth",
-      description: "获取市场宽度（涨跌家数、涨跌停、MA55上方占比、RPS强势股占比），判断市场温度",
+      description: "获取市场宽度（涨跌家数、涨跌停、MA55上方占比、RPS60改善占比），判断市场温度",
       parameters: {
         type: "object",
         properties: { days: { type: "number", description: "近几日，默认3", default: 3 } },
@@ -215,10 +215,10 @@ export async function executeTool(name: string, args: any, origin: string): Prom
         const days = args.days || 3;
         const { prisma } = await import("@/lib/db");
         const rows: any[] = await prisma.$queryRawUnsafe(
-          `SELECT trade_date, advance, decline, limit_up, limit_down, above_ma55_ratio, strong_rps_ratio FROM market_breadth ORDER BY trade_date DESC LIMIT $1`, days
+          `SELECT trade_date, advance, decline, limit_up, limit_down, above_ma55_ratio, rps_improve_ratio FROM market_breadth ORDER BY trade_date DESC LIMIT $1`, days
         );
         if (!rows.length) return "无市场宽度数据";
-        return rows.map((r) => `${r.trade_date}: 涨${r.advance} 跌${r.decline} 涨停${r.limit_up} 跌停${r.limit_down} MA55上方${r.above_ma55_ratio}% RPS60≥87占比${r.strong_rps_ratio}%`).join('\n');
+        return rows.map((r) => `${r.trade_date}: 涨${r.advance} 跌${r.decline} 涨停${r.limit_up} 跌停${r.limit_down} MA55上方${r.above_ma55_ratio}% RPS60改善占比${r.rps_improve_ratio}%`).join('\n');
       }
       case "get_northbound_flow": {
         const days = args.days || 5;

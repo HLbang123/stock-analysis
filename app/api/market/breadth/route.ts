@@ -6,7 +6,7 @@ export async function GET(request: Request) {
     const rows: any[] = await prisma.$queryRawUnsafe(
       `SELECT trade_date, advance, decline, flat, limit_up, limit_down,
               new_high20, new_low20, above_ma55_count, above_ma55_ratio,
-              strong_rps_count, strong_rps_ratio
+              rps_improve_ratio
        FROM market_breadth ORDER BY trade_date DESC LIMIT $1`,
       days
     );
@@ -16,7 +16,7 @@ export async function GET(request: Request) {
       limitUp: r.limit_up, limitDown: r.limit_down,
       newHigh20: r.new_high20, newLow20: r.new_low20,
       aboveMa55Count: r.above_ma55_count, aboveMa55Ratio: r.above_ma55_ratio,
-      strongRpsCount: r.strong_rps_count, strongRpsRatio: r.strong_rps_ratio,
+      rpsImproveRatio: r.rps_improve_ratio,
     })).reverse(); // 老→新
     return Response.json({ count: items.length, items });
   } catch (e: any) {

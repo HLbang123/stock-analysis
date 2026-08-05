@@ -10,7 +10,7 @@ export interface BreadthItem {
   limitUp: number; limitDown: number;
   newHigh20: number; newLow20: number;
   aboveMa55Count: number; aboveMa55Ratio: number;
-  strongRpsCount: number; strongRpsRatio: number;
+  rpsImproveRatio: number | null;
 }
 export interface BreadthResp { count: number; items: BreadthItem[] }
 

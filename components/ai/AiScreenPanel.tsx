@@ -61,16 +61,15 @@ export function AiScreenPanel({ currentProfile }: { currentProfile: AiProfile })
   const [sector, setSector] = useState('');
   const [level, setLevel] = useState<'L1' | 'L2'>('L1');
   const [board, setBoard] = useState('all');
-  // 阶段指示器：LLM 重排为非流式（中转流式不吐内容），无法给实时百分比——按经验时长推进阶段提示 + 真实等待秒数
+  // 阶段进度：LLM 重排为非流式（中转流式不吐内容），无法按输出量算进度——照深度分析样式做
+  // 阶段 pill + 进度条，宽度按各阶段预估时长（候选池~3s/打分~5s/AI重排~60s）时间插值
   const [screenStage, setScreenStage] = useState<'idle' | 'candidates' | 'scoring' | 'llm'>('idle');
   const [elapsed, setElapsed] = useState(0);
   const stageTimers = useRef<ReturnType<typeof setTimeout>[]>([]);
 
-  const STAGE_LABELS: Record<string, string> = {
-    candidates: '拉取候选池…',
-    scoring: '因子打分…',
-    llm: 'AI 重排中（最耗时，约 10-60 秒）…',
-  };
+  const STAGE_DUR: Record<typeof screenStage, number> = { idle: 0, candidates: 3, scoring: 5, llm: 60 };
+  const STAGE_BASE: Record<typeof screenStage, number> = { idle: 0, candidates: 5, scoring: 35, llm: 60 };
+  const STAGE_SPAN: Record<typeof screenStage, number> = { idle: 0, candidates: 30, scoring: 25, llm: 37 };
 
   useEffect(() => {
     return () => { stageTimers.current.forEach(clearTimeout); };
@@ -138,6 +137,14 @@ export function AiScreenPanel({ currentProfile }: { currentProfile: AiProfile })
       setLoading(false);
     }
   };
+
+  // 当前阶段内已耗时（按定时器 3s/8s 切换点折算）→ 进度百分比（阶段基准区间 + 时长插值）
+  const stageElapsed =
+    screenStage === 'candidates' ? Math.min(elapsed, STAGE_DUR.candidates)
+    : screenStage === 'scoring' ? Math.min(Math.max(elapsed - 3, 0), STAGE_DUR.scoring)
+    : screenStage === 'llm' ? Math.max(elapsed - 8, 0)
+    : 0;
+  const progress = Math.min(97, STAGE_BASE[screenStage] + Math.min(stageElapsed / Math.max(STAGE_DUR[screenStage], 1), 1) * STAGE_SPAN[screenStage]);
 
   const loadRun = async (runId: string, s = sector, l = level, b = board) => {
     try {
@@ -217,12 +224,62 @@ export function AiScreenPanel({ currentProfile }: { currentProfile: AiProfile })
           {loading ? <Loader2 className="w-4 h-4 animate-spin" /> : <Sparkles className="w-4 h-4" />}
           {loading ? '筛选中…' : '运行筛选'}
         </button>
-        {/* 阶段指示器 */}
+        {/* 阶段进度：pill 指示器 + 平滑进度条（无流式输出，按阶段预估时长插值） */}
         {loading && (
-          <div className="mt-3 flex items-center gap-2 text-xs text-gray-500">
-            <span className="w-1.5 h-1.5 rounded-full bg-purple-500 animate-pulse" />
-            <span>{STAGE_LABELS[screenStage]}</span>
-            <span className="ml-auto tabular-nums text-gray-400">{elapsed}s</span>
+          <div className="mt-3">
+            <div className="flex items-center justify-center gap-2 text-xs">
+              <div className={cn(
+                "flex items-center gap-1 px-2.5 py-1.5 rounded-full transition",
+                screenStage === 'candidates' ? "bg-blue-100 text-blue-700" :
+                screenStage === 'scoring' || screenStage === 'llm' ? "bg-blue-50 text-blue-600" :
+                "bg-gray-100 text-gray-500"
+              )}>
+                <span className={cn("w-1.5 h-1.5 rounded-full",
+                  screenStage === 'candidates' ? "bg-blue-500 animate-pulse" :
+                  screenStage === 'scoring' || screenStage === 'llm' ? "bg-blue-500" : "bg-gray-300"
+                )} />
+                候选池
+              </div>
+              <span className="text-gray-300">→</span>
+              <div className={cn(
+                "flex items-center gap-1 px-2.5 py-1.5 rounded-full transition",
+                screenStage === 'scoring' ? "bg-amber-100 text-amber-700" :
+                screenStage === 'llm' ? "bg-amber-50 text-amber-600" :
+                "bg-gray-100 text-gray-500"
+              )}>
+                <span className={cn("w-1.5 h-1.5 rounded-full",
+                  screenStage === 'scoring' ? "bg-amber-500 animate-pulse" :
+                  screenStage === 'llm' ? "bg-amber-500" : "bg-gray-300"
+                )} />
+                因子打分
+              </div>
+              <span className="text-gray-300">→</span>
+              <div className={cn(
+                "flex items-center gap-1 px-2.5 py-1.5 rounded-full transition",
+                screenStage === 'llm' ? "bg-purple-100 text-purple-700" : "bg-gray-100 text-gray-500"
+              )}>
+                <span className={cn("w-1.5 h-1.5 rounded-full",
+                  screenStage === 'llm' ? "bg-purple-500 animate-pulse" : "bg-gray-300"
+                )} />
+                AI 重排
+              </div>
+            </div>
+
+            {/* 进度条：颜色随阶段（候选蓝/打分黄/AI紫），宽度随阶段内耗时平滑推进 */}
+            <div className="mt-2 flex items-center gap-2">
+              <div className="flex-1 h-1.5 bg-gray-100 dark:bg-gray-800 rounded-full overflow-hidden">
+                <div
+                  className={cn(
+                    "h-full rounded-full transition-[width] duration-500 ease-out",
+                    screenStage === 'candidates' ? "bg-blue-500" :
+                    screenStage === 'scoring' ? "bg-amber-500" : "bg-purple-500"
+                  )}
+                  style={{ width: `${progress}%` }}
+                />
+              </div>
+              <span className="text-xs text-gray-400 tabular-nums w-8 text-right">{Math.round(progress)}%</span>
+              <span className="text-xs text-gray-400 tabular-nums">{elapsed}s</span>
+            </div>
           </div>
         )}
       </Card>
@@ -434,7 +491,7 @@ function RunResult({
                       {k.latestChange != null ? `${k.latestChange >= 0 ? '+' : ''}${k.latestChange.toFixed(2)}%` : '--'}
                     </td>
                     <td className="px-3 py-2.5 text-xs">
-                      <div className="text-gray-700 dark:text-gray-300 break-words">{k.rankingReason || k.llmThesis || '--'}</div>
+                      <div className="text-gray-700 dark:text-gray-300 break-words">{k.rankingReason || k.llmThesis || (k.llmScore == null ? 'AI 未覆盖（规则分排序）' : '--')}</div>
                       <div className="flex gap-1 mt-1 flex-wrap">
                         {k.riskLevel !== 'low' && <span className={cn('px-1 py-0.5 rounded', k.riskLevel === 'high' ? 'bg-red-100 text-red-700' : 'bg-amber-100 text-amber-700')}>风险{k.riskLevel === 'high' ? '高' : '中'}</span>}
                         {k.llmTags.slice(0, 2).map((t) => (

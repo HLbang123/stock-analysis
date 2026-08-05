@@ -325,17 +325,14 @@ function applyRanking(picks: AiPick[], payload: RankPayload): { matched: number;
     k.llmInvalidators = safeList(item.invalidators);
   }
 
-  // 未被 LLM 命中的候选：llm_score 按规则分排序线性衰减兜底
-  const unmatched = picks.filter((k) => !seen.has(normalizeCode(k.tsCode))).sort((a, b) => b.screenScore - a.screenScore);
-  const n = Math.max(picks.length, 1);
-  unmatched.forEach((k, i) => {
-    if (k.llmScore == null) k.llmScore = 100 - i * (100 / n);
-  });
+  // 未被 LLM 命中的候选：llmScore 保持 null，final 用纯规则分（08-05：AI 未覆盖 ≠ AI 看空，
+  // 不编造兜底分——与池外候选同一约定"AI 没介入 = 按规则分"）
 
-  // 融合
+  // 融合：llmScore 有值才混合 AI 意见；未覆盖（或池外）的保持规则分
   for (const k of picks) {
-    const ls = k.llmScore ?? 0;
-    k.finalScore = k.screenScore * (1 - RANK_WEIGHT) + ls * RANK_WEIGHT;
+    k.finalScore = k.llmScore != null
+      ? k.screenScore * (1 - RANK_WEIGHT) + k.llmScore * RANK_WEIGHT
+      : k.screenScore;
   }
   return { matched, degradation };
 }

@@ -124,22 +124,22 @@ export default function MarketPage() {
           {/* 2. 大势温度 */}
           <Card className="p-4">
             <h3 className="font-medium mb-1">大势温度（多头占比）</h3>
-            <p className="text-xs text-gray-500 mb-2">MA55 上方 & RPS60≥87 强势占比 & 20日新高占比（%），短线赚钱效应维度</p>
+            <p className="text-xs text-gray-500 mb-2">MA55 上方 & RPS60 改善占比（5日前对比） & 20日新高占比（%），短线赚钱效应维度</p>
             <div className="h-56">
               {breadth.length > 0 ? (
                 <EChart option={{
                   tooltip: { trigger: 'axis', valueFormatter: (v: any) => v + '%' },
-                  legend: { data: ['MA55上方', 'RPS60≥87', '20日新高占比'], top: 0 },
+                  legend: { data: ['MA55上方', 'RPS60改善', '20日新高占比'], top: 0 },
                   grid: { left: 40, right: 15, top: 25, bottom: 25 },
                   xAxis: { type: 'category', data: dates, axisLabel: { fontSize: 10 } },
                   yAxis: { type: 'value', max: 100 },
                   series: [
-                    { name: 'MA55上方', type: 'line', data: breadth.map(b => b.aboveMa55Ratio), smooth: true, markLine: { silent: true, lineStyle: { type: 'dashed' }, data: [{ yAxis: 50 }, { yAxis: 30 }] } },
-                    { name: 'RPS60≥87', type: 'line', data: breadth.map(b => b.strongRpsRatio), smooth: true },
+                    { name: 'MA55上方', type: 'line', data: breadth.map(b => b.aboveMa55Ratio), smooth: true, showSymbol: false, markLine: { silent: true, lineStyle: { type: 'dashed' }, data: [{ yAxis: 50 }, { yAxis: 30 }] } },
+                    { name: 'RPS60改善', type: 'line', data: breadth.map(b => b.rpsImproveRatio), smooth: true, showSymbol: false },
                     { name: '20日新高占比', type: 'line', data: breadth.map(b => {
                         const s = (b.newHigh20 ?? 0) + (b.newLow20 ?? 0);
                         return s > 0 ? Math.round((b.newHigh20! / s) * 1000) / 10 : null;
-                      }), smooth: true, itemStyle: { color: '#f59e0b' } },
+                      }), smooth: true, showSymbol: false, itemStyle: { color: '#f59e0b' } },
                   ],
                 }} />
               ) : <Empty />}
@@ -274,7 +274,6 @@ export default function MarketPage() {
                   · 涨停 <b className="text-red-600">{limitUp?.count.up}</b> 只
                   · 跌停 <b className="text-green-600">{limitUp?.count.down ?? '--'}</b> 只
                   {(limitUp?.count.broken ?? 0) > 0 && <span className="text-gray-400"> · 炸板 {limitUp?.count.broken}</span>}
-                  {limitUp?.source === 'ths' && <span className="text-gray-400">（同花顺实时）</span>}
                 </p>
                 <div className="space-y-1 max-h-64 overflow-y-auto">
                   {(limitUp?.items.up ?? []).map((s) => (
@@ -287,7 +286,7 @@ export default function MarketPage() {
                       <span className="text-gray-400 shrink-0">{s.firstTime}</span>
                       {(s.openTimes ?? 0) > 0 && <span className="text-orange-500 shrink-0">炸{s.openTimes}次</span>}
                       {s.fdAmount != null && <span className="text-gray-400 shrink-0">封单{(s.fdAmount / 1e4).toFixed(0)}万</span>}
-                      <span className="text-gray-500 truncate">{s.upStat}</span>
+                      <span className="text-gray-500">{s.upStat}</span>
                     </div>
                   ))}
                 </div>

@@ -2,7 +2,8 @@
  * 市场宽度 + 占比 预计算（每日，由 run-daily 调用）
  *
  * 从 daily_bars 聚合：涨跌家数 / 涨跌停 / 20日新高新低 / MA55 上方占比
- * 从 rps_scores 聚合：RPS60≥87 强势股占比（2026-08-05 由 rps_250 改 rps_60，中期强度反应更快）
+ * 从 rps_scores 聚合：RPS60 改善占比（今日 rps_60 高于 5 交易日前 = 趋势改善广度）
+ *   —— 注：RPS≥87 占比已被证伪移除（RPS 是百分位排名，占比恒 ≈13% 无信息量），2026-08-05
  * 结果 upsert 到 market_breadth（一行/交易日）
  *
  * 运行：npx tsx scripts/compute-market-breadth.ts [--init]
@@ -26,8 +27,7 @@ interface BreadthRow {
   newLow20: number | null;
   aboveMa55Count: number | null;
   aboveMa55Ratio: number | null;
-  strongRpsCount: number | null;
-  strongRpsRatio: number | null;
+  rpsImproveRatio: number | null;
 }
 
 async function computeForDate(tradeDate: string): Promise<BreadthRow> {
@@ -85,17 +85,29 @@ async function computeForDate(tradeDate: string): Promise<BreadthRow> {
   const total = Number(w.total ?? 0);
   const aboveMa55 = Number(w.above_ma55 ?? 0);
 
-  // 3. RPS 强势股占比（rps_scores 当日有数据才有；用 rps_60 中期强度，与 AI 筛选硬筛口径一致）
-  const rps: any[] = await prisma.$queryRawUnsafe(
-    `SELECT
-       COUNT(*)::int AS total,
-       COUNT(*) FILTER (WHERE rps_60 >= 87)::int AS strong
-     FROM rps_scores WHERE "calcDate" = $1`,
+  // 3. RPS60 改善占比（今日 rps_60 > 5 交易日前 = 趋势改善广度，测动量转强/转弱的广度）
+  let rpsImproveRatio: number | null = null;
+  const prev5: any[] = await prisma.$queryRawUnsafe(
+    `SELECT "tradeDate" FROM daily_bars
+     WHERE "tradeDate" < $1
+     ORDER BY "tradeDate" DESC LIMIT 1 OFFSET 4`,
     tradeDate
   );
-  const r = rps[0] ?? {};
-  const rpsTotal = Number(r.total ?? 0);
-  const strong = Number(r.strong ?? 0);
+  if (prev5.length > 0) {
+    const prevDate = prev5[0].tradeDate;
+    const imp: any[] = await prisma.$queryRawUnsafe(
+      `SELECT
+         COUNT(*)::int AS total,
+         COUNT(*) FILTER (WHERE a.rps_60 > b.rps_60)::int AS improving
+       FROM rps_scores a
+       JOIN rps_scores b ON a."tsCode" = b."tsCode" AND b."calcDate" = $2
+       WHERE a."calcDate" = $1 AND a.rps_60 IS NOT NULL AND b.rps_60 IS NOT NULL`,
+      tradeDate, prevDate
+    );
+    const i = imp[0] ?? {};
+    const impTotal = Number(i.total ?? 0);
+    rpsImproveRatio = impTotal > 0 ? Number(((Number(i.improving ?? 0) / impTotal) * 100).toFixed(2)) : null;
+  }
 
   return {
     advance: c.advance ?? null,
@@ -107,8 +119,7 @@ async function computeForDate(tradeDate: string): Promise<BreadthRow> {
     newLow20: w.new_low20 ?? null,
     aboveMa55Count: aboveMa55,
     aboveMa55Ratio: total > 0 ? Number(((aboveMa55 / total) * 100).toFixed(2)) : null,
-    strongRpsCount: rpsTotal > 0 ? strong : null,
-    strongRpsRatio: rpsTotal > 0 ? Number(((strong / rpsTotal) * 100).toFixed(2)) : null,
+    rpsImproveRatio,
   };
 }
 
@@ -117,17 +128,17 @@ async function upsert(tradeDate: string, b: BreadthRow) {
     `INSERT INTO market_breadth
        (trade_date, advance, decline, flat, limit_up, limit_down,
         new_high20, new_low20, above_ma55_count, above_ma55_ratio,
-        strong_rps_count, strong_rps_ratio)
-     VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12)
+        rps_improve_ratio)
+     VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11)
      ON CONFLICT (trade_date) DO UPDATE SET
        advance=EXCLUDED.advance, decline=EXCLUDED.decline, flat=EXCLUDED.flat,
        limit_up=EXCLUDED.limit_up, limit_down=EXCLUDED.limit_down,
        new_high20=EXCLUDED.new_high20, new_low20=EXCLUDED.new_low20,
        above_ma55_count=EXCLUDED.above_ma55_count, above_ma55_ratio=EXCLUDED.above_ma55_ratio,
-       strong_rps_count=EXCLUDED.strong_rps_count, strong_rps_ratio=EXCLUDED.strong_rps_ratio`,
+       rps_improve_ratio=EXCLUDED.rps_improve_ratio`,
     tradeDate, b.advance, b.decline, b.flat, b.limitUp, b.limitDown,
     b.newHigh20, b.newLow20, b.aboveMa55Count, b.aboveMa55Ratio,
-    b.strongRpsCount, b.strongRpsRatio
+    b.rpsImproveRatio
   );
 }
 

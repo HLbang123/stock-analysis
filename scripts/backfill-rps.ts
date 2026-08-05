@@ -2,13 +2,15 @@
  * RPS 历史回补 — 为每个历史交易日计算 RPS(20/60/120/250) 并写入 rps_scores
  *
  * 背景：compute-rps 只算最新交易日（calcDate = latestBar.tradeDate），rps_scores
- *       没有历史数据 → market_breadth.strong_rps_ratio（RPS≥87 占比）在历史日期
- *       为 NULL，大盘页「大势温度」的 RPS≥87 线只剩最近一小截。
+ *       没有历史数据 → market_breadth.rps_improve_ratio（RPS60 改善占比）等历史指标
+ *       无法计算，大盘页「大势温度」的 RPS 线只有最近一小截。
+ *       （注：RPS≥87 占比已证伪移除——RPS 是百分位排名，占比恒 ≈13% 无信息量，
+ *        改为 RPS60 改善占比 = 今日 rps_60 高于 5 交易日前，测趋势改善广度）
  *
  * 运行：npx tsx scripts/backfill-rps.ts [--days=80]
  *   --days 回补最近 N 个交易日（默认 80，覆盖 market_breadth 的 60 日窗口 + 余量）
  *
- * 回补完成后必须重跑（让 strong_rps_ratio 补上历史）：
+ * 回补完成后必须重跑（让 RPS60 改善占比补上历史）：
  *   npx tsx scripts/compute-market-breadth.ts --init
  */
 

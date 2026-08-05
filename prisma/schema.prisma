@@ -75,8 +75,7 @@ model MarketBreadth {
   newLow20       Int?    @map("new_low20")
   aboveMa55Count Int?    @map("above_ma55_count")
   aboveMa55Ratio Float?  @map("above_ma55_ratio")
-  strongRpsCount Int?    @map("strong_rps_count")
-  strongRpsRatio Float?  @map("strong_rps_ratio")
+  rpsImproveRatio Float? @map("rps_improve_ratio")
 
   @@map("market_breadth")
 }
