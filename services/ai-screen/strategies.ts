@@ -12,7 +12,7 @@ export const STRATEGY_PRESETS: StrategyPreset[] = [
   {
     id: 'balanced',
     name: '均衡筛选',
-    description: '趋势向上+基本面不差+入场不追高+波动可控+流动性够,各项达标的中庸优选',
+    description: '趋势、业绩、风险都兼顾\n各项均衡，最稳妥的默认选择',
     category: 'balanced',
     hardFilters: {
       excludeSt: true,
@@ -55,7 +55,7 @@ export const STRATEGY_PRESETS: StrategyPreset[] = [
   {
     id: 'momentum',
     name: '动量突破',
-    description: '强趋势+量能配合+板块主升,追强加速段,允许较高波动',
+    description: '只追强势上涨的票\n量价配合好，波动大也能接受',
     category: 'momentum',
     hardFilters: {
       excludeSt: true,
@@ -100,7 +100,7 @@ export const STRATEGY_PRESETS: StrategyPreset[] = [
   {
     id: 'quality',
     name: '高质量',
-    description: '高 ROE/毛利率+趋势不差+回踩入场+波动可控,找优质回踩标的',
+    description: '优先选公司质地好的票\n等回调到好位置再上车',
     category: 'quality',
     hardFilters: {
       excludeSt: true,
@@ -145,7 +145,7 @@ export const STRATEGY_PRESETS: StrategyPreset[] = [
   {
     id: 'defensive',
     name: '低波防守',
-    description: '低波动/低回撤优先+基本面稳+流动性好,防守型观察仓',
+    description: '涨跌波动小、回撤小，很稳\n适合求稳的防守仓位',
     category: 'defensive',
     hardFilters: {
       excludeSt: true,

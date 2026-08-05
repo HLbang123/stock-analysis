@@ -7,7 +7,7 @@ import { getRealtimeQuote, getKLineSina, parseStockCode, searchStocks } from '@/
 import { isETF, validateStockCode } from '@/lib/identify';
 import { computeMaCross, type MaCrossState } from '@/lib/stock-helpers';
 import { RealtimeQuote } from '@/types';
-import { formatPrice, formatChange, formatVolume, cn } from '@/lib/utils';
+import { formatPrice, formatChange, cn } from '@/lib/utils';
 import { Plus, Search, Trash2, TrendingUp, ScanLine, Upload, Camera, X, Check, FolderInput } from 'lucide-react';
 import { toast } from 'sonner';
 import { Button } from '@/components/ui/button';
@@ -27,6 +27,8 @@ export default function WatchlistPage() {
   const [stockQuotes, setStockQuotes] = useState<Map<string, RealtimeQuote>>(new Map());
   // MA5/13 交叉状态徽标（金叉/死叉/即将金叉），随行情刷新一起算
   const [crossMap, setCrossMap] = useState<Map<string, MaCrossState>>(new Map());
+  // RPS60 徽标（DB rps_scores，随行情刷新一起批量拉）
+  const [rpsMap, setRpsMap] = useState<Record<string, { rps60: number | null; calcDate: string }>>({});
   const debounceRef = useRef<NodeJS.Timeout | null>(null);
   const ocrFileRef = useRef<HTMLInputElement>(null);
 
@@ -113,6 +115,19 @@ export default function WatchlistPage() {
     const quotes = new Map<string, RealtimeQuote>();
     for (const r of results) if (r) quotes.set(r[0], r[1]);
     setStockQuotes(quotes);
+
+    // 批量拉 RPS60（DB 数据，一次请求全自选）
+    if (watchlist.length > 0) {
+      try {
+        const res = await fetch(`/api/rps/batch?codes=${encodeURIComponent(watchlist.map(s => s.code).join(','))}`);
+        if (res.ok) {
+          const data = await res.json();
+          setRpsMap(data.rps ?? {});
+        }
+      } catch { /* RPS 失败不影响行情展示 */ }
+    } else {
+      setRpsMap({});
+    }
 
     const crossResults = await Promise.all(
       watchlist.map(async stock => {
@@ -210,59 +225,27 @@ export default function WatchlistPage() {
             value={searchQuery}
             onChange={(e) => setSearchQuery(e.target.value)}
             placeholder="输入标的代码或名称搜索"
-            className="pl-10 pr-4 py-3"
+            className="pl-10 pr-12 py-3"
           />
-          {isSearching && (
+          {isSearching ? (
             <span className="absolute right-3 top-1/2 -translate-y-1/2 text-gray-400 text-sm">搜索中...</span>
+          ) : (
+            <button
+              onClick={() => setShowOcr(!showOcr)}
+              title="识别持仓截图"
+              className={cn(
+                'absolute right-2 top-1/2 -translate-y-1/2 p-1.5 rounded-lg transition',
+                showOcr
+                  ? 'text-[var(--color-accent)] bg-[var(--color-accent-soft)]'
+                  : 'text-gray-400 hover:text-[var(--color-accent)] hover:bg-gray-100 dark:hover:bg-gray-800'
+              )}
+            >
+              <ScanLine className="w-5 h-5" />
+            </button>
           )}
         </div>
 
-        {/* 搜索结果 */}
-        {(searchResults.length > 0 || isSearching || hasSearched) && (
-          <div className="mt-3 border-t border-gray-100 dark:border-gray-800 pt-3 space-y-1">
-            {isSearching ? (
-              <div className="p-3 text-center text-sm text-gray-400">正在搜索...</div>
-            ) : hasSearched && searchResults.length === 0 ? (
-              <div className="p-3 text-center text-sm text-gray-400">未找到相关标的</div>
-            ) : (
-              searchResults.map((quote) => (
-                <div key={quote.code} className="flex items-center justify-between p-2 hover:bg-gray-50 dark:hover:bg-gray-800 rounded-lg transition">
-                  <div>
-                    <span className="font-medium text-sm">{quote.name}</span>
-                    <span className="text-xs text-gray-500 ml-2">{quote.code}</span>
-                  </div>
-                  {isInWatchlist(quote.code) ? (
-                    <span className="p-1.5 text-[var(--color-down)]" title="已在自选中">
-                      <Check className="w-4 h-4" />
-                    </span>
-                  ) : (
-                    <button
-                      onClick={() => handleAddStock(quote)}
-                      className="p-1.5 bg-[var(--color-accent-soft)] text-[var(--color-accent)] rounded-[var(--radius-md)] hover:opacity-80 transition"
-                    >
-                      <Plus className="w-4 h-4" />
-                    </button>
-                  )}
-                </div>
-              ))
-            )}
-          </div>
-        )}
-      </Card>
-
-      {/* 持仓识别 */}
-      <Card className="mb-6">
-        <button
-          onClick={() => setShowOcr(!showOcr)}
-          className="w-full flex items-center justify-between"
-        >
-          <span className="text-sm font-medium text-gray-700 dark:text-gray-300 flex items-center gap-2">
-            <ScanLine className="w-4 h-4" />
-            识别持仓截图
-          </span>
-          <span className="text-xs text-gray-400">{showOcr ? '收起' : '展开'}</span>
-        </button>
-
+        {/* 持仓识别（搜索框内图标展开） */}
         {showOcr && (
           <div className="mt-3 pt-3 border-t border-gray-100 dark:border-gray-800">
             <input
@@ -352,6 +335,38 @@ export default function WatchlistPage() {
             )}
           </div>
         )}
+
+        {/* 搜索结果 */}
+        {(searchResults.length > 0 || isSearching || hasSearched) && (
+          <div className="mt-3 border-t border-gray-100 dark:border-gray-800 pt-3 space-y-1">
+            {isSearching ? (
+              <div className="p-3 text-center text-sm text-gray-400">正在搜索...</div>
+            ) : hasSearched && searchResults.length === 0 ? (
+              <div className="p-3 text-center text-sm text-gray-400">未找到相关标的</div>
+            ) : (
+              searchResults.map((quote) => (
+                <div key={quote.code} className="flex items-center justify-between p-2 hover:bg-gray-50 dark:hover:bg-gray-800 rounded-lg transition">
+                  <div>
+                    <span className="font-medium text-sm">{quote.name}</span>
+                    <span className="text-xs text-gray-500 ml-2">{quote.code}</span>
+                  </div>
+                  {isInWatchlist(quote.code) ? (
+                    <span className="p-1.5 text-[var(--color-down)]" title="已在自选中">
+                      <Check className="w-4 h-4" />
+                    </span>
+                  ) : (
+                    <button
+                      onClick={() => handleAddStock(quote)}
+                      className="p-1.5 bg-[var(--color-accent-soft)] text-[var(--color-accent)] rounded-[var(--radius-md)] hover:opacity-80 transition"
+                    >
+                      <Plus className="w-4 h-4" />
+                    </button>
+                  )}
+                </div>
+              ))
+            )}
+          </div>
+        )}
       </Card>
 
       {/* 分组栏 */}
@@ -387,10 +402,11 @@ export default function WatchlistPage() {
             </button>
           </div>
 
-          <div className="space-y-3">
+          <div className="space-y-2">
             {visibleWatchlist.map((stock) => {
               const quote = stockQuotes.get(stock.code);
               const cross = crossMap.get(stock.code);
+              const rps60 = rpsMap[stock.code]?.rps60 ?? null;
               return (
                 <Card
                   key={stock.code}
@@ -401,6 +417,19 @@ export default function WatchlistPage() {
                     <div>
                       <h3 className="font-semibold">
                         {stock.name}
+                        {rps60 != null && (rps60 >= 87 || rps60 <= 20) && (
+                          <span
+                            title={`RPS60 相对强度 ${Math.round(rps60)}（全市场百分位，${rpsMap[stock.code]?.calcDate ?? ''} 计算）`}
+                            className={cn(
+                              'inline-block align-middle ml-1.5 px-1.5 py-0.5 text-[10px] font-medium rounded',
+                              rps60 >= 87
+                                ? 'bg-[var(--color-up-soft)] text-[var(--color-up)]'
+                                : 'bg-[var(--color-down-soft)] text-[var(--color-down)]'
+                            )}
+                          >
+                            RPS {Math.round(rps60)}
+                          </span>
+                        )}
                         {isETF(stock.code) && (
                           <span className="inline-block align-middle ml-1.5 px-1.5 py-0.5 text-[10px] font-bold bg-[var(--color-warning-soft)] text-[var(--color-warning)] rounded">ETF</span>
                         )}
@@ -459,8 +488,7 @@ export default function WatchlistPage() {
                   </div>
 
                   {quote && (
-                    <>
-                    <div className="mt-3 pt-3 border-t border-gray-100 dark:border-gray-800 flex items-center justify-between text-sm">
+                    <div className="mt-2 flex items-center text-sm">
                       {/* 持仓占比输入 */}
                       <div className="flex items-center gap-1.5" onClick={(e) => e.stopPropagation()}>
                         <span className="text-gray-400 text-xs">持仓占比</span>
@@ -479,12 +507,7 @@ export default function WatchlistPage() {
                         />
                         <span className="text-gray-400 text-xs">%</span>
                       </div>
-                      <span className="text-[var(--color-accent)]">查看详情 →</span>
                     </div>
-                    <div className="flex items-center justify-between text-sm">
-                      <span className="text-gray-500">成交量: {formatVolume(quote.volume)}</span>
-                    </div>
-                    </>
                   )}
                 </Card>
               );

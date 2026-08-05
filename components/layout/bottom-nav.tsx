@@ -19,7 +19,7 @@ export function BottomNav() {
 
   return (
     <nav className="fixed bottom-0 left-0 right-0 z-50 border-t border-gray-200 bg-white dark:border-gray-800 dark:bg-gray-950 md:hidden">
-      <div className="flex h-16 items-center justify-around">
+      <div className="grid h-16 grid-cols-5">
         {tabs.map((tab) => {
           const Icon = tab.icon;
           // 与 sidebar 一致的激活判断：首页精确匹配，其余前缀匹配（子路径也高亮）
@@ -31,7 +31,7 @@ export function BottomNav() {
               key={tab.href}
               href={tab.href}
               className={cn(
-                "flex flex-col items-center gap-1 px-2 py-2 text-xs font-medium transition-colors",
+                "flex flex-col items-center justify-center gap-1 px-2 py-2 text-xs font-medium transition-colors",
                 isActive
                   ? "text-[var(--color-accent)]"
                   : "text-gray-500 dark:text-gray-400"
