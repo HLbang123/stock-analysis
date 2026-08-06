@@ -31,6 +31,10 @@ const LLM_TOPK_CAP = 20;
 export interface RankResult {
   picks: AiPick[];
   llmRanked: boolean;
+  /** topK 内全部候选都有 LLM 分（整体完成，可置 llmReranked=true 共享缓存） */
+  completed: boolean;
+  /** 本次请求匹配到的候选数（失败但 >0 时表示部分结果已保留） */
+  matched: number;
   marketView: string;
   selectionLogic: string;
   portfolioRisk: string;
@@ -338,7 +342,11 @@ function applyRanking(picks: AiPick[], payload: RankPayload): { matched: number;
 }
 
 /**
- * LLM 重排主入口。失败/覆盖率不足 → 回退到 screen_score 排序（ranked=false）。
+ * LLM 重排主入口（增量续打版）。
+ * - 只对 topK 内"缺分"的候选发起请求；已打分候选作为标尺参照附在 prompt（防标尺漂移）
+ * - 无论成败，本次匹配到的分数都会回填到 picks（部分保留：失败不丢分）
+ * - llmRanked=true 表示本次请求覆盖达标；completed=true 表示 topK 全部有分（可共享缓存）
+ * - 失败路径保留历史已有分（llmScore 不清空），供后续用户增量续打
  */
 export async function rankCandidates(
   picks: AiPick[],
@@ -352,18 +360,49 @@ export async function rankCandidates(
 
   // 送 LLM 的候选数 = min(maxOutput, 20)。与 maxOutput 对齐（08-05 审计后从 15 恢复）：池尾不再有"展示但无 LLM 介入"的断层
   const topK = Math.min(LLM_TOPK_CAP, Math.max(preset.maxOutput, 10), picks.length);
-  const candidates = [...picks].sort((a, b) => b.screenScore - a.screenScore).slice(0, topK);
+  const sortedByScreen = [...picks].sort((a, b) => b.screenScore - a.screenScore);
+  const candidates = sortedByScreen.slice(0, topK);
   const candidateMap = new Map(candidates.map((k) => [normalizeCode(k.tsCode), k]));
   // 池外候选先按规则分排好，作为 LLM 命中后的尾部
   const rest = picks.filter((k) => !candidateMap.has(normalizeCode(k.tsCode))).sort((a, b) => b.screenScore - a.screenScore);
 
-  let prompt = buildRankingPrompt(candidates, preset);
+  // 增量续打：已打分候选作标尺参照，本次只送缺分的
+  const alreadyScored = candidates
+    .filter((k) => k.llmScore != null)
+    .map((k) => ({ code: normalizeCode(k.tsCode), name: k.name, llmScore: k.llmScore! }));
+  const toScore = candidates.filter((k) => k.llmScore == null);
+
+  // 全部已有分（防御性，历史数据异常时）→ 无需 LLM，直接完成排序
+  if (toScore.length === 0) {
+    for (const k of candidates) {
+      k.finalScore = k.llmScore != null
+        ? k.screenScore * (1 - RANK_WEIGHT) + k.llmScore * RANK_WEIGHT
+        : k.screenScore;
+    }
+    for (const k of rest) k.finalScore = k.screenScore;
+    const merged = [...candidates, ...rest].sort((a, b) => b.finalScore - a.finalScore);
+    merged.forEach((k, i) => (k.rank = i + 1));
+    return {
+      picks: merged,
+      llmRanked: true,
+      completed: true,
+      matched: toScore.length,
+      marketView: '',
+      selectionLogic: '',
+      portfolioRisk: '',
+      coverage: 1,
+      degradation: [...degradation, 'all_scored'],
+    };
+  }
+
+  let prompt = buildRankingPrompt(toScore, preset, '', alreadyScored);
   let payload: RankPayload | null = null;
   let coverage = 0;
+  let matched = 0;
 
   for (let attempt = 0; attempt <= MAX_RETRIES; attempt++) {
     if (attempt > 0) {
-      prompt += `\n\n上一次输出不是合法 JSON 或 ranked 数组缺少候选。本次必须只返回严格 JSON：ranked 数组长度必须等于 ${candidates.length}，每个 code 必须与下方候选列表完全一致，不得遗漏任何一个，不得编造候选池外的代码。`;
+      prompt += `\n\n上一次输出不是合法 JSON 或 ranked 数组缺少候选。本次必须只返回严格 JSON：ranked 数组长度必须等于 ${toScore.length}，每个 code 必须与下方候选列表完全一致，不得遗漏任何一个，不得编造候选池外的代码。`;
     }
     let result: LlmTextResult;
     try {
@@ -371,7 +410,7 @@ export async function rankCandidates(
     } catch (e: unknown) {
       const msg = e instanceof Error ? e.message : String(e);
       degradation.push(`llm_call_failed:${msg}`);
-      return fallback(picks, preset, degradation, `LLM 调用失败：${msg}`);
+      return partialResult(candidates, rest, degradation, `LLM 调用失败：${msg}`);
     }
     // content 优先；个别中转把答案放思考通道时，reasoning 作最后兜底（但那是散文，多半解析失败，靠 max_tokens 余量治本）
     const raw = result.content.trim() || result.reasoning.trim();
@@ -385,24 +424,31 @@ export async function rankCandidates(
     payload = parseJsonLenient(raw);
     if (!payload) {
       // 记录原始输出前 300 字，下次再失败时能定位 LLM 实际吐了什么
-      console.error(`[ai-screen/ranker] json_parse_failed attempt${attempt + 1}/${MAX_RETRIES + 1} candidates=${candidates.length}:`, JSON.stringify(raw.slice(0, 300)));
+      console.error(`[ai-screen/ranker] json_parse_failed attempt${attempt + 1}/${MAX_RETRIES + 1} candidates=${toScore.length}:`, JSON.stringify(raw.slice(0, 300)));
       degradation.push('json_parse_failed');
       continue;
     }
-    const matched = payload.ranked?.filter((r) => candidateMap.has(normalizeCode(r.code ?? ''))).length ?? 0;
-    coverage = matched / Math.max(candidates.length, 1);
+    // 总是回填已匹配部分（部分保留核心：失败也不丢分）
+    const { matched: m, degradation: dg } = applyRanking(toScore, payload);
+    degradation.push(...dg);
+    matched = m;
+    coverage = matched / Math.max(toScore.length, 1);
     if (coverage >= MIN_COVERAGE) break;
     degradation.push(`low_coverage:${coverage.toFixed(2)}@attempt${attempt + 1}`);
   }
 
   if (!payload || coverage < MIN_COVERAGE) {
+    // 失败但已保留部分匹配（或历史分）→ 按当前分数排序返回，llmRanked=false，后续可续打
     degradation.push(`coverage_below_threshold:${coverage.toFixed(2)}`);
-    return fallback(picks, preset, degradation, 'LLM 覆盖率不足，回退规则分排序');
+    return partialResult(candidates, rest, degradation, 'LLM 覆盖率不足');
   }
 
-  // 回填 LLM 输出到 candidates
-  const { degradation: dg } = applyRanking(candidates, payload);
-  degradation.push(...dg);
+  // 本次成功：融合已含全部有分候选（历史分 + 本次新分），全局字段取 payload
+  for (const k of candidates) {
+    k.finalScore = k.llmScore != null
+      ? k.screenScore * (1 - RANK_WEIGHT) + k.llmScore * RANK_WEIGHT
+      : k.screenScore;
+  }
   // 池外候选：final = screen_score（llm 未介入）
   for (const k of rest) k.finalScore = k.screenScore;
 
@@ -412,6 +458,8 @@ export async function rankCandidates(
   return {
     picks: merged,
     llmRanked: true,
+    completed: toScore.every((k) => k.llmScore != null),
+    matched,
     marketView: safeText(payload!.market_view, 260),
     selectionLogic: safeText(payload!.selection_logic, 360),
     portfolioRisk: safeText(payload!.portfolio_risk, 360),
@@ -420,21 +468,47 @@ export async function rankCandidates(
   };
 }
 
-function fallback(picks: AiPick[], _preset: StrategyPreset, degradation: string[], reason: string): RankResult {
-  const sorted = [...picks].sort((a, b) => b.screenScore - a.screenScore);
-  for (const k of sorted) {
-    k.finalScore = k.screenScore;
-    k.llmScore = null;
+/**
+ * 失败/部分结果路径：保留所有已有 LLM 分（历史分 + 本次回填），按当前分数排序返回。
+ * 不清空 llmScore——部分保留是增量续打的基石。
+ */
+function partialResult(candidates: AiPick[], rest: AiPick[], degradation: string[], reason: string): RankResult {
+  for (const k of candidates) {
+    k.finalScore = k.llmScore != null
+      ? k.screenScore * (1 - RANK_WEIGHT) + k.llmScore * RANK_WEIGHT
+      : k.screenScore;
     k.rank = 0;
   }
-  sorted.forEach((k, i) => (k.rank = i + 1));
-  degradation.push(`fallback:${reason}`);
-  return { picks: sorted, llmRanked: false, marketView: '', selectionLogic: '', portfolioRisk: '', coverage: null, degradation };
+  for (const k of rest) k.finalScore = k.screenScore;
+  const merged = [...candidates, ...rest].sort((a, b) => b.finalScore - a.finalScore);
+  merged.forEach((k, i) => (k.rank = i + 1));
+  degradation.push(`partial_kept:${reason}`);
+  return {
+    picks: merged,
+    llmRanked: false,
+    completed: false,
+    matched: 0,
+    marketView: '',
+    selectionLogic: '',
+    portfolioRisk: '',
+    coverage: null,
+    degradation,
+  };
 }
 
 function emptyFallback(picks: AiPick[], _preset: StrategyPreset, degradation: string[]): RankResult {
   const sorted = [...picks].sort((a, b) => b.screenScore - a.screenScore);
   for (const k of sorted) k.finalScore = k.screenScore;
   sorted.forEach((k, i) => (k.rank = i + 1));
-  return { picks: sorted, llmRanked: false, marketView: '', selectionLogic: '', portfolioRisk: '', coverage: null, degradation };
+  return {
+    picks: sorted,
+    llmRanked: false,
+    completed: false,
+    matched: 0,
+    marketView: '',
+    selectionLogic: '',
+    portfolioRisk: '',
+    coverage: null,
+    degradation,
+  };
 }

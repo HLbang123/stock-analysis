@@ -80,10 +80,10 @@ function pickToCreate(k: AiPick) {
   };
 }
 
-/** 补救成功后,AiPick → 需更新的字段(仅入选 top-N) */
+/** 补救成功后,AiPick → 需更新的字段(仅入选 top-N 才 selected=true；尾部候选也写库保留 llm 字段) */
 function pickToUpdate(k: AiPick) {
   return {
-    selected: true,
+    selected: k.selected,
     rank: k.rank,
     llmScore: k.llmScore,
     llmConfidence: k.llmConfidence,
@@ -109,6 +109,25 @@ function pickToUpdate(k: AiPick) {
 
 /** 展示用:只取入选行(rank!=null,兼容历史数据——旧 run 全员有 rank,新 run 仅 top-N 有 rank) */
 const displayPicks = (rows: any[]) => rows.filter((p: any) => p.rank != null).map(dbPickToAiPick);
+
+// ── 跨用户补救熔断：连续失败后 6h 内不再补救（DeepSeek 故障日防无限烧 token）──
+const rescueCircuit = new Map<string, { failures: number; blockedAt: number }>();
+const RESCUE_CIRCUIT_MAX = 3;
+const RESCUE_CIRCUIT_TTL_MS = 6 * 3600 * 1000;
+const circuitKey = (strategyId: string, barDate: string) => `${strategyId}_${barDate}`;
+function isRescueCircuited(key: string): boolean {
+  const c = rescueCircuit.get(key);
+  return !!c && c.failures >= RESCUE_CIRCUIT_MAX && Date.now() - c.blockedAt < RESCUE_CIRCUIT_TTL_MS;
+}
+function recordRescueFailure(key: string): void {
+  const c = rescueCircuit.get(key) ?? { failures: 0, blockedAt: Date.now() };
+  c.failures += 1;
+  c.blockedAt = Date.now();
+  rescueCircuit.set(key, c);
+}
+function clearRescueCircuit(key: string): void {
+  rescueCircuit.delete(key);
+}
 
 /** DB Run 行 → AiScreenRun（前端用） */
 function serializeRun(r: any): AiScreenRun {
@@ -166,14 +185,15 @@ export async function POST(request: NextRequest) {
       if (!preset.llmRerank || existing.llmReranked) {
         return NextResponse.json({ run: serializeRun(existing), picks: displayPicks(existing.picks) });
       }
-      // 降级结果 + 调用方是 DeepSeek + 过了 10 分钟冷却 → 用调用方 token 补救一次
-      // 冷却窗口防止偶发超时后每个用户都干等 1-4 分钟生成 + 烧 token；CAS 抢占防并发补救写库竞争
+      // 降级结果 + 调用方是 DeepSeek + 过了 10 分钟冷却 + 未熔断 → 用调用方 token 续打一次（增量续打）
+      // 冷却窗口防止偶发超时后每个用户都干等 1-4 分钟生成 + 烧 token；CAS 抢占防并发写库竞争
       const RESCUE_COOLDOWN_MS = 10 * 60 * 1000;
       const nowIso = new Date().toISOString();
       const tooSoon =
         !!existing.llmRescuedAt &&
         Date.now() - new Date(existing.llmRescuedAt).getTime() < RESCUE_COOLDOWN_MS;
-      if (cfg && isPreferredModel(cfg.model) && !tooSoon) {
+      const cKey = circuitKey(preset.id, barDate);
+      if (cfg && isPreferredModel(cfg.model) && !tooSoon && !isRescueCircuited(cKey)) {
         // CAS 抢占：只有 llmRescuedAt 仍是旧值/null 的请求能继续，并发请求 count===0 直接返回
         const claimed = await prisma.aiScreenRun.updateMany({
           where: { id: existing.id, llmRescuedAt: existing.llmRescuedAt },
@@ -182,21 +202,30 @@ export async function POST(request: NextRequest) {
         if (claimed.count === 1) {
           const idByCode = new Map(existing.picks.map((p) => [p.tsCode, p.id]));
           const dbPicks = existing.picks.map(dbPickToAiPick);
-          const outcome = await rescueRun(dbPicks, preset, cfg);
-          if (outcome) {
-            // 补救成功：更新 Run + 清空全部候选的 selected/rank + 重标 top-N
+          const outcome = await rescueRun(dbPicks, preset, cfg).catch((e: any) => {
+            console.error('[api/ai-screen rescue]', e);
+            recordRescueFailure(cKey);
+            return null;
+          });
+          if (outcome && outcome.matched > 0) {
+            // 有产出（部分保留或完成）→ 全量写库：清 selected/rank + 更新全部候选 + run 字段
+            // completed=true → llmReranked=true（共享缓存开启）；部分保留 → 保持 false，后续续打
             await prisma.$transaction([
               prisma.aiScreenRun.update({
                 where: { id: existing.id },
                 data: {
-                  llmReranked: true,
-                  llmRescued: true,
+                  llmReranked: outcome.completed,
+                  llmRescued: outcome.completed,
                   llmModel: cfg.model,
                   llmMarketView: outcome.marketView || null,
                   llmSelectionLogic: outcome.selectionLogic || null,
                   llmPortfolioRisk: outcome.portfolioRisk || null,
                   llmCoverage: outcome.coverage,
-                  degradation: [...(existing.degradation ?? []), ...outcome.degradation, 'rescued_by_later_token'],
+                  degradation: [
+                    ...(existing.degradation ?? []),
+                    ...outcome.degradation,
+                    outcome.completed ? 'rescued_by_later_token' : 'partial_kept_by_later_token',
+                  ],
                 },
               }),
               prisma.aiScreenPick.updateMany({
@@ -208,19 +237,26 @@ export async function POST(request: NextRequest) {
                 .filter((u): u is { id: string; data: any } => !!u.id)
                 .map((u) => prisma.aiScreenPick.update({ where: { id: u.id }, data: u.data })),
             ]);
+            if (outcome.completed) {
+              clearRescueCircuit(cKey);
+            } else {
+              // 部分保留也算一次失败计数（烧了 token 但未完成），防 DeepSeek 故障日持续烧
+              recordRescueFailure(cKey);
+            }
             const refreshed = await prisma.aiScreenRun.findUnique({
               where: { id: existing.id },
               include: { picks: { orderBy: { rank: 'asc' } } },
             });
             return NextResponse.json({ run: serializeRun(refreshed), picks: displayPicks(refreshed!.picks) });
           }
-          // 补救仍失败：llmRescuedAt 已在 CAS 时置为 nowIso，10 分钟冷却已开启，返回降级结果（不再永久熔断，10 分钟后可再试）
+          // 无产出（LLM 全空/调用失败）：熔断计数 + llmRescuedAt 已在 CAS 时置为 nowIso（10 分钟冷却已开），返回现有降级结果
+          recordRescueFailure(cKey);
           return NextResponse.json({ run: serializeRun({ ...existing, llmRescuedAt: nowIso }), picks: displayPicks(existing.picks) });
         }
         // 没抢到（并发被别的请求抢先补救）：返回当前结果
         return NextResponse.json({ run: serializeRun(existing), picks: displayPicks(existing.picks) });
       }
-      // 冷却中 / 无 token / 非 DeepSeek → 返回现有降级结果
+      // 冷却中 / 熔断中 / 无 token / 非 DeepSeek → 返回现有结果（部分保留的分已生效，llmScore 非空即展示）
       return NextResponse.json({ run: serializeRun(existing), picks: displayPicks(existing.picks) });
     }
 

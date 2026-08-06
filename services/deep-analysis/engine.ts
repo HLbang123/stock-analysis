@@ -306,6 +306,7 @@ async function fetchCalibrationNote(stockCode: string): Promise<string> {
  */
 async function runDeepAnalysisDirect(opts: RunDeepOptions, completedMap: Record<string, string>): Promise<RunDeepOutcome> {
   const { ctx, cfg, userView, userViewReason, signal, onProgress } = opts;
+  console.info(`[Deep AI Direct] 直连分析开始 model=${cfg.model} baseUrl=${cfg.baseUrl}`);
 
   let analystText = '', analystReasoning = '';
   let debateText = '', debateReasoning = '', debateError = '';
@@ -364,13 +365,13 @@ async function runDeepAnalysisDirect(opts: RunDeepOptions, completedMap: Record<
       const isTimeout = /超时|timeout/i.test(e.message || '');
       if (isTimeout) throw new Error(`[${stageKey}] 阶段超时（120s），模型未在限定时间内响应`);
       const isRetryableNetwork = e.name === 'TypeError' || /fetch|network/i.test(e.message || '');
-      if (attempt < 3 && isRetryableNetwork) {
+      if (attempt < 2 && isRetryableNetwork) {
         const backoff = 2000 * attempt;
         console.warn(`[Deep AI Direct] ${stageKey} 网络错误，${backoff}ms 后重试 ${attempt}/2`);
         await new Promise(r => setTimeout(r, backoff));
         return runStage(stageKey, systemPrompt, userPrompt, maxTokens, attempt + 1);
       }
-      if (e instanceof LlmHttpError && attempt < 3 && (e.status === 429 || e.status >= 500)) {
+      if (e instanceof LlmHttpError && attempt < 2 && (e.status === 429 || e.status >= 500)) {
         const backoff = 2000 * attempt;
         console.warn(`[Deep AI Direct] ${stageKey} HTTP ${e.status}，${backoff}ms 后重试 ${attempt}/2`);
         await new Promise(r => setTimeout(r, backoff));
@@ -382,8 +383,8 @@ async function runDeepAnalysisDirect(opts: RunDeepOptions, completedMap: Record<
     }
 
     if (!fullOutput.trim()) {
-      if (attempt < 3) {
-        console.warn(`[Deep AI Direct] ${stageKey} 输出为空，重试 ${attempt}/2`);
+      console.warn(`[Deep AI Direct] ${stageKey} 输出为空（流式响应无 content 增量），重试 ${attempt}/2`);
+      if (attempt < 2) {
         return runStage(stageKey, systemPrompt, userPrompt, maxTokens, attempt + 1);
       }
       throw new Error(`[${stageKey}] 输出为空`);
@@ -422,6 +423,7 @@ async function runDeepAnalysisDirect(opts: RunDeepOptions, completedMap: Record<
       emit();
     }
     completedMap[stageKey] = text;
+    saveDeepResume(ctx.stockCode, completedMap);
     return text;
   };
 
@@ -504,17 +506,118 @@ async function runDeepAnalysisDirect(opts: RunDeepOptions, completedMap: Record<
 
 /**
  * 深度分析入口：优先浏览器直连（省服务器出站流量 + 少一跳香港）。
- * 直连不可达（CORS / TypeError / 超时）→ 降级服务器中转，已完成阶段断点续传重跑。
+ * 直连不可达（CORS / TypeError / 超时 / 空输出）→ 降级服务器中转，已完成阶段断点续传重跑。
+ * 空输出也算降级：浏览器环境可能吞流（代理/中间件），服务器侧通常正常。
+ */
+// ── 直连熔断：连续失败降级并冷却，防止重试风暴烧 token / 触发限流 ──────
+const DIRECT_CIRCUIT_KEY = 'ai-direct-circuit';
+const CIRCUIT_MAX_FAILURES = 3;
+const CIRCUIT_TTL_MS = 24 * 3600 * 1000;
+
+function readCircuit(): { count: number; at: number } {
+  try {
+    const raw = localStorage.getItem(DIRECT_CIRCUIT_KEY);
+    if (!raw) return { count: 0, at: 0 };
+    const parsed = JSON.parse(raw);
+    return { count: Number(parsed.count) || 0, at: Number(parsed.at) || 0 };
+  } catch {
+    return { count: 0, at: 0 };
+  }
+}
+
+function isDirectCircuited(): boolean {
+  const c = readCircuit();
+  return c.count >= CIRCUIT_MAX_FAILURES && Date.now() - c.at < CIRCUIT_TTL_MS;
+}
+
+function recordDirectFailure(): void {
+  try {
+    const c = readCircuit();
+    localStorage.setItem(DIRECT_CIRCUIT_KEY, JSON.stringify({ count: c.count + 1, at: Date.now() }));
+  } catch { /* 隐私模式等忽略 */ }
+}
+
+function resetDirectCircuit(): void {
+  try {
+    localStorage.setItem(DIRECT_CIRCUIT_KEY, JSON.stringify({ count: 0, at: 0 }));
+  } catch { /* 忽略 */ }
+}
+
+// ── 断点持久化：每完成一个阶段写 localStorage，中断/刷新/锁屏后可恢复续跑 ──
+const RESUME_KEY = 'deep-analysis-resume';
+const RESUME_TTL_MS = 7 * 24 * 3600 * 1000; // 断点 7 天后过期
+
+export interface DeepResume {
+  stockCode: string;
+  completed: Record<string, string>;
+  savedAt: number;
+}
+
+export function loadDeepResume(): DeepResume | null {
+  try {
+    const raw = localStorage.getItem(RESUME_KEY);
+    if (!raw) return null;
+    const parsed = JSON.parse(raw) as DeepResume;
+    if (!parsed.completed || typeof parsed.stockCode !== 'string' || Object.keys(parsed.completed).length === 0) return null;
+    if (Date.now() - (parsed.savedAt || 0) > RESUME_TTL_MS) {
+      localStorage.removeItem(RESUME_KEY);
+      return null;
+    }
+    return parsed;
+  } catch {
+    return null;
+  }
+}
+
+export function clearDeepResume(): void {
+  try { localStorage.removeItem(RESUME_KEY); } catch { /* 忽略 */ }
+}
+
+/** 保存断点（同标的合并：保留旧键，新阶段覆盖） */
+function saveDeepResume(stockCode: string, completed: Record<string, string>): void {
+  try {
+    const prev = loadDeepResume();
+    const merged = {
+      ...(prev && prev.stockCode === stockCode ? prev.completed : {}),
+      ...completed,
+    };
+    localStorage.setItem(RESUME_KEY, JSON.stringify({ stockCode, completed: merged, savedAt: Date.now() }));
+  } catch { /* localStorage 满/隐私模式忽略 */ }
+}
+
+/**
+ * 深度分析入口：优先浏览器直连（省服务器出站流量 + 少一跳香港）。
+ * - 直连不可达（CORS / TypeError / 超时 / 空输出）→ 计数并降级服务器中转，已完成阶段断点续传
+ * - 连续失败熔断：24h 内不再尝试直连，直接走服务器（手机移动网络等环境直连不稳时自动让位）
+ * - 直连成功自动清零熔断计数
+ * - 断点持久化：每完成一个阶段写 localStorage，任何失败/中断后刷新页面仍可"继续生成"续跑
  */
 export async function runDeepAnalysisStream(opts: RunDeepOptions): Promise<RunDeepOutcome> {
+  if (isDirectCircuited()) {
+    console.warn('[Deep AI Direct] 熔断冷却中（连续失败过多），直接走服务器中转');
+    return runDeepAnalysisViaServer(opts);
+  }
   const completedRef: Record<string, string> = { ...(opts.resumeCompleted || {}) };
   try {
-    return await runDeepAnalysisDirect(opts, completedRef);
+    const outcome = await runDeepAnalysisDirect(opts, completedRef);
+    resetDirectCircuit();
+    clearDeepResume(); // 完整分析成功，断点作废
+    return outcome;
   } catch (e: any) {
-    if (isDirectConnectionError(e)) {
-      console.warn('[Deep AI Direct] 直连失败，降级服务器中转:', e.message);
-      return runDeepAnalysisViaServer({ ...opts, resumeCompleted: completedRef });
+    if (e.name === 'AbortError') throw e; // 用户主动取消，不存断点
+    if (isDirectConnectionError(e) || /输出为空|阶段超时/.test(e.message || '')) {
+      recordDirectFailure();
+      console.warn('[Deep AI Direct] 直连异常，降级服务器中转:', e.message);
+      try {
+        const outcome = await runDeepAnalysisViaServer({ ...opts, resumeCompleted: completedRef });
+        clearDeepResume(); // 完整分析成功，断点作废
+        return outcome;
+      } catch (e2: any) {
+        if (e2.name !== 'AbortError') saveDeepResume(opts.ctx.stockCode, completedRef);
+        throw e2;
+      }
     }
+    saveDeepResume(opts.ctx.stockCode, completedRef);
     throw e;
   }
 }
@@ -609,7 +712,11 @@ async function runDeepAnalysisViaServer(opts: RunDeepOptions): Promise<RunDeepOu
           if (msg.error) { verdictError = msg.error; emit(); }
         }
       } catch (e: any) {
-        if (e.message && !e.message.includes('JSON')) throw e;
+        if (e.message && !e.message.includes('JSON')) {
+          // 服务器路径中途失败：保存断点（含直连回放 + 服务器新完成阶段），刷新后可续跑
+          saveDeepResume(ctx.stockCode, completedMap);
+          throw e;
+        }
       }
     }
   }

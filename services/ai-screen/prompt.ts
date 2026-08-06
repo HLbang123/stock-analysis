@@ -32,8 +32,23 @@ function candidateIdentity(k: AiPick): string {
   return `- ${k.tsCode} ${k.name} 规则总分:${fmt(k.screenScore, 1)} 行业:${k.industry || '--'}`;
 }
 
-/** 构建完整 prompt，超预算时按 identity→截断 优先级裁剪 */
-export function buildRankingPrompt(picks: AiPick[], preset: StrategyPreset, context = ''): string {
+export interface AlreadyScoredRef {
+  code: string;
+  name: string;
+  llmScore: number;
+}
+
+/**
+ * 构建完整 prompt，超预算时按 identity→截断 优先级裁剪。
+ * alreadyScored 为增量续打模式：附已打分候选的分数分布，让 LLM 校准本次打分标尺
+ * （历史请求与本次请求的分数保持同一尺度，避免标尺漂移扭曲最终排序）。
+ */
+export function buildRankingPrompt(
+  picks: AiPick[],
+  preset: StrategyPreset,
+  context = '',
+  alreadyScored: AlreadyScoredRef[] = [],
+): string {
   const hints = preset.rankingHints.trim() || '无额外排序提示。';
   const ctxText = context.trim() || '无额外上下文。只能基于候选池结构化数据和策略偏好判断。';
 
@@ -50,7 +65,13 @@ ${hints}
 ## 市场/情报上下文
 ${ctxText}
 
-## 候选列表（策略：${preset.name}）`;
+${alreadyScored.length > 0
+  ? `## 已有 AI 打分（标尺参照）
+以下候选此前已由 AI 打分（分数 0-100，含义与你要给的分完全一致）。请严格保持相同的评分标准，给本次候选打分时与之可比：
+${alreadyScored.map((s) => `- ${s.code} ${s.name} ${s.llmScore.toFixed(0)}分`).join('\n')}
+
+`
+  : ''}## 候选列表（策略：${preset.name}）`;
 
   const footer = `\n## 输出要求
 只返回 JSON，不要 Markdown，不要解释 JSON 以外的文本。

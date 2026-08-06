@@ -139,7 +139,8 @@ export async function runScreen(preset: StrategyPreset, llmCfg?: LlmConfig): Pro
     llmModel = llmCfg.model;
     const r = await rankCandidates(picks, preset, llmCfg);
     picks = r.picks;
-    llmRanked = r.llmRanked;
+    // 增量续打语义：topK 全部有 LLM 分才算"重排完成"（可共享缓存）；部分有分保留但不封版，后续补救续打
+    llmRanked = r.completed;
     marketView = r.marketView;
     selectionLogic = r.selectionLogic;
     portfolioRisk = r.portfolioRisk;
@@ -249,6 +250,12 @@ export function dbPickToAiPick(r: any): AiPick {
 
 export interface RescueOutcome {
   picks: AiPick[];
+  /** 本次请求 LLM 覆盖是否达标 */
+  llmRanked: boolean;
+  /** topK 全部有分（整体完成） */
+  completed: boolean;
+  /** 本次匹配候选数（失败但 >0 = 部分结果已保留） */
+  matched: number;
   marketView: string;
   selectionLogic: string;
   portfolioRisk: string;
@@ -257,8 +264,9 @@ export interface RescueOutcome {
 }
 
 /**
- * 补救重排：对已保存的降级 Run（LLM 失败回退纯规则），用后续用户的 token 重跑 LLM。
- * 成功返回 RescueOutcome；仍失败返回 null（调用方据此进入 10 分钟冷却窗口，不再永久熔断）。
+ * 补救重排（增量续打）：对已保存的降级 Run，用后续用户的 token 继续打"缺分"候选的分。
+ * - 部分保留：本次失败（llmRanked=false）也返回已匹配的分数（匹配 >0），由调用方写库
+ * - 全部有分（completed=true）才算补救完成，调用方据此置 llmReranked=true 开启共享缓存
  */
 export async function rescueRun(
   dbPicks: AiPick[],
@@ -267,18 +275,23 @@ export async function rescueRun(
 ): Promise<RescueOutcome | null> {
   if (dbPicks.length === 0) return null;
   const r = await rankCandidates(dbPicks, preset, cfg);
-  if (!r.llmRanked) return null;
   let picks = r.picks;
   picks = applyRiskOverlay(picks, preset);
   picks = applyPortfolioOverlay(picks, preset);
-  picks = picks.slice(0, preset.maxOutput);
+  // 全部候选参与排序写库（尾部候选的 llm 字段也要保留），只标前 N 为选中
   for (const k of picks) {
-    k.selected = true;
+    k.selected = false;
     k.rank = 0;
   }
-  picks.forEach((k, i) => (k.rank = i + 1));
+  picks.slice(0, preset.maxOutput).forEach((k, i) => {
+    k.selected = true;
+    k.rank = i + 1;
+  });
   return {
     picks,
+    llmRanked: r.llmRanked,
+    completed: r.completed,
+    matched: r.matched,
     marketView: r.marketView,
     selectionLogic: r.selectionLogic,
     portfolioRisk: r.portfolioRisk,

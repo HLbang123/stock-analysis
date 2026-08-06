@@ -36,6 +36,7 @@ import { TermTooltip } from '@/components/ui/TermTooltip';
 import { generateId } from '@/components/ai/shared';
 import {
   prepareDeepContext, runDeepAnalysisStream, buildDeepSummary, buildDeepSuggestion, saveDeepEval,
+  loadDeepResume, clearDeepResume,
   type DeepResult, type DeepStage,
 } from '@/services/deep-analysis/engine';
 
@@ -84,6 +85,15 @@ export default function AiPage() {
   const deepAbortRef = useRef<AbortController | null>(null);
   // 断点续传：记录已完成阶段的输出文本 { analyst, tech, risk, ... }
   const [deepCompleted, setDeepCompleted] = useState<Record<string, string>>({});
+  // 断点恢复：页面加载时若有未完成的深度分析（7 天内），提示可继续生成
+  useEffect(() => {
+    const resume = loadDeepResume();
+    if (resume && resume.stockCode === selectedCode && Object.keys(resume.completed).length > 0) {
+      setDeepCompleted(resume.completed);
+      setError('检测到上次未完成的分析，可点击右侧按钮从断点继续');
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
   // 用户看法（加入辩论，降低权重，防AI迎合）
   const [userView, setUserView] = useState<string>(aiStore.lastSession?.userView ?? '');
   const [userViewReason, setUserViewReason] = useState<string>(aiStore.lastSession?.userViewReason ?? '');
@@ -303,6 +313,7 @@ export default function AiPage() {
 
   // 深度分析（三阶段）。resumeCompleted 传入时为断点续传，跳过已完成阶段
   const runDeepAnalysis = async (resumeCompleted?: Record<string, string>) => {
+    if (!resumeCompleted) clearDeepResume(); // 全新分析，清掉历史断点（续传不清）
     if (!selectedCode || !currentProfile) {
       toast.error('请先选择标的');
       return;
@@ -382,7 +393,9 @@ export default function AiPage() {
         const msg = err.message || '深度分析失败';
         setError(msg);
         toast.error(msg);
-        setDeepCompleted({});
+        // 失败后从持久化恢复断点（engine 已保存），"继续生成"按钮据此显示
+        const resume = loadDeepResume();
+        setDeepCompleted(resume && resume.stockCode === selectedCode ? resume.completed : {});
       }
     } finally {
       setIsDeepAnalyzing(false);
