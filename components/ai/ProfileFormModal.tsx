@@ -6,6 +6,9 @@ import { cn } from '@/lib/utils';
 import { X, Loader2 } from 'lucide-react';
 import { toast } from 'sonner';
 import { PRESET_PLATFORMS, generateId } from './shared';
+import { normalizeBaseUrl, buildLLMHeaders } from '@/lib/llm/shared';
+import { isDirectConnectionError } from '@/services/llm/browser-client';
+import { formatAiError } from '@/lib/ai-error';
 
 interface Props {
   editingProfile: AiProfile | null;
@@ -27,19 +30,35 @@ export function ProfileFormModal({ editingProfile, onClose }: Props) {
     if (!formBaseUrl) return;
     setIsFetchingModels(true);
     try {
-      const res = await fetch('/api/ai/models', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ baseUrl: formBaseUrl, apiKey: formApiKey }),
-      });
-      const data = await res.json();
-      if (data.models) {
-        setFormModels(data.models);
-      } else {
-        toast.error(data.error || '获取失败');
+      let models: string[] | null = null;
+      try {
+        // 浏览器直连 provider（不再绕服务器中转）
+        const res = await fetch(`${normalizeBaseUrl(formBaseUrl)}/models`, {
+          headers: buildLLMHeaders(formApiKey),
+        });
+        if (!res.ok) {
+          throw new Error(formatAiError(res.status, await res.text().catch(() => '')));
+        }
+        const data = await res.json();
+        models = (data.data || []).map((m: any) => m.id).filter(Boolean).sort();
+      } catch (directErr: any) {
+        // 连接层失败（CORS/TypeError）→ 降级服务器中转
+        if (!isDirectConnectionError(directErr)) throw directErr;
+        const res = await fetch('/api/ai/models', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ baseUrl: formBaseUrl, apiKey: formApiKey }),
+        });
+        const data = await res.json();
+        if (data.models) {
+          models = data.models;
+        } else {
+          throw new Error(data.error || '获取失败');
+        }
       }
-    } catch {
-      toast.error('获取模型列表失败');
+      if (models) setFormModels(models);
+    } catch (e: any) {
+      toast.error(e?.message || '获取模型列表失败');
     } finally {
       setIsFetchingModels(false);
     }
@@ -50,13 +69,40 @@ export function ProfileFormModal({ editingProfile, onClose }: Props) {
     setIsTesting(true);
     setTestResult(null);
     try {
-      const res = await fetch('/api/ai/test', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ baseUrl: formBaseUrl, apiKey: formApiKey, model: formModel }),
-      });
-      const data = await res.json();
-      setTestResult(data.success ? `✅ ${data.message}` : `❌ ${data.message}`);
+      try {
+        // 浏览器直连 provider（不再绕服务器中转）
+        const ctrl = new AbortController();
+        const timer = setTimeout(() => ctrl.abort(), 30000);
+        const start = Date.now();
+        let latency = 0;
+        try {
+          const res = await fetch(`${normalizeBaseUrl(formBaseUrl)}/chat/completions`, {
+            method: 'POST',
+            headers: buildLLMHeaders(formApiKey),
+            body: JSON.stringify({ model: formModel, messages: [{ role: 'user', content: 'hi' }], max_tokens: 5 }),
+            signal: ctrl.signal,
+          });
+          latency = Date.now() - start;
+          if (!res.ok) {
+            const text = await res.text().catch(() => '');
+            setTestResult(`❌ ${formatAiError(res.status, text)}`);
+          } else {
+            setTestResult(`✅ 连接成功 (${latency}ms)`);
+          }
+        } finally {
+          clearTimeout(timer);
+        }
+      } catch (directErr: any) {
+        // 连接层失败（CORS/TypeError/超时）→ 降级服务器中转
+        if (!isDirectConnectionError(directErr)) throw directErr;
+        const res = await fetch('/api/ai/test', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ baseUrl: formBaseUrl, apiKey: formApiKey, model: formModel }),
+        });
+        const data = await res.json();
+        setTestResult(data.success ? `✅ ${data.message}` : `❌ ${data.message}`);
+      }
     } catch {
       setTestResult('❌ 连接失败');
     } finally {

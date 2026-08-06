@@ -10,6 +10,8 @@ import { Send, Trash, X, Plus } from 'lucide-react';
 import { toast } from 'sonner';
 import { ReasoningPanel } from '@/components/ai/ReasoningPanel';
 import { Input, Select } from '@/components/ui/input';
+import { streamChatDirectChat } from '@/services/chat/browser-chat';
+import { isDirectConnectionError } from '@/services/llm/browser-client';
 import type { TScorePanelResult } from '@/components/ai/TScorePanel';
 import type { DeepStructured } from '@/services/deep-analysis/engine';
 
@@ -19,6 +21,62 @@ interface Props {
   watchlist: Stock[];
   result: TScorePanelResult | null;
   deepStructured: DeepStructured | null;
+}
+
+/** 降级路径：服务器中转 SSE（直连不可达时的兜底，原实现保留） */
+async function chatViaServer(
+  messages: { role: string; content: string }[],
+  stockContext: string,
+  cfg: { baseUrl: string; apiKey?: string; model: string },
+  signal: AbortSignal,
+  onDelta: (d: { content?: string; reasoning?: string }) => void,
+): Promise<void> {
+  const res = await fetch('/api/ai/chat', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({
+      messages,
+      stockContext: stockContext || undefined,
+      baseUrl: cfg.baseUrl,
+      apiKey: cfg.apiKey,
+      model: cfg.model,
+    }),
+    signal,
+  });
+
+  if (!res.ok) {
+    const errData = await res.json().catch(() => ({ error: `HTTP ${res.status}` }));
+    throw new Error(errData.error || '请求失败');
+  }
+
+  const reader = res.body!.getReader();
+  const decoder = new TextDecoder();
+  let sseBuffer = '';
+
+  while (true) {
+    const { done, value } = await reader.read();
+    if (done) break;
+
+    sseBuffer += decoder.decode(value, { stream: true });
+    const lines = sseBuffer.split('\n');
+    sseBuffer = lines.pop() || '';
+
+    for (const line of lines) {
+      const trimmed = line.trim();
+      if (!trimmed || !trimmed.startsWith('data:')) continue;
+      const data = trimmed.slice(5).trim();
+      if (data === '[DONE]') continue;
+
+      try {
+        const chunk = JSON.parse(data);
+        if (typeof chunk === 'string') {
+          onDelta({ content: chunk });
+        } else if (chunk && chunk.reasoning) {
+          onDelta({ reasoning: chunk.reasoning });
+        }
+      } catch {}
+    }
+  }
 }
 
 export function AiChat({ currentProfile, selectedCode, watchlist, result, deepStructured }: Props) {
@@ -162,62 +220,57 @@ export function AiChat({ currentProfile, selectedCode, watchlist, result, deepSt
 
       const recentMessages = chatMessages.slice(-20).map(m => ({ role: m.role, content: m.content }));
       const allMessages = [...recentMessages, { role: 'user', content: msg }];
+      const cfg = { baseUrl: currentProfile.baseUrl, apiKey: currentProfile.apiKey, model: currentProfile.model };
 
-      const res = await fetch('/api/ai/chat', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          messages: allMessages,
-          stockContext: stockContext || undefined,
-          baseUrl: currentProfile.baseUrl,
-          apiKey: currentProfile.apiKey,
-          model: currentProfile.model,
-        }),
-        signal: abortController.signal,
-      });
-
-      if (!res.ok) {
-        const errData = await res.json().catch(() => ({ error: `HTTP ${res.status}` }));
-        throw new Error(errData.error || '请求失败');
-      }
-
-      const reader = res.body!.getReader();
-      const decoder = new TextDecoder();
-      let sseBuffer = '';
+      // 直连 LLM：3 轮工具调用 + 流式输出（浏览器直发 provider，不走服务器中转）
       let aiContent = '';
       let aiReasoning = '';
+      const appendDelta = (d: { content?: string; reasoning?: string }) => {
+        if (d.content) {
+          aiContent += d.content;
+          streamBufRef.current = { content: aiContent, reasoning: aiReasoning };
+          setStreamingMsg({ content: aiContent, reasoning: aiReasoning || undefined });
+        }
+        if (d.reasoning) {
+          aiReasoning += d.reasoning;
+          streamBufRef.current = { content: aiContent, reasoning: aiReasoning };
+          setStreamingMsg({ content: aiContent, reasoning: aiReasoning });
+        }
+      };
 
-      while (true) {
-        const { done, value } = await reader.read();
-        if (done) break;
-
-        sseBuffer += decoder.decode(value, { stream: true });
-        const lines = sseBuffer.split('\n');
-        sseBuffer = lines.pop() || '';
-
-        for (const line of lines) {
-          const trimmed = line.trim();
-          if (!trimmed || !trimmed.startsWith('data:')) continue;
-          const data = trimmed.slice(5).trim();
-          if (data === '[DONE]') continue;
-
+      try {
+        await streamChatDirectChat({
+          messages: allMessages,
+          stockContext: stockContext || undefined,
+          cfg,
+          signal: abortController.signal,
+          onDelta: appendDelta,
+        });
+        flushStreamingMsg();
+      } catch (err) {
+        const e = err as Error;
+        // 连接层失败（CORS/TypeError/超时）→ 降级服务器中转
+        if (isDirectConnectionError(e)) {
+          console.warn('[AiChat] 直连失败，降级服务器中转:', e.message);
           try {
-            const chunk = JSON.parse(data);
-            if (typeof chunk === 'string') {
-              aiContent += chunk;
-              streamBufRef.current = { content: aiContent, reasoning: aiReasoning };
-              setStreamingMsg({ content: aiContent, reasoning: aiReasoning || undefined });
-            } else if (chunk && chunk.reasoning) {
-              aiReasoning += chunk.reasoning;
-              streamBufRef.current = { content: aiContent, reasoning: aiReasoning };
-              setStreamingMsg({ content: aiContent, reasoning: aiReasoning });
+            await chatViaServer(allMessages, stockContext, cfg, abortController.signal, appendDelta);
+            flushStreamingMsg();
+          } catch (err2) {
+            const e2 = err2 as Error;
+            flushStreamingMsg();
+            if (e2.name !== 'AbortError') {
+              setChatMessages(prev => [...prev, { role: 'assistant', content: `❌ ${e2.message}` }]);
             }
-          } catch {}
+          }
+        } else {
+          flushStreamingMsg();
+          if (e.name !== 'AbortError') {
+            setChatMessages(prev => [...prev, { role: 'assistant', content: `❌ ${e.message}` }]);
+          }
         }
       }
-
-      flushStreamingMsg();
     } catch (err) {
+      // 前置阶段（股票上下文拼装）失败等未处理错误
       const e = err as Error;
       flushStreamingMsg();
       if (e.name !== 'AbortError') {

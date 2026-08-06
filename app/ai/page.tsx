@@ -9,6 +9,7 @@ import { ALERT_RULES, checkAllRules } from '@/services/alertRules';
 import { buildTscoreSystemPrompt, buildTscoreUserPrompt } from '@/services/t-score/prompt';
 import { buildIntradayContext } from '@/services/t-score/intraday';
 import { computeTScore } from '@/services/t-score/scorer';
+import { finetuneTScore } from '@/services/t-score/browser-finetune';
 import { calculateIndicators } from '@/lib/indicators';
 import { isETF } from '@/lib/identify';
 import { cn } from '@/lib/utils';
@@ -243,11 +244,12 @@ export default function AiPage() {
         positionPercent: stock.positionPercent, marketNote: `[市场状态] ${marketNote}`,
       });
 
-      const data = await postJSON('/api/ai/t-score', {
+      const data = await finetuneTScore({
         systemPrompt, userPrompt,
-        baseUrl: currentProfile.baseUrl, apiKey: currentProfile.apiKey, model: currentProfile.model,
+        cfg: { baseUrl: currentProfile.baseUrl, apiKey: currentProfile.apiKey, model: currentProfile.model },
         buyScore: t.buyScore, sellScore: t.sellScore,
-      }, { signal: abortController.signal });
+        signal: abortController.signal,
+      });
 
       const final: TScoreResult = {
         degraded: false, degradation: t.degradation,

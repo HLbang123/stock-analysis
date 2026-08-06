@@ -13,6 +13,9 @@ import {
   buildAnalystSystemPrompt, buildAnalystUserPrompt,
   buildVerdictSystemPrompt, buildVerdictUserPrompt,
   buildReflectionContext, buildDebateDataPrompt,
+  buildTechR1SystemPrompt, buildRiskR1SystemPrompt, buildXinJieR1DebatePrompt,
+  buildTechR2RebuttalPrompt, buildRiskR2RebuttalPrompt, buildXinJieR2RebuttalPrompt,
+  buildManagerPrompt,
 } from '@/services/deepAnalysisPrompt';
 import { computeKeyLevels, formatLevelsForPrompt } from '@/services/deep-analysis/levels';
 import { calculateIndicators, formatIndicatorsForPrompt } from '@/lib/indicators';
@@ -20,7 +23,8 @@ import { buildUpdatedKLines } from '@/lib/stock-helpers';
 import { checkAllRules, ALERT_RULES } from '@/services/alertRules';
 import { getIndustry, getRealtimeQuoteCached, getKLineSinaCached, getChipData, fetchMarketStatusNote } from '@/services/stockApi';
 import { fetchTushareData, formatTushareForPrompt } from '@/services/tushareData';
-import { getJSONOr, postJSON } from '@/services/api';
+import { getJSONOr, postJSON, getJSON } from '@/services/api';
+import { streamChatDirect, LlmHttpError, isDirectConnectionError } from '@/services/llm/browser-client';
 import type { StockRpsResp, BreadthResp, FuyaoFundResp } from '@/types/api';
 import { isETF } from '@/lib/identify';
 
@@ -252,7 +256,7 @@ export async function prepareDeepContext(
   return { stockCode: selectedCode, stage1, stage2, stage3, tradeLevels, marketRegime, tushareIssues, entryDate, quote };
 }
 
-// ── SSE 流式调用 + 解析 ─────────────────────────────────────────────
+// ── 深度分析执行：浏览器直连（主路径）+ 服务器中转（降级）──────────────
 export interface RunDeepOptions {
   ctx: DeepContext;
   cfg: LlmConfig;
@@ -268,7 +272,255 @@ export interface RunDeepOutcome {
   completedMap: Record<string, string>;
 }
 
+/** Jaccard 相似度（bigram 分词）— 辩论轮间卡死检测（与服务器版同） */
+function jaccardSimilarity(a: string, b: string): number {
+  const bigrams = (s: string) => {
+    const set = new Set<string>();
+    for (let i = 0; i < s.length - 1; i++) set.add(s.slice(i, i + 2));
+    return set;
+  };
+  const sa = bigrams(a);
+  const sb = bigrams(b);
+  if (sa.size === 0 && sb.size === 0) return 1;
+  let intersection = 0;
+  for (const gram of sa) if (sb.has(gram)) intersection++;
+  return intersection / (sa.size + sb.size - intersection);
+}
+
+/** 裁决历史校准注记：从 /api/ai/calibration 拉（数据在服务器 DB，失败返回空串不阻断） */
+async function fetchCalibrationNote(stockCode: string): Promise<string> {
+  try {
+    const res = await getJSON<{ note?: string }>(`/api/ai/calibration?stockCode=${encodeURIComponent(stockCode)}`);
+    return res.note || '';
+  } catch {
+    return '';
+  }
+}
+
+/**
+ * 浏览器直连编排 — 镜像服务器 /api/ai/deep-analyze 的三阶段逻辑：
+ * 情报收集 → 三人两轮辩论 → 最终裁决，9 次串行 LLM 调用全部从浏览器直发。
+ * - 阶段内重试/卡死检测/超时 fail-fast 与服务器版一致
+ * - 连接层失败（CORS/TypeError）原样冒泡，由 runDeepAnalysisStream 降级到服务器中转
+ * - completedMap 实时写外部传入的 ref，降级时可断点续传
+ */
+async function runDeepAnalysisDirect(opts: RunDeepOptions, completedMap: Record<string, string>): Promise<RunDeepOutcome> {
+  const { ctx, cfg, userView, userViewReason, signal, onProgress } = opts;
+
+  let analystText = '', analystReasoning = '';
+  let debateText = '', debateReasoning = '', debateError = '';
+  let verdictText = '', verdictReasoning = '', verdictError = '';
+  let stage: DeepStage = 'idle';
+
+  const emit = (structured?: DeepStructured | null) => {
+    onProgress({
+      stage,
+      result: {
+        analyst: analystText,
+        analystReasoning: analystReasoning || undefined,
+        debate: debateText,
+        debateReasoning: debateReasoning || undefined,
+        debateError: debateError || undefined,
+        verdict: verdictText,
+        verdictReasoning: verdictReasoning || undefined,
+        verdictError: verdictError || undefined,
+        levels: { current: ctx.tradeLevels.currentPrice, supports: ctx.tradeLevels.supports, resistances: ctx.tradeLevels.resistances },
+        structured: structured ?? null,
+      },
+    });
+  };
+
+  /** 单阶段 LLM 调用。重试策略镜像服务器 runStage；连接层错误冒泡供降级判定 */
+  const runStage = async (stageKey: string, systemPrompt: string, userPrompt: string, maxTokens = 4096, attempt = 1): Promise<{ text: string; reasoning: string }> => {
+    let fullOutput = '', fullReasoning = '';
+    let lastDelta = '', repeatCount = 0;
+    let stuckWarning = false;
+    try {
+      await streamChatDirect({
+        baseUrl: cfg.baseUrl, apiKey: cfg.apiKey, model: cfg.model,
+        messages: [{ role: 'system', content: systemPrompt }, { role: 'user', content: userPrompt }],
+        temperature: 0.3, maxTokens,
+        signal, timeoutMs: 120000,
+        onDelta: (d) => {
+          if (d.reasoning) {
+            fullReasoning += d.reasoning;
+            // analyst/verdict 的 reasoning 直播给前端；辩论角色不直播（与服务器版一致，补发时统一带）
+            if (stageKey === 'analyst') { analystReasoning += d.reasoning; emit(); }
+            else if (stageKey === 'verdict') { verdictReasoning += d.reasoning; emit(); }
+          }
+          if (d.content) {
+            if (d.content === lastDelta) repeatCount++;
+            else { repeatCount = 0; lastDelta = d.content; }
+            if (repeatCount >= 3 && !stuckWarning) {
+              stuckWarning = true;
+              console.warn(`[Deep AI Direct] ${stageKey} 检测到卡死（连续重复输出）`);
+            }
+            fullOutput += d.content;
+          }
+        },
+      });
+    } catch (e: any) {
+      if (e.name === 'AbortError') throw e; // 用户取消，原样冒泡
+      const isTimeout = /超时|timeout/i.test(e.message || '');
+      if (isTimeout) throw new Error(`[${stageKey}] 阶段超时（120s），模型未在限定时间内响应`);
+      const isRetryableNetwork = e.name === 'TypeError' || /fetch|network/i.test(e.message || '');
+      if (attempt < 3 && isRetryableNetwork) {
+        const backoff = 2000 * attempt;
+        console.warn(`[Deep AI Direct] ${stageKey} 网络错误，${backoff}ms 后重试 ${attempt}/2`);
+        await new Promise(r => setTimeout(r, backoff));
+        return runStage(stageKey, systemPrompt, userPrompt, maxTokens, attempt + 1);
+      }
+      if (e instanceof LlmHttpError && attempt < 3 && (e.status === 429 || e.status >= 500)) {
+        const backoff = 2000 * attempt;
+        console.warn(`[Deep AI Direct] ${stageKey} HTTP ${e.status}，${backoff}ms 后重试 ${attempt}/2`);
+        await new Promise(r => setTimeout(r, backoff));
+        return runStage(stageKey, systemPrompt, userPrompt, maxTokens, attempt + 1);
+      }
+      throw e.message?.startsWith(`[${stageKey}]`)
+        ? e
+        : new Error(`[${stageKey}] ${e.message || '未知错误'}`);
+    }
+
+    if (!fullOutput.trim()) {
+      if (attempt < 3) {
+        console.warn(`[Deep AI Direct] ${stageKey} 输出为空，重试 ${attempt}/2`);
+        return runStage(stageKey, systemPrompt, userPrompt, maxTokens, attempt + 1);
+      }
+      throw new Error(`[${stageKey}] 输出为空`);
+    }
+    return { text: fullOutput, reasoning: fullReasoning };
+  };
+
+  /** 断点续传：completedMap 命中回放，否则 runStage 直播并写回 */
+  const runOrReplay = async (stageKey: string, sys: string, usr: string, maxTokens: number, isDebate = false): Promise<string> => {
+    const cached = completedMap[stageKey];
+    if (cached != null) {
+      if (isDebate) {
+        debateText += cached + '\n\n';
+        stage = 'debate';
+        emit();
+      } else if (stageKey === 'analyst') {
+        analystText += cached;
+        stage = 'analyst';
+        emit();
+      } else if (stageKey === 'verdict') {
+        verdictText += cached;
+        stage = 'verdict';
+        emit(parseVerdictContent(verdictText, ctx.tradeLevels));
+      }
+      return cached;
+    }
+    const { text, reasoning } = await runStage(stageKey, sys, usr, maxTokens);
+    if (isDebate) {
+      debateText += text + '\n\n';
+      stage = 'debate';
+      if (reasoning) debateReasoning = (debateReasoning ? debateReasoning + '\n\n' : '') + reasoning;
+      emit();
+    } else if (stageKey === 'analyst') {
+      analystText += text;
+      stage = 'analyst';
+      emit();
+    }
+    completedMap[stageKey] = text;
+    return text;
+  };
+
+  // ===== 阶段一：情报收集 =====
+  const stage1Output = await runOrReplay('analyst', ctx.stage1.systemPrompt, ctx.stage1.userPrompt, 4096);
+
+  // ===== 阶段二：多空辩论（任一角色失败即终止整次分析）=====
+  let stage2Output = '';
+  // 辩论基础数据 prompt（不含分析师报告，角色不需要读完整报告）
+  const userViewNote = userView ? `\n\n[用户观点] 用户当前${userView}。理由：${userViewReason || '未说明'}。\n各角色在论证时可参考用户观点，但不要迎合——用数据验证或反驳用户的看法。` : '';
+  const debateData = [
+    ctx.stage2.userPrompt.split('以下是一份深度分析师报告')[0]?.trim() || '',
+    userViewNote,
+  ].filter(Boolean).join('\n\n');
+
+  // Round 1: 三人串行
+  const t1 = await runOrReplay('tech', buildTechR1SystemPrompt(), debateData, 2048, true);
+  const r1 = await runOrReplay('risk', buildRiskR1SystemPrompt(), debateData, 2048, true);
+  const x1 = await runOrReplay('xinjie', buildXinJieR1DebatePrompt(), debateData, 2048, true);
+  stage2Output += [t1, r1, x1].join('\n\n');
+
+  // Round 2: 串行反驳（累计上下文）
+  debateText += '\n--- 第二轮 ---\n';
+  stage = 'debate';
+  emit();
+
+  const techR2Ctx = `前面两人的第一轮发言：\n${r1}\n${x1}\n\n请回应以上两人的观点。`;
+  const techR2 = await runOrReplay('tech_r2', buildTechR2RebuttalPrompt(), techR2Ctx, 2048, true);
+
+  const riskR2Ctx = `第一轮发言回顾：\n${t1}\n${x1}\n\n技术分析师的回应：\n${techR2}\n\n请回应以上内容。`;
+  const riskR2 = await runOrReplay('risk_r2', buildRiskR2RebuttalPrompt(), riskR2Ctx, 2048, true);
+
+  const xinjieR2Ctx = `第一轮：\n${t1}\n${r1}\n\n第二轮回应：\n技术分析师："${techR2.slice(0, 200)}"\n风控专家："${riskR2.slice(0, 200)}"\n\n请给出你的最终判断。`;
+  const xinjieR2 = await runOrReplay('xinjie_r2', buildXinJieR2RebuttalPrompt(), xinjieR2Ctx, 2048, true);
+
+  const mgrCtx = `第一轮发言：\n技术分析师：${t1.slice(0, 200)}\n风控专家：${r1.slice(0, 200)}\n心姐：${x1.slice(0, 200)}\n\n第二轮反驳：\n技术反驳：${techR2.slice(0, 200)}\n风控反驳：${riskR2.slice(0, 200)}\n心姐最终判断：${xinjieR2.slice(0, 200)}`;
+  const mgrOutput = await runOrReplay('manager', buildManagerPrompt(), mgrCtx, 2048, true);
+
+  stage2Output += '\n--- R2 ---\n' + [techR2, riskR2, xinjieR2, mgrOutput].join('\n\n');
+
+  // 卡死检测：R1 vs R2 相似度（与服务器版一致，仅记日志）
+  const r1All = t1 + r1 + x1;
+  const similarity = jaccardSimilarity(r1All, techR2 + riskR2 + xinjieR2);
+  if (similarity >= 0.7) {
+    console.warn(`[Deep AI Direct] 辩论轮间相似度过高 (${(similarity * 100).toFixed(0)}%)`);
+  }
+
+  // ===== 阶段三：最终裁决 =====
+  const s3System = ctx.stage3.systemPrompt || buildVerdictSystemPrompt();
+  const userViewVerdict = userView ? `\n\n[用户观点] 用户当前${userView}，理由：${userViewReason || '未说明'}。请在决策理由中评价用户观点是否成立（用数据说话，不要迎合用户）。` : '';
+  // P2：历史校准注入（真实回测胜率，拼在 ## 分析师报告 前；样本不足/失败返回空串）
+  const calibrationNote = await fetchCalibrationNote(ctx.stockCode);
+  const s3User = [
+    ctx.stage3.userPrompt.split('## 分析师报告')[0]?.trim() || '',
+    calibrationNote,
+    `## 分析师报告\n${stage1Output}`,
+    `## 多空辩论\n${stage2Output}`,
+    userViewVerdict,
+    '请基于以上信息，做出最终投资决策。**注意：目标价和止损价必须参考实时行情中的当前价格。**',
+  ].filter(Boolean).join('\n\n');
+  await runOrReplay('verdict', s3System, s3User, 4096);
+
+  const finalStructured = parseVerdictContent(verdictText, ctx.tradeLevels);
+  return {
+    result: {
+      analyst: analystText,
+      analystReasoning: analystReasoning || undefined,
+      debate: debateText,
+      debateReasoning: debateReasoning || undefined,
+      debateError: debateError || undefined,
+      verdict: verdictText,
+      verdictReasoning: verdictReasoning || undefined,
+      verdictError: verdictError || undefined,
+      levels: { current: ctx.tradeLevels.currentPrice, supports: ctx.tradeLevels.supports, resistances: ctx.tradeLevels.resistances },
+      structured: finalStructured,
+    },
+    completedMap,
+  };
+}
+
+/**
+ * 深度分析入口：优先浏览器直连（省服务器出站流量 + 少一跳香港）。
+ * 直连不可达（CORS / TypeError / 超时）→ 降级服务器中转，已完成阶段断点续传重跑。
+ */
 export async function runDeepAnalysisStream(opts: RunDeepOptions): Promise<RunDeepOutcome> {
+  const completedRef: Record<string, string> = { ...(opts.resumeCompleted || {}) };
+  try {
+    return await runDeepAnalysisDirect(opts, completedRef);
+  } catch (e: any) {
+    if (isDirectConnectionError(e)) {
+      console.warn('[Deep AI Direct] 直连失败，降级服务器中转:', e.message);
+      return runDeepAnalysisViaServer({ ...opts, resumeCompleted: completedRef });
+    }
+    throw e;
+  }
+}
+
+/** 降级路径：服务器中转 SSE（原实现保留，作兜底） */
+async function runDeepAnalysisViaServer(opts: RunDeepOptions): Promise<RunDeepOutcome> {
   const { ctx, cfg, resumeCompleted, userView, userViewReason, signal, onProgress } = opts;
 
   const res = await fetch('/api/ai/deep-analyze', {

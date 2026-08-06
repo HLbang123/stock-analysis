@@ -4,21 +4,7 @@ import { buildChatUrl, buildLLMHeaders, createTimeoutSignal, llmRouteError, sseR
 import { readLlmDeltas, encodeSSE, endSSE } from '@/lib/llm-stream';
 import { CHAT_TOOLS, executeTool } from '@/lib/chat-tools';
 import { getProvider } from '@/lib/llm/providers';
-
-const CHAT_SYSTEM_PROMPT = `你是A股投资分析助手。你可以：
-1. 回答关于技术分析、K线形态、均线系统、MACD/RSI等指标的问题
-2. 解读股票数据和预警信号，给出客观分析
-3. 提供投资知识科普和交易策略参考
-4. 帮用户梳理自己的投资思路
-
-你可以使用工具查询实时数据（行情、K线、RPS、市场宽度、北向资金、选股扫描）。
-当用户问某只股票、某天数据、大盘情况时，主动调用工具获取最新数据再回答。
-
-原则：
-- 回答简洁专业，中文
-- 有数据时结合数据分析，不凭空猜测
-- 不推荐具体买卖操作，只做分析和建议
-- 不确定的事情要诚实说明`;
+import { CHAT_SYSTEM_PROMPT } from '@/lib/chat-system-prompt';
 
 /** AI 对话代理 — SSE 流式，支持 Function Calling + 多轮对话 + 可选股票上下文
  *  一进来就开 SSE 流，工具调用期间每 15s 发心跳注释保活，
