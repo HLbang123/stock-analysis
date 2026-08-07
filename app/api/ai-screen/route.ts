@@ -80,11 +80,11 @@ function pickToCreate(k: AiPick) {
   };
 }
 
-/** 补救成功后,AiPick → 需更新的字段(仅入选 top-N 才 selected=true；尾部候选也写库保留 llm 字段) */
+/** 补救成功后,AiPick → 需更新的字段(仅入选 top-N 才 selected=true/rank 有值；未入选 rank=null，displayPicks 据此过滤) */
 function pickToUpdate(k: AiPick) {
   return {
     selected: k.selected,
-    rank: k.rank,
+    rank: k.selected ? k.rank : null,
     llmScore: k.llmScore,
     llmConfidence: k.llmConfidence,
     finalScore: k.finalScore,
