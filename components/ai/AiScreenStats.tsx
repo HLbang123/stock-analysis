@@ -10,7 +10,7 @@ import { useState, useEffect, useCallback } from 'react';
 import { Card } from '@/components/ui/card';
 import { Activity } from 'lucide-react';
 import { cn } from '@/lib/utils';
-import { pct, signed, toneCls, Metric, StatsHeader, StatsEmpty } from './stats-primitives';
+import { pct, signed, toneCls, Metric, StatsHeader, StatsEmpty, TuningDetails } from './stats-primitives';
 
 interface Stats {
   primaryN: number;
@@ -90,25 +90,6 @@ export function AiScreenStats() {
             )}
           </Card>
 
-          {/* 月度趋势（调优验证） */}
-          {stats.byMonth && stats.byMonth.length > 0 && (
-            <Card className="p-4">
-              <div className="text-sm font-medium mb-2">月度胜率趋势 · T+{stats.primaryN}</div>
-              <p className="text-xs text-gray-400 mb-2">按运行交易日月份聚合入选建议。胜率随月份走高 = 规则/LLM 调优在起效。</p>
-              <div className="flex flex-wrap gap-x-4 gap-y-2">
-                {stats.byMonth.map((m) => (
-                  <div key={m.month} className={cn('text-center', weakCls(m.count))} title={weak(m.count) ? `样本仅 ${m.count} 条` : undefined}>
-                    <div className="text-xs text-gray-400">{m.month.slice(0, 4)}-{m.month.slice(4)}</div>
-                    <div className={cn('text-base font-semibold mt-0.5', m.winRate != null ? 'text-gray-900 dark:text-white' : 'text-gray-400')}>
-                      {pct(m.winRate, 0)}%
-                    </div>
-                    <div className="text-[10px] text-gray-400">{m.count}次 {m.avg != null ? signed(m.avg) : '--'}</div>
-                  </div>
-                ))}
-              </div>
-            </Card>
-          )}
-
           {/* 策略排行榜 */}
           <Card className="p-4">
             <div className="text-sm font-medium mb-2 flex items-center gap-1"><Activity className="w-4 h-4" /> 策略排行榜</div>
@@ -141,6 +122,28 @@ export function AiScreenStats() {
               </table>
             </div>
           </Card>
+
+          {/* 调优细节：月度趋势 / 因子IC / LLM A·B / 事件信号（默认收起；全部为空时不渲染折叠条） */}
+          {(stats.byMonth.length > 0 || focusIC || focusAB || stats.eventSignals.length > 0) && (
+          <TuningDetails hint="月度趋势 · 因子IC · LLM A/B · 事件信号">
+          {/* 月度趋势（调优验证） */}
+          {stats.byMonth && stats.byMonth.length > 0 && (
+            <Card className="p-4">
+              <div className="text-sm font-medium mb-2">月度胜率趋势 · T+{stats.primaryN}</div>
+              <p className="text-xs text-gray-400 mb-2">按运行交易日月份聚合入选建议。胜率随月份走高 = 规则/LLM 调优在起效。</p>
+              <div className="flex flex-wrap gap-x-4 gap-y-2">
+                {stats.byMonth.map((m) => (
+                  <div key={m.month} className={cn('text-center', weakCls(m.count))} title={weak(m.count) ? `样本仅 ${m.count} 条` : undefined}>
+                    <div className="text-xs text-gray-400">{m.month.slice(0, 4)}-{m.month.slice(4)}</div>
+                    <div className={cn('text-base font-semibold mt-0.5', m.winRate != null ? 'text-gray-900 dark:text-white' : 'text-gray-400')}>
+                      {pct(m.winRate, 0)}%
+                    </div>
+                    <div className="text-[10px] text-gray-400">{m.count}次 {m.avg != null ? signed(m.avg) : '--'}</div>
+                  </div>
+                ))}
+              </div>
+            </Card>
+          )}
 
           {/* 因子 IC */}
           {focusIC && (
@@ -217,6 +220,8 @@ export function AiScreenStats() {
                 ))}
               </div>
             </Card>
+          )}
+          </TuningDetails>
           )}
         </>
       )}

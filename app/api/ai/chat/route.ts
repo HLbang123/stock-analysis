@@ -1,7 +1,7 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { formatAiError } from '@/lib/ai-error';
 import { buildChatUrl, buildLLMHeaders, createTimeoutSignal, llmRouteError, sseResponse } from '@/lib/llm-client';
-import { readLlmDeltas, encodeSSE, endSSE } from '@/lib/llm-stream';
+import { readLlmDeltas, readLlmDeltasWithTools, encodeSSE, endSSE } from '@/lib/llm-stream';
 import { CHAT_TOOLS, executeTool } from '@/lib/chat-tools';
 import { getProvider } from '@/lib/llm/providers';
 import { CHAT_SYSTEM_PROMPT } from '@/lib/chat-system-prompt';
@@ -41,11 +41,38 @@ export async function POST(request: NextRequest) {
 
         const useTools = getProvider(baseUrl, model).supportsTools(model);
         try {
-          // 多轮工具调用（最多 3 轮）：每轮非流式调 LLM，有 tool_calls 就执行后继续，没有就把答案写入流
+          // 非流式兜底：中转不支持 stream+tools（400 或流式吞掉 tool_calls）时保住工具能力
+          const nonStreamToolRound = async (): Promise<{ content: string; toolCalls: any[] } | null> => {
+            try {
+              const { signal, clear } = createTimeoutSignal(60000);
+              const res = await fetch(url, {
+                method: 'POST', headers,
+                body: JSON.stringify({
+                  model, messages: allMessages,
+                  tools: CHAT_TOOLS, tool_choice: 'auto',
+                  temperature: 0.7, max_tokens: 4096,
+                  stream: false,
+                }),
+                signal,
+              });
+              clear();
+              if (!res.ok) return null;
+              const data = await res.json();
+              const choice = data?.choices?.[0]?.message;
+              return { content: choice?.content || '', toolCalls: choice?.tool_calls || [] };
+            } catch {
+              return null;
+            }
+          };
+
+          // 多轮工具调用（最多 3 轮）：全部轮次流式（正文逐字直播，工具分片静默累积），
+          // 流式失败或空返回时回退非流式兜底——不再"非流式攒满整段一下蹦出来"，工具能力也不退化。
           // reasoning 模型（deepseek-reasoner / glm-z1 / o1 等）不支持 function calling → useTools=false，循环不执行，直接走 streamFinalAnswer
           let resolved = false;
           for (let round = 0; round < 3 && useTools; round++) {
-            let toolData: any = null;
+            let content = '';
+            let toolCalls: Awaited<ReturnType<typeof readLlmDeltasWithTools>> = [];
+            let streamOk = true;
             try {
               const { signal, clear } = createTimeoutSignal(60000);
               const toolRes = await fetch(url, {
@@ -54,31 +81,37 @@ export async function POST(request: NextRequest) {
                   model, messages: allMessages,
                   tools: CHAT_TOOLS, tool_choice: 'auto',
                   temperature: 0.7, max_tokens: 4096,
+                  stream: true,
                 }),
                 signal,
               });
               clear();
-              if (toolRes.ok) toolData = await toolRes.json();
-              else break; // API 不支持工具或出错，降级流式
+              if (!toolRes.ok) streamOk = false; // → 落到非流式兜底
+              else toolCalls = await readLlmDeltasWithTools(toolRes, (d) => {
+                if (d.content) { content += d.content; encodeSSE(encoder, controller, d.content); }
+                if (d.reasoning) encodeSSE(encoder, controller, { reasoning: d.reasoning });
+              });
             } catch {
-              break; // 网络/超时，降级流式
+              break; // 网络/超时，降级无工具流式
             }
 
-            const choice = toolData?.choices?.[0];
-            const toolCalls = choice?.message?.tool_calls;
+            // 流式失败（HTTP 错）或空返回（content 和 tool_calls 都没有）→ 非流式兜底
+            if (!streamOk || (toolCalls.length === 0 && !content)) {
+              const fb = await nonStreamToolRound();
+              if (!fb) break; // 兜底也失败 → 降级无工具流式
+              content = fb.content;
+              toolCalls = fb.toolCalls;
+              if (content) encodeSSE(encoder, controller, content);
+            }
 
             if (!toolCalls || toolCalls.length === 0) {
-              // 不再调工具 → content 就是答案
-              const content = choice?.message?.content || "";
-              if (content) {
-                encodeSSE(encoder, controller, content);
-                resolved = true;
-              }
-              break; // 空内容，降级流式
+              // 不再调工具 → 正文已逐字直播完毕；空内容则降级流式兜底
+              if (content) resolved = true;
+              break;
             }
 
-            // 执行工具调用
-            allMessages.push(choice.message);
+            // 执行工具调用（assistant tool_calls 消息按 OpenAI 规范回传）
+            allMessages.push({ role: 'assistant', content: content || null, tool_calls: toolCalls });
             for (const tc of toolCalls) {
               const args = JSON.parse(tc.function?.arguments || '{}');
               const result = await executeTool(tc.function.name, args, origin);

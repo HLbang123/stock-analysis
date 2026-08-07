@@ -6,7 +6,7 @@ import {
   buildTechR1SystemPrompt, buildRiskR1SystemPrompt,
   buildXinJieR1DebatePrompt, buildXinJieR2RebuttalPrompt,
   buildTechR2RebuttalPrompt, buildRiskR2RebuttalPrompt,
-  buildManagerPrompt, buildVerdictSystemPrompt,
+  buildVerdictSystemPrompt,
 } from '@/services/deepAnalysisPrompt';
 import { buildCalibrationNote } from '@/services/deep-analysis/calibration';
 
@@ -162,7 +162,7 @@ export async function POST(request: NextRequest) {
               : new Error(`[${stageKey}] ${formatNetworkError(e)}`);
           }
 
-          encodeSSE(encoder, controller, { stage: stageKey, done: true });
+          encodeSSE(encoder, controller, { stage: stageKey, done: true, full: fullOutput });
           return { text: fullOutput, reasoning: fullReasoning };
         }
 
@@ -173,16 +173,16 @@ export async function POST(request: NextRequest) {
             if (isDebate) {
               encodeSSE(encoder, controller, { stage: 'debate', role: stageKey, text: cached + '\n\n' });
             } else {
-              encodeSSE(encoder, controller, { stage: stageKey, text: cached });
-              encodeSSE(encoder, controller, { stage: stageKey, done: true });
+              // full 权威全量回放（客户端覆盖而非追加，重复执行也幂等）
+              encodeSSE(encoder, controller, { stage: stageKey, full: cached, done: true });
             }
             console.log(`[Deep AI Proxy] ${stageKey} 命中缓存，跳过 LLM 调用`);
             return cached;
           }
           const { text, reasoning } = await runStage(stageKey, sys, usr, maxTokens);
           if (isDebate) {
-            // 辩论阶段：runStage 的 live 流（stage=角色名）客户端不处理，
-            // 这里统一以 stage='debate' 补发完整文本 + 思考过程给前端
+            // 辩论阶段：runStage 的 live 流（stage=角色名）客户端按角色缓冲拼装，
+            // 这里以 stage='debate' 补发权威全量 + 思考过程（覆盖增量，防重试/丢包不一致）
             encodeSSE(encoder, controller, {
               stage: 'debate', role: stageKey,
               text: text + '\n\n',
@@ -193,69 +193,117 @@ export async function POST(request: NextRequest) {
         }
 
         try {
-          // ===== 阶段一：情报收集 =====
-          console.log('[Deep AI Proxy] Stage 1: Analyst Report');
-          const stage1Output = await runOrReplay('analyst', stage1.systemPrompt, stage1.userPrompt, 4096);
-
-          // ===== 阶段二：多空辩论（任一角色失败即终止整次分析）=====
-          console.log('[Deep AI Proxy] Stage 2: 3-person debate');
-          let stage2Output = '';
-          // 辩论基础数据 prompt（不含分析师报告，角色不需要读完整报告）
+          // 波1 前置：辩论基础数据（不含分析师报告）
           const userViewNote = userView ? `\n\n[用户观点] 用户当前${userView}。理由：${userViewReason || '未说明'}。\n各角色在论证时可参考用户观点，但不要迎合——用数据验证或反驳用户的看法。` : '';
           const debateData = [
             stage2?.userPrompt?.split('以下是一份深度分析师报告')[0]?.trim() || '',
             userViewNote,
           ].filter(Boolean).join('\n\n');
 
-          // ======== Round 1: 三人串行（一条一条出，避免并发压垮中转站）========
-          const t1 = await runOrReplay('tech', buildTechR1SystemPrompt(), debateData, 2048, true);
-          const r1 = await runOrReplay('risk', buildRiskR1SystemPrompt(), debateData, 2048, true);
-          const x1 = await runOrReplay('xinjie', buildXinJieR1DebatePrompt(), debateData, 2048, true);
-          stage2Output += [t1, r1, x1].join('\n\n');
+          // 降级清单：失败的角色跳过继续（裁决是核心产出，上游被截断也要尽量出裁决）
+          const degraded: string[] = [];
+          /** 宽容执行：失败记入 degraded 返回空串，不阻断后续阶段 */
+          const safeRunOrReplay = async (stageKey: string, sys: string, usr: string, maxTokens: number, isDebate = false): Promise<string> => {
+            try {
+              return await runOrReplay(stageKey, sys, usr, maxTokens, isDebate);
+            } catch (e: any) {
+              degraded.push(stageKey);
+              console.warn(`[Deep AI Proxy] ${stageKey} 失败，跳过继续：${e.message}`);
+              return '';
+            }
+          };
 
-          // ======== Round 2: 串行反驳（累计上下文）========
-          encodeSSE(encoder, controller, { stage: 'debate', text: '\n--- 第二轮 ---\n' });
+          console.log('[Deep AI Proxy] Wave 1: analyst + 3 R1 debaters (parallel, tolerant)');
+          const wave1 = await Promise.allSettled([
+            safeRunOrReplay('analyst', stage1.systemPrompt, stage1.userPrompt, 4096),
+            safeRunOrReplay('tech', buildTechR1SystemPrompt(), debateData, 2048, true),
+            safeRunOrReplay('risk', buildRiskR1SystemPrompt(), debateData, 2048, true),
+            safeRunOrReplay('xinjie', buildXinJieR1DebatePrompt(), debateData, 2048, true),
+          ]);
+          const stage1Output = (wave1[0] as PromiseFulfilledResult<string>).value;
+          const t1 = (wave1[1] as PromiseFulfilledResult<string>).value;
+          const r1 = (wave1[2] as PromiseFulfilledResult<string>).value;
+          const x1 = (wave1[3] as PromiseFulfilledResult<string>).value;
 
+          // ===== R2：串行反驳链（宽容；前一步失败用空串占位）=====
+          console.log('[Deep AI Proxy] Wave 2: R2 rebuttal chain (tolerant)');
           const techR2Ctx = `前面两人的第一轮发言：\n${r1}\n${x1}\n\n请回应以上两人的观点。`;
-          const techR2 = await runOrReplay('tech_r2', buildTechR2RebuttalPrompt(), techR2Ctx, 2048, true);
+          const techR2 = await safeRunOrReplay('tech_r2', buildTechR2RebuttalPrompt(), techR2Ctx, 2048, true);
 
           const riskR2Ctx = `第一轮发言回顾：\n${t1}\n${x1}\n\n技术分析师的回应：\n${techR2}\n\n请回应以上内容。`;
-          const riskR2 = await runOrReplay('risk_r2', buildRiskR2RebuttalPrompt(), riskR2Ctx, 2048, true);
+          const riskR2 = await safeRunOrReplay('risk_r2', buildRiskR2RebuttalPrompt(), riskR2Ctx, 2048, true);
 
           const xinjieR2Ctx = `第一轮：\n${t1}\n${r1}\n\n第二轮回应：\n技术分析师："${techR2.slice(0, 200)}"\n风控专家："${riskR2.slice(0, 200)}"\n\n请给出你的最终判断。`;
-          const xinjieR2 = await runOrReplay('xinjie_r2', buildXinJieR2RebuttalPrompt(), xinjieR2Ctx, 2048, true);
+          const xinjieR2 = await safeRunOrReplay('xinjie_r2', buildXinJieR2RebuttalPrompt(), xinjieR2Ctx, 2048, true);
 
-          const mgrCtx = `第一轮发言：\n技术分析师：${t1.slice(0, 200)}\n风控专家：${r1.slice(0, 200)}\n心姐：${x1.slice(0, 200)}\n\n第二轮反驳：\n技术反驳：${techR2.slice(0, 200)}\n风控反驳：${riskR2.slice(0, 200)}\n心姐最终判断：${xinjieR2.slice(0, 200)}`;
-          const mgrOutput = await runOrReplay('manager', buildManagerPrompt(), mgrCtx, 2048, true);
+          const r1Text = [t1, r1, x1].filter(Boolean).join('\n\n');
+          const r2Text = [techR2, riskR2, xinjieR2].filter(Boolean).join('\n\n');
+          const stage2Output = [r1Text, r2Text && `--- 第二轮 ---\n${r2Text}`].filter(Boolean).join('\n\n');
 
-          stage2Output += '\n--- R2 ---\n' + [techR2, riskR2, xinjieR2, mgrOutput].join('\n\n');
-
-          // 卡死检测：R1 vs R2 相似度
-          const r1All = t1 + r1 + x1;
-          const similarity = jaccardSimilarity(r1All, techR2 + riskR2 + xinjieR2);
-          if (similarity >= STUCK_THRESHOLD) {
-            console.warn(`[Deep AI Proxy] 辩论轮间相似度过高 (${(similarity * 100).toFixed(0)}%)`);
-            encodeSSE(encoder, controller, { stage: 'debate', warning: `辩论出现重复（相似度${(similarity * 100).toFixed(0)}%）` });
+          // 卡死检测（仅当两轮都有内容，空串会误判相似度 1）
+          if ((t1 || r1 || x1) && (techR2 || riskR2 || xinjieR2)) {
+            const similarity = jaccardSimilarity(t1 + r1 + x1, techR2 + riskR2 + xinjieR2);
+            if (similarity >= STUCK_THRESHOLD) {
+              console.warn(`[Deep AI Proxy] 辩论轮间相似度过高 (${(similarity * 100).toFixed(0)}%)`);
+              encodeSSE(encoder, controller, { stage: 'debate', warning: `辩论出现重复（相似度${(similarity * 100).toFixed(0)}%）` });
+            }
           }
 
-          // ===== 阶段三：最终裁决 =====
-          console.log('[Deep AI Proxy] Stage 3: Final Verdict');
+          // ===== 阶段三：最终裁决（三档降级重试；全失败由客户端规则兜底）=====
+          console.log('[Deep AI Proxy] Stage 3: Final Verdict (with degrade)');
           const s3System = stage3?.systemPrompt || buildVerdictSystemPrompt();
           const userViewVerdict = userView ? `\n\n[用户观点] 用户当前${userView}，理由：${userViewReason || '未说明'}。请在决策理由中评价用户观点是否成立（用数据说话，不要迎合用户）。` : '';
           // P2：历史校准注入（真实回测胜率，拼在 ## 分析师报告 前；样本不足/失败返回空串）
           const calibrationNote = await buildCalibrationNote(stockCode);
-          const s3User = [
+          const s3Base = [
             stage3?.userPrompt?.split('## 分析师报告')[0]?.trim() || '',
-            calibrationNote,
-            `## 分析师报告\n${stage1Output}`,
-            `## 多空辩论\n${stage2Output}`,
-            userViewVerdict,
-            '请基于以上信息，做出最终投资决策。**注意：目标价和止损价必须参考实时行情中的当前价格。**',
+            (!stage2Output && !stage1Output ? '[提示] 本次分析师报告与辩论均未能生成，请直接基于行情与结构化候选价位给出决策，无需综合评判。' : ''),
           ].filter(Boolean).join('\n\n');
-          await runOrReplay('verdict', s3System, s3User, 4096);
+
+          const buildS3User = (withAnalyst: boolean, withDebate: boolean, withCalibration: boolean): string => {
+            const parts: string[] = [s3Base];
+            if (withCalibration && calibrationNote) parts.push(calibrationNote);
+            if (withAnalyst && stage1Output) parts.push(`## 分析师报告\n${stage1Output}`);
+            if (withDebate && stage2Output) parts.push(`## 多空辩论\n${stage2Output}`);
+            parts.push(userViewVerdict);
+            parts.push('请基于以上信息，做出最终投资决策。**注意：目标价和止损价必须参考实时行情中的当前价格。**');
+            return parts.filter(Boolean).join('\n\n');
+          };
+
+          // 先把降级清单发给客户端（展示"分析不完整"提示）
+          if (degraded.length > 0) {
+            encodeSSE(encoder, controller, { stage: 'verdict', warnings: [...degraded] });
+          }
+          const VERDICT_ATTEMPTS: [boolean, boolean, boolean][] = [
+            [true, true, true],
+            [true, false, false],
+            [false, false, false],
+          ];
+          let verdictOk = false;
+          for (let attempt = 0; attempt < VERDICT_ATTEMPTS.length; attempt++) {
+            const [withAnalyst, withDebate, withCalibration] = VERDICT_ATTEMPTS[attempt];
+            if (attempt > 0) {
+              const hasFull = stage1Output && stage2Output;
+              const sameInput = (attempt === 1 && (!stage2Output || !hasFull)) || (attempt === 2 && !stage1Output);
+              if (sameInput) continue;
+            }
+            try {
+              const usr = buildS3User(withAnalyst, withDebate, withCalibration);
+              await runOrReplay('verdict', s3System, usr, 4096);
+              verdictOk = true;
+              break;
+            } catch (e: any) {
+              degraded.push(`verdict_attempt${attempt + 1}`);
+              console.warn(`[Deep AI Proxy] 裁决第${attempt + 1}档失败，降级重试：${e.message}`);
+              // reset：让客户端清掉已流式的残片，防降级结果前缀重复
+              encodeSSE(encoder, controller, { stage: 'verdict', reset: true });
+              if (attempt >= VERDICT_ATTEMPTS.length - 1) throw e;
+            }
+          }
         } catch (e: any) {
           console.error('[Deep AI Proxy] 分析失败:', e.message);
-          encodeSSE(encoder, controller, { error: `${e.message || '分析失败'}，可点击"继续生成"从断点恢复` });
+          // 裁决彻底失败：客户端收到 error 后会自动退回规则兜底，保证"最坏也有裁决"
+          encodeSSE(encoder, controller, { error: `${e.message || '分析失败'}，已退回规则引擎兜底` });
         } finally {
           clearInterval(heartbeat);
           endSSE(encoder, controller);

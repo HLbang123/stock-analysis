@@ -11,7 +11,7 @@ const navItems = [
   { href: ROUTES.market, label: "大盘", icon: LineChart },
   { href: ROUTES.watchlist, label: "自选", icon: Star },
   { href: ROUTES.ai, label: "AI分析", icon: Brain },
-  { href: ROUTES.scanner, label: "全市场扫描", icon: Search },
+  { href: ROUTES.scanner, label: "扫描", icon: Search },
 ];
 
 export function SidebarNav() {

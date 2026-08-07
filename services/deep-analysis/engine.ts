@@ -15,7 +15,6 @@ import {
   buildReflectionContext, buildDebateDataPrompt,
   buildTechR1SystemPrompt, buildRiskR1SystemPrompt, buildXinJieR1DebatePrompt,
   buildTechR2RebuttalPrompt, buildRiskR2RebuttalPrompt, buildXinJieR2RebuttalPrompt,
-  buildManagerPrompt,
 } from '@/services/deepAnalysisPrompt';
 import { computeKeyLevels, formatLevelsForPrompt } from '@/services/deep-analysis/levels';
 import { calculateIndicators, formatIndicatorsForPrompt } from '@/lib/indicators';
@@ -32,6 +31,8 @@ import { isETF } from '@/lib/identify';
 export interface DeepStructured {
   action: string;
   oneLiner?: string;
+  /** 综合评判（原 manager 职责并入裁决：对比辩论三人论点 + 5级情绪强度 + 是否改变初判） */
+  consensus?: string;
   riskLevel: string;
   confidence: number;
   targetLow: number;
@@ -63,6 +64,11 @@ export interface DeepResult {
   verdictError?: string;
   levels?: DeepLevels | null;
   structured: DeepStructured | null;
+  /** 并行编排后阶段指示不再单调，卡片游标/思考面板据此判断该区是否仍在流式写入 */
+  analystDone?: boolean;
+  debateDone?: boolean;
+  /** 本次分析降级说明（上游角色失败被跳过 / 裁决降级 / 规则兜底）——UI 展示给用户知道分析不完整 */
+  warnings?: string[];
 }
 
 export type DeepStage = 'idle' | 'analyst' | 'debate' | 'verdict';
@@ -74,6 +80,8 @@ export interface DeepProgress {
 
 /** 解析 verdict 文本为结构化字段；levels 传入时对目标价/止损/仓位做越界夹紧 */
 export function parseVerdictContent(text: string, levels?: TradeLevels | null): DeepStructured {
+  // 综合评判在字段区之前（prompt 要求先写），捕获到第一个 KEY: 行为止
+  const consensusMatch = text.match(/【综合评判】\s*([\s\S]*?)(?=\n\s*(?:ONE_LINER|ACTION|RISK_LEVEL|CONFIDENCE|TARGET_LOW|TARGET_HIGH|STOP_LOSS|POSITION|KEY_POINTS)\s*:|$)/);
   const actionMatch = text.match(/ACTION:(.+)/);
   const oneLinerMatch = text.match(/ONE_LINER:(.+)/);
   const riskMatch = text.match(/RISK_LEVEL:(.+)/);
@@ -126,6 +134,7 @@ export function parseVerdictContent(text: string, levels?: TradeLevels | null): 
   return {
     action: actionMatch?.[1]?.trim() || '',
     oneLiner: oneLinerMatch?.[1]?.trim() || '',
+    consensus: consensusMatch?.[1]?.trim() || undefined,
     riskLevel: riskMatch?.[1]?.trim() || '',
     confidence: parseInt(confMatch?.[1]?.trim() || '0'),
     targetLow, targetHigh, stopLoss, position,
@@ -147,6 +156,8 @@ export interface DeepContext {
   tushareIssues: string[];
   entryDate: string;
   quote: RealtimeQuote;
+  /** 规则引擎信号摘要（裁决 LLM 全失败时规则兜底的依据之一） */
+  engineSummary: string;
 }
 
 export async function prepareDeepContext(
@@ -253,7 +264,7 @@ export async function prepareDeepContext(
 
   const entryDate = breadthLatest?.date || (rpsRes as any)?.calcDate || new Date().toISOString().slice(0, 10).replace(/-/g, '');
 
-  return { stockCode: selectedCode, stage1, stage2, stage3, tradeLevels, marketRegime, tushareIssues, entryDate, quote };
+  return { stockCode: selectedCode, stage1, stage2, stage3, tradeLevels, marketRegime, tushareIssues, entryDate, quote, engineSummary };
 }
 
 // ── 深度分析执行：浏览器直连（主路径）+ 服务器中转（降级）──────────────
@@ -297,21 +308,89 @@ async function fetchCalibrationNote(stockCode: string): Promise<string> {
   }
 }
 
+// 辩论角色展示顺序：R1 三人 → R2 三人。并发执行时按固定顺序拼装，不随完成先后乱序
+const DEBATE_R1_KEYS = ['tech', 'risk', 'xinjie'] as const;
+const DEBATE_R2_KEYS = ['tech_r2', 'risk_r2', 'xinjie_r2'] as const;
+
 /**
- * 浏览器直连编排 — 镜像服务器 /api/ai/deep-analyze 的三阶段逻辑：
- * 情报收集 → 三人两轮辩论 → 最终裁决，9 次串行 LLM 调用全部从浏览器直发。
- * - 阶段内重试/卡死检测/超时 fail-fast 与服务器版一致
+ * 规则引擎兜底裁决：verdict LLM 三档重试全失败时调用，保证"最坏情况也有一份裁决输出"。
+ * 纯规则合成（零 LLM 依赖）：方向取规则信号正负，价位/仓位取候选区间，置信度压低并显式标注"兜底"。
+ * 输出格式与 LLM verdict 一致（可被 parseVerdictContent 解析 → 落库/展示复用整条链路）。
+ */
+function buildFallbackVerdict(ctx: DeepContext, degraded: string[]): { text: string; structured: DeepStructured } {
+  const { quote, tradeLevels, engineSummary, marketRegime } = ctx;
+  const sellSignal = /卖出|清仓|减仓|离场|破位|死叉|见顶|急跌|跌破|下行/.test(engineSummary);
+  const buySignal = /买入|金叉|加仓|共振|突破|回踩|放量上攻|支撑/.test(engineSummary);
+  const action = sellSignal ? '卖出' : buySignal ? '买入' : '持有';
+  const riskLevel = sellSignal ? '中风险' : '低风险';
+  const confidence = 45; // 兜底置信度压低调低误导，但保证有输出
+
+  const mid = (lo?: number, hi?: number): number | undefined =>
+    (lo != null && hi != null) ? Math.round(((lo + hi) / 2) * 100) / 100 : undefined;
+  const tR = tradeLevels.targetRange;
+  const sR = tradeLevels.stopLossRange;
+  const pR = tradeLevels.positionRange;
+  const targetLow = tR?.low, targetHigh = tR?.high;
+  const stopLoss = sR ? (mid(sR.low, sR.high) ?? sR.low) : undefined;
+  const regimeFactor = marketRegime === 'strong' ? 1.2 : marketRegime === 'weak' ? 0.6 : 1;
+  const basePosition = pR ? (mid(pR.low, pR.high) ?? 20) : 20;
+  const position = Math.max(10, Math.min(50, Math.round(basePosition * regimeFactor)));
+
+  const oneLiner = `建议${action}。AI 分析生成失败，已退回规则引擎给出兜底建议，请谨慎参考`;
+  const reasoning = `AI 分析未能完成（${degraded.join('、')}），已退回规则引擎兜底。\n当前规则信号：${engineSummary || '无特殊信号'}；大盘强弱：${marketRegime === 'strong' ? '强势' : marketRegime === 'weak' ? '弱势' : '中性'}。\n目标/止损/仓位取自结构化候选区间，方向与价格均基于规则而非深度分析，不确定性较高。`;
+  const plan = `兜底建议（非 AI 深度分析）。参考价位：目标 ${targetLow ?? '--'}-${targetHigh ?? '--'}，止损 ${stopLoss ?? '--'}，建议仓位 ${position}%。逢关键位确认后再决定是否操作。`;
+  const riskNote = '此为规则引擎兜底结果，未经多空辩论与人工校验，风险不确定性较高，务必结合实时行情谨慎决策。';
+
+  const text = [
+    `【综合评判】${action === '卖出' ? '空方' : action === '买入' ? '多方' : '中性'}信号占优（规则引擎），本次为兜底裁决。`,
+    `ONE_LINER:${oneLiner}`,
+    `ACTION:${action}`,
+    `RISK_LEVEL:${riskLevel}`,
+    `CONFIDENCE:${confidence}`,
+    `TARGET_LOW:${targetLow ?? ''}`,
+    `TARGET_HIGH:${targetHigh ?? ''}`,
+    `STOP_LOSS:${stopLoss ?? ''}`,
+    `POSITION:${position}`,
+    '---',
+    `### 决策理由\n${reasoning}`,
+    `### 操作计划\n${plan}`,
+    `### 风险提示\n${riskNote}`,
+  ].join('\n');
+
+  return { text, structured: parseVerdictContent(text, tradeLevels) };
+}
+
+/**
+ * 浏览器直连编排 — 镜像服务器 /api/ai/deep-analyze 的逻辑：
+ * 波1（分析师 + R1 三人，4 路并发，信息本就独立）→ R2 串行反驳链 → 最终裁决。
+ * - 正文逐字直播：analyst/verdict 直接追加；辩论角色按 DEBATE_*_KEYS 顺序拼装
+ * - 阶段内重试/卡死检测/超时 fail-fast 与服务器版一致；重试前回滚已直播内容防重复段落
  * - 连接层失败（CORS/TypeError）原样冒泡，由 runDeepAnalysisStream 降级到服务器中转
- * - completedMap 实时写外部传入的 ref，降级时可断点续传
+ * - completedMap 实时写外部传入的 ref，降级/断网时可断点续传
  */
 async function runDeepAnalysisDirect(opts: RunDeepOptions, completedMap: Record<string, string>): Promise<RunDeepOutcome> {
   const { ctx, cfg, userView, userViewReason, signal, onProgress } = opts;
   console.info(`[Deep AI Direct] 直连分析开始 model=${cfg.model} baseUrl=${cfg.baseUrl}`);
 
   let analystText = '', analystReasoning = '';
-  let debateText = '', debateReasoning = '', debateError = '';
-  let verdictText = '', verdictReasoning = '', verdictError = '';
+  const debateError = '';
+  let verdictText = '', verdictReasoning = '', verdictError: string | undefined = undefined;
+  const roleBuf: Record<string, string> = {};
+  const roleReasonBuf: Record<string, string> = {};
   let stage: DeepStage = 'idle';
+  // 阶段指示单调推进（波1 多路并发会交错，不允许阶段回退造成进度条抖动）
+  const stageRank: Record<DeepStage, number> = { idle: 0, analyst: 1, debate: 2, verdict: 3 };
+  const advanceStage = (s: DeepStage) => { if (stageRank[s] > stageRank[stage]) stage = s; };
+
+  const composeDebate = (): string => {
+    const r1 = DEBATE_R1_KEYS.map(k => roleBuf[k]).filter(Boolean);
+    const r2 = DEBATE_R2_KEYS.map(k => roleBuf[k]).filter(Boolean);
+    let out = r1.join('\n\n');
+    if (r2.length > 0) out += (out ? '\n' : '') + '--- 第二轮 ---\n' + r2.join('\n\n');
+    return out;
+  };
+  const composeDebateReasoning = (): string =>
+    [...DEBATE_R1_KEYS, ...DEBATE_R2_KEYS].map(k => roleReasonBuf[k]).filter(Boolean).join('\n\n');
 
   const emit = (structured?: DeepStructured | null) => {
     onProgress({
@@ -319,16 +398,30 @@ async function runDeepAnalysisDirect(opts: RunDeepOptions, completedMap: Record<
       result: {
         analyst: analystText,
         analystReasoning: analystReasoning || undefined,
-        debate: debateText,
-        debateReasoning: debateReasoning || undefined,
+        debate: composeDebate(),
+        debateReasoning: composeDebateReasoning() || undefined,
         debateError: debateError || undefined,
         verdict: verdictText,
         verdictReasoning: verdictReasoning || undefined,
         verdictError: verdictError || undefined,
         levels: { current: ctx.tradeLevels.currentPrice, supports: ctx.tradeLevels.supports, resistances: ctx.tradeLevels.resistances },
         structured: structured ?? null,
+        analystDone: completedMap['analyst'] != null,
+        debateDone: DEBATE_R2_KEYS.every(k => completedMap[k] != null),
+        warnings: degraded.length > 0 ? [...degraded] : undefined,
       },
     });
+  };
+
+  /** 重试前回滚本轮已直播的内容（正文+思考），防重复段落 */
+  const rollbackLive = (stageKey: string, contentLen: number, reasonLen: number) => {
+    const trim = (s: string, n: number) => (n > 0 ? s.slice(0, Math.max(0, s.length - n)) : s);
+    if (stageKey === 'analyst') { analystText = trim(analystText, contentLen); analystReasoning = trim(analystReasoning, reasonLen); }
+    else if (stageKey === 'verdict') { verdictText = trim(verdictText, contentLen); verdictReasoning = trim(verdictReasoning, reasonLen); }
+    else {
+      if (roleBuf[stageKey] != null) roleBuf[stageKey] = trim(roleBuf[stageKey], contentLen);
+      if (roleReasonBuf[stageKey] != null) roleReasonBuf[stageKey] = trim(roleReasonBuf[stageKey], reasonLen);
+    }
   };
 
   /** 单阶段 LLM 调用。重试策略镜像服务器 runStage；连接层错误冒泡供降级判定 */
@@ -345,9 +438,9 @@ async function runDeepAnalysisDirect(opts: RunDeepOptions, completedMap: Record<
         onDelta: (d) => {
           if (d.reasoning) {
             fullReasoning += d.reasoning;
-            // analyst/verdict 的 reasoning 直播给前端；辩论角色不直播（与服务器版一致，补发时统一带）
-            if (stageKey === 'analyst') { analystReasoning += d.reasoning; emit(); }
-            else if (stageKey === 'verdict') { verdictReasoning += d.reasoning; emit(); }
+            if (stageKey === 'analyst') { analystReasoning += d.reasoning; advanceStage('analyst'); emit(); }
+            else if (stageKey === 'verdict') { verdictReasoning += d.reasoning; advanceStage('verdict'); emit(); }
+            else { roleReasonBuf[stageKey] = (roleReasonBuf[stageKey] || '') + d.reasoning; advanceStage('debate'); emit(); }
           }
           if (d.content) {
             if (d.content === lastDelta) repeatCount++;
@@ -357,6 +450,10 @@ async function runDeepAnalysisDirect(opts: RunDeepOptions, completedMap: Record<
               console.warn(`[Deep AI Direct] ${stageKey} 检测到卡死（连续重复输出）`);
             }
             fullOutput += d.content;
+            // 正文逐字直播（直连主路径的体验核心；verdict 顺带渐进解析结构化字段，卡片逐字段亮起）
+            if (stageKey === 'analyst') { analystText += d.content; advanceStage('analyst'); emit(); }
+            else if (stageKey === 'verdict') { verdictText += d.content; advanceStage('verdict'); emit(parseVerdictContent(verdictText, ctx.tradeLevels)); }
+            else { roleBuf[stageKey] = (roleBuf[stageKey] || '') + d.content; advanceStage('debate'); emit(); }
           }
         },
       });
@@ -365,15 +462,13 @@ async function runDeepAnalysisDirect(opts: RunDeepOptions, completedMap: Record<
       const isTimeout = /超时|timeout/i.test(e.message || '');
       if (isTimeout) throw new Error(`[${stageKey}] 阶段超时（120s），模型未在限定时间内响应`);
       const isRetryableNetwork = e.name === 'TypeError' || /fetch|network/i.test(e.message || '');
-      if (attempt < 2 && isRetryableNetwork) {
+      const retryable = (attempt < 2 && isRetryableNetwork)
+        || (e instanceof LlmHttpError && attempt < 2 && (e.status === 429 || e.status >= 500));
+      if (retryable) {
+        rollbackLive(stageKey, fullOutput.length, fullReasoning.length);
+        emit();
         const backoff = 2000 * attempt;
-        console.warn(`[Deep AI Direct] ${stageKey} 网络错误，${backoff}ms 后重试 ${attempt}/2`);
-        await new Promise(r => setTimeout(r, backoff));
-        return runStage(stageKey, systemPrompt, userPrompt, maxTokens, attempt + 1);
-      }
-      if (e instanceof LlmHttpError && attempt < 2 && (e.status === 429 || e.status >= 500)) {
-        const backoff = 2000 * attempt;
-        console.warn(`[Deep AI Direct] ${stageKey} HTTP ${e.status}，${backoff}ms 后重试 ${attempt}/2`);
+        console.warn(`[Deep AI Direct] ${stageKey} 可重试错误，${backoff}ms 后重试 ${attempt}/2`);
         await new Promise(r => setTimeout(r, backoff));
         return runStage(stageKey, systemPrompt, userPrompt, maxTokens, attempt + 1);
       }
@@ -385,6 +480,8 @@ async function runDeepAnalysisDirect(opts: RunDeepOptions, completedMap: Record<
     if (!fullOutput.trim()) {
       console.warn(`[Deep AI Direct] ${stageKey} 输出为空（流式响应无 content 增量），重试 ${attempt}/2`);
       if (attempt < 2) {
+        rollbackLive(stageKey, fullOutput.length, fullReasoning.length);
+        emit();
         return runStage(stageKey, systemPrompt, userPrompt, maxTokens, attempt + 1);
       }
       throw new Error(`[${stageKey}] 输出为空`);
@@ -392,113 +489,172 @@ async function runDeepAnalysisDirect(opts: RunDeepOptions, completedMap: Record<
     return { text: fullOutput, reasoning: fullReasoning };
   };
 
-  /** 断点续传：completedMap 命中回放，否则 runStage 直播并写回 */
+  /** 断点续传：completedMap 命中回放，否则 runStage 直播；完成后权威覆盖 + 写断点 */
   const runOrReplay = async (stageKey: string, sys: string, usr: string, maxTokens: number, isDebate = false): Promise<string> => {
     const cached = completedMap[stageKey];
     if (cached != null) {
-      if (isDebate) {
-        debateText += cached + '\n\n';
-        stage = 'debate';
-        emit();
-      } else if (stageKey === 'analyst') {
-        analystText += cached;
-        stage = 'analyst';
-        emit();
-      } else if (stageKey === 'verdict') {
-        verdictText += cached;
-        stage = 'verdict';
-        emit(parseVerdictContent(verdictText, ctx.tradeLevels));
-      }
+      if (isDebate) { roleBuf[stageKey] = cached; advanceStage('debate'); emit(); }
+      else if (stageKey === 'analyst') { analystText = cached; advanceStage('analyst'); emit(); }
+      else if (stageKey === 'verdict') { verdictText = cached; advanceStage('verdict'); emit(parseVerdictContent(verdictText, ctx.tradeLevels)); }
       return cached;
     }
     const { text, reasoning } = await runStage(stageKey, sys, usr, maxTokens);
     if (isDebate) {
-      debateText += text + '\n\n';
-      stage = 'debate';
-      if (reasoning) debateReasoning = (debateReasoning ? debateReasoning + '\n\n' : '') + reasoning;
+      roleBuf[stageKey] = text;
+      if (reasoning) roleReasonBuf[stageKey] = reasoning;
+      advanceStage('debate');
       emit();
     } else if (stageKey === 'analyst') {
-      analystText += text;
-      stage = 'analyst';
+      analystText = text;
+      advanceStage('analyst');
       emit();
+    } else if (stageKey === 'verdict') {
+      verdictText = text;
+      if (reasoning) verdictReasoning = reasoning;
+      advanceStage('verdict');
+      emit(parseVerdictContent(verdictText, ctx.tradeLevels));
     }
     completedMap[stageKey] = text;
     saveDeepResume(ctx.stockCode, completedMap);
     return text;
   };
 
-  // ===== 阶段一：情报收集 =====
-  const stage1Output = await runOrReplay('analyst', ctx.stage1.systemPrompt, ctx.stage1.userPrompt, 4096);
-
-  // ===== 阶段二：多空辩论（任一角色失败即终止整次分析）=====
-  let stage2Output = '';
-  // 辩论基础数据 prompt（不含分析师报告，角色不需要读完整报告）
+  // ===== 波1 前置：辩论基础数据（不含分析师报告，角色不需要读完整报告）=====
   const userViewNote = userView ? `\n\n[用户观点] 用户当前${userView}。理由：${userViewReason || '未说明'}。\n各角色在论证时可参考用户观点，但不要迎合——用数据验证或反驳用户的看法。` : '';
   const debateData = [
     ctx.stage2.userPrompt.split('以下是一份深度分析师报告')[0]?.trim() || '',
     userViewNote,
   ].filter(Boolean).join('\n\n');
 
-  // Round 1: 三人串行
-  const t1 = await runOrReplay('tech', buildTechR1SystemPrompt(), debateData, 2048, true);
-  const r1 = await runOrReplay('risk', buildRiskR1SystemPrompt(), debateData, 2048, true);
-  const x1 = await runOrReplay('xinjie', buildXinJieR1DebatePrompt(), debateData, 2048, true);
-  stage2Output += [t1, r1, x1].join('\n\n');
+  // 降级清单：记录哪些阶段失败/被跳过 → 拼进裁决输入降级 + 展示给用户
+  const degraded: string[] = [];
+  /** 宽容执行：失败的角色记入 degraded 返回空串，不再"任一失败即终止整次分析"——裁决是核心产出，上游被截断也要尽量出裁决 */
+  const safeRun = async (stageKey: string, sys: string, usr: string, maxTokens: number, isDebate = false): Promise<string> => {
+    try {
+      return await runOrReplay(stageKey, sys, usr, maxTokens, isDebate);
+    } catch (e: any) {
+      if (e.name === 'AbortError') throw e;
+      degraded.push(stageKey);
+      console.warn(`[Deep AI Direct] ${stageKey} 失败，跳过继续：${e.message}`);
+      return '';
+    }
+  };
 
-  // Round 2: 串行反驳（累计上下文）
-  debateText += '\n--- 第二轮 ---\n';
-  stage = 'debate';
-  emit();
+  // ===== 波1：分析师 + R1 三人 4 路并发（宽容：成功几个算几个）=====
+  const wave1 = await Promise.allSettled([
+    safeRun('analyst', ctx.stage1.systemPrompt, ctx.stage1.userPrompt, 4096),
+    safeRun('tech', buildTechR1SystemPrompt(), debateData, 2048, true),
+    safeRun('risk', buildRiskR1SystemPrompt(), debateData, 2048, true),
+    safeRun('xinjie', buildXinJieR1DebatePrompt(), debateData, 2048, true),
+  ]);
+  const stage1Output = (wave1[0] as PromiseFulfilledResult<string>).value;
+  const t1 = (wave1[1] as PromiseFulfilledResult<string>).value;
+  const r1 = (wave1[2] as PromiseFulfilledResult<string>).value;
+  const x1 = (wave1[3] as PromiseFulfilledResult<string>).value;
 
+  // ===== R2：串行反驳链（宽容；前一步失败用空串占位，不阻断后续）=====
   const techR2Ctx = `前面两人的第一轮发言：\n${r1}\n${x1}\n\n请回应以上两人的观点。`;
-  const techR2 = await runOrReplay('tech_r2', buildTechR2RebuttalPrompt(), techR2Ctx, 2048, true);
+  const techR2 = await safeRun('tech_r2', buildTechR2RebuttalPrompt(), techR2Ctx, 2048, true);
 
   const riskR2Ctx = `第一轮发言回顾：\n${t1}\n${x1}\n\n技术分析师的回应：\n${techR2}\n\n请回应以上内容。`;
-  const riskR2 = await runOrReplay('risk_r2', buildRiskR2RebuttalPrompt(), riskR2Ctx, 2048, true);
+  const riskR2 = await safeRun('risk_r2', buildRiskR2RebuttalPrompt(), riskR2Ctx, 2048, true);
 
   const xinjieR2Ctx = `第一轮：\n${t1}\n${r1}\n\n第二轮回应：\n技术分析师："${techR2.slice(0, 200)}"\n风控专家："${riskR2.slice(0, 200)}"\n\n请给出你的最终判断。`;
-  const xinjieR2 = await runOrReplay('xinjie_r2', buildXinJieR2RebuttalPrompt(), xinjieR2Ctx, 2048, true);
+  const xinjieR2 = await safeRun('xinjie_r2', buildXinJieR2RebuttalPrompt(), xinjieR2Ctx, 2048, true);
 
-  const mgrCtx = `第一轮发言：\n技术分析师：${t1.slice(0, 200)}\n风控专家：${r1.slice(0, 200)}\n心姐：${x1.slice(0, 200)}\n\n第二轮反驳：\n技术反驳：${techR2.slice(0, 200)}\n风控反驳：${riskR2.slice(0, 200)}\n心姐最终判断：${xinjieR2.slice(0, 200)}`;
-  const mgrOutput = await runOrReplay('manager', buildManagerPrompt(), mgrCtx, 2048, true);
+  const r1Text = [t1, r1, x1].filter(Boolean).join('\n\n');
+  const r2Text = [techR2, riskR2, xinjieR2].filter(Boolean).join('\n\n');
+  const stage2Output = [r1Text, r2Text && `--- 第二轮 ---\n${r2Text}`].filter(Boolean).join('\n\n');
 
-  stage2Output += '\n--- R2 ---\n' + [techR2, riskR2, xinjieR2, mgrOutput].join('\n\n');
-
-  // 卡死检测：R1 vs R2 相似度（与服务器版一致，仅记日志）
-  const r1All = t1 + r1 + x1;
-  const similarity = jaccardSimilarity(r1All, techR2 + riskR2 + xinjieR2);
-  if (similarity >= 0.7) {
-    console.warn(`[Deep AI Direct] 辩论轮间相似度过高 (${(similarity * 100).toFixed(0)}%)`);
+  // 卡死检测（仅当两轮都有内容，空串会误判相似度 1）
+  if ((t1 || r1 || x1) && (techR2 || riskR2 || xinjieR2)) {
+    const similarity = jaccardSimilarity(t1 + r1 + x1, techR2 + riskR2 + xinjieR2);
+    if (similarity >= 0.7) {
+      console.warn(`[Deep AI Direct] 辩论轮间相似度过高 (${(similarity * 100).toFixed(0)}%)`);
+    }
   }
 
-  // ===== 阶段三：最终裁决 =====
+  // ===== 阶段三：最终裁决（核心产出，三档降级 + 规则兜底，确保"最坏也有裁决"）=====
   const s3System = ctx.stage3.systemPrompt || buildVerdictSystemPrompt();
   const userViewVerdict = userView ? `\n\n[用户观点] 用户当前${userView}，理由：${userViewReason || '未说明'}。请在决策理由中评价用户观点是否成立（用数据说话，不要迎合用户）。` : '';
   // P2：历史校准注入（真实回测胜率，拼在 ## 分析师报告 前；样本不足/失败返回空串）
   const calibrationNote = await fetchCalibrationNote(ctx.stockCode);
-  const s3User = [
+  const s3Base = [
     ctx.stage3.userPrompt.split('## 分析师报告')[0]?.trim() || '',
-    calibrationNote,
-    `## 分析师报告\n${stage1Output}`,
-    `## 多空辩论\n${stage2Output}`,
-    userViewVerdict,
-    '请基于以上信息，做出最终投资决策。**注意：目标价和止损价必须参考实时行情中的当前价格。**',
+    // 辩论不可用时提示模型无需综合评判（综合评判本是对比辩论三人的）
+    (!stage2Output && !stage1Output ? '[提示] 本次分析师报告与辩论均未能生成，请直接基于行情与结构化候选价位给出决策，无需综合评判。' : ''),
   ].filter(Boolean).join('\n\n');
-  await runOrReplay('verdict', s3System, s3User, 4096);
+
+  const buildS3User = (withAnalyst: boolean, withDebate: boolean, withCalibration: boolean): string => {
+    const parts: string[] = [s3Base];
+    if (withCalibration && calibrationNote) parts.push(calibrationNote);
+    if (withAnalyst && stage1Output) parts.push(`## 分析师报告\n${stage1Output}`);
+    if (withDebate && stage2Output) parts.push(`## 多空辩论\n${stage2Output}`);
+    parts.push(userViewVerdict);
+    parts.push('请基于以上信息，做出最终投资决策。**注意：目标价和止损价必须参考实时行情中的当前价格。**');
+    return parts.filter(Boolean).join('\n\n');
+  };
+
+  // 降级档位：完整 → 去辩论+去校准（输入大幅减小，模型更容易成功）→ 极简（仅基础数据）
+  const VERDICT_ATTEMPTS: [boolean, boolean, boolean][] = [
+    [true, true, true],
+    [true, false, false],
+    [false, false, false],
+  ];
+  let verdictOk = false;
+  let lastVerdictError = '';
+  for (let attempt = 0; attempt < VERDICT_ATTEMPTS.length; attempt++) {
+    const [withAnalyst, withDebate, withCalibration] = VERDICT_ATTEMPTS[attempt];
+    // 该档没有比上一档更少的内容时跳过（避免无意义重复）
+    if (attempt > 0) {
+      const hasFull = stage1Output && stage2Output;
+      const sameInput = (attempt === 1 && (!stage2Output || !hasFull)) || (attempt === 2 && !stage1Output);
+      if (sameInput) continue;
+    }
+    try {
+      const usr = buildS3User(withAnalyst, withDebate, withCalibration);
+      await runOrReplay('verdict', s3System, usr, 4096);
+      verdictOk = true;
+      break;
+    } catch (e: any) {
+      if (e.name === 'AbortError') throw e;
+      lastVerdictError = e.message || '未知原因';
+      degraded.push(`verdict_attempt${attempt + 1}`);
+      console.warn(`[Deep AI Direct] 裁决第${attempt + 1}档失败，降级重试：${e.message}`);
+      // 清空已直播残片，防降级结果前缀重复
+      verdictText = '';
+      verdictReasoning = '';
+      verdictError = undefined;
+      emit(parseVerdictContent('', ctx.tradeLevels));
+    }
+  }
+
+  if (!verdictOk) {
+    // 规则兜底：零 LLM 依赖，保证"最坏情况也有一份裁决输出"
+    degraded.push('fallback_rule');
+    const fallback = buildFallbackVerdict(ctx, degraded);
+    verdictText = fallback.text;
+    verdictError = `AI 裁决生成失败（${lastVerdictError}），已退回规则引擎兜底`;
+    emit(fallback.structured);
+    console.warn(`[Deep AI Direct] 裁决三档均失败，已生成规则兜底裁决（${degraded.join(',')}）`);
+  }
 
   const finalStructured = parseVerdictContent(verdictText, ctx.tradeLevels);
   return {
     result: {
       analyst: analystText,
       analystReasoning: analystReasoning || undefined,
-      debate: debateText,
-      debateReasoning: debateReasoning || undefined,
+      debate: composeDebate(),
+      debateReasoning: composeDebateReasoning() || undefined,
       debateError: debateError || undefined,
       verdict: verdictText,
       verdictReasoning: verdictReasoning || undefined,
       verdictError: verdictError || undefined,
       levels: { current: ctx.tradeLevels.currentPrice, supports: ctx.tradeLevels.supports, resistances: ctx.tradeLevels.resistances },
       structured: finalStructured,
+      analystDone: true,
+      debateDone: true,
+      warnings: degraded.length > 0 ? [...degraded] : undefined,
     },
     completedMap,
   };
@@ -595,7 +751,7 @@ function saveDeepResume(stockCode: string, completed: Record<string, string>): v
 export async function runDeepAnalysisStream(opts: RunDeepOptions): Promise<RunDeepOutcome> {
   if (isDirectCircuited()) {
     console.warn('[Deep AI Direct] 熔断冷却中（连续失败过多），直接走服务器中转');
-    return runDeepAnalysisViaServer(opts);
+    return runDeepAnalysisViaServer(opts, { ...(opts.resumeCompleted || {}) });
   }
   const completedRef: Record<string, string> = { ...(opts.resumeCompleted || {}) };
   try {
@@ -609,7 +765,7 @@ export async function runDeepAnalysisStream(opts: RunDeepOptions): Promise<RunDe
       recordDirectFailure();
       console.warn('[Deep AI Direct] 直连异常，降级服务器中转:', e.message);
       try {
-        const outcome = await runDeepAnalysisViaServer({ ...opts, resumeCompleted: completedRef });
+        const outcome = await runDeepAnalysisViaServer(opts, completedRef);
         clearDeepResume(); // 完整分析成功，断点作废
         return outcome;
       } catch (e2: any) {
@@ -622,9 +778,10 @@ export async function runDeepAnalysisStream(opts: RunDeepOptions): Promise<RunDe
   }
 }
 
-/** 降级路径：服务器中转 SSE（原实现保留，作兜底） */
-async function runDeepAnalysisViaServer(opts: RunDeepOptions): Promise<RunDeepOutcome> {
-  const { ctx, cfg, resumeCompleted, userView, userViewReason, signal, onProgress } = opts;
+/** 降级路径：服务器中转 SSE（原实现保留，作兜底）。completedMap 与直连路径共享同一对象，断点进度不丢 */
+async function runDeepAnalysisViaServer(opts: RunDeepOptions, completedMap: Record<string, string>): Promise<RunDeepOutcome> {
+  const { ctx, cfg, signal, onProgress } = opts;
+  const { userView, userViewReason } = opts;
 
   const res = await fetch('/api/ai/deep-analyze', {
     method: 'POST',
@@ -633,7 +790,8 @@ async function runDeepAnalysisViaServer(opts: RunDeepOptions): Promise<RunDeepOu
       stockCode: ctx.stockCode,
       stage1: ctx.stage1, stage2: ctx.stage2, stage3: ctx.stage3,
       baseUrl: cfg.baseUrl, apiKey: cfg.apiKey, model: cfg.model,
-      completed: resumeCompleted,
+      // 直连已完成的阶段一并上送，服务器回放跳过（而不是重跑）
+      completed: completedMap,
       userView: userView || undefined,
       userViewReason: userViewReason || undefined,
     }),
@@ -649,10 +807,24 @@ async function runDeepAnalysisViaServer(opts: RunDeepOptions): Promise<RunDeepOu
   const decoder = new TextDecoder();
   let sseBuffer = '';
   let analystText = '', analystReasoning = '';
-  let debateText = '', debateReasoning = '', debateError = '';
-  let verdictText = '', verdictReasoning = '', verdictError = '';
-  const completedMap: Record<string, string> = {};
+  let debateError = '';
+  let verdictText = '', verdictReasoning = '', verdictError: string | undefined = undefined;
+  const roleBuf: Record<string, string> = {};
+  const roleReasonBuf: Record<string, string> = {};
+  const warnings: string[] = [];
   let stage: DeepStage = 'idle';
+  const stageRank: Record<DeepStage, number> = { idle: 0, analyst: 1, debate: 2, verdict: 3 };
+  const advanceStage = (s: DeepStage) => { if (stageRank[s] > stageRank[stage]) stage = s; };
+
+  const composeDebate = (): string => {
+    const r1 = DEBATE_R1_KEYS.map(k => roleBuf[k]).filter(Boolean);
+    const r2 = DEBATE_R2_KEYS.map(k => roleBuf[k]).filter(Boolean);
+    let out = r1.join('\n\n');
+    if (r2.length > 0) out += (out ? '\n' : '') + '--- 第二轮 ---\n' + r2.join('\n\n');
+    return out;
+  };
+  const composeDebateReasoning = (): string =>
+    [...DEBATE_R1_KEYS, ...DEBATE_R2_KEYS].map(k => roleReasonBuf[k]).filter(Boolean).join('\n\n');
 
   const emit = (structured?: DeepStructured | null) => {
     onProgress({
@@ -660,65 +832,106 @@ async function runDeepAnalysisViaServer(opts: RunDeepOptions): Promise<RunDeepOu
       result: {
         analyst: analystText,
         analystReasoning: analystReasoning || undefined,
-        debate: debateText,
-        debateReasoning: debateReasoning || undefined,
+        debate: composeDebate(),
+        debateReasoning: composeDebateReasoning() || undefined,
         debateError: debateError || undefined,
         verdict: verdictText,
         verdictReasoning: verdictReasoning || undefined,
         verdictError: verdictError || undefined,
         levels: { current: ctx.tradeLevels.currentPrice, supports: ctx.tradeLevels.supports, resistances: ctx.tradeLevels.resistances },
         structured: structured ?? null,
+        analystDone: completedMap['analyst'] != null,
+        debateDone: DEBATE_R2_KEYS.every(k => completedMap[k] != null),
+        warnings: warnings.length > 0 ? [...warnings] : undefined,
       },
     });
   };
 
-  while (true) {
-    const { done, value } = await reader.read();
-    if (done) break;
+  // 服务器裁决彻底失败（route 已尽力三档降级）→ 客户端用 ctx 的 levels + 规则信号做兜底，保证"最坏也有裁决"
+  try {
+    while (true) {
+      const { done, value } = await reader.read();
+      if (done) break;
 
-    sseBuffer += decoder.decode(value, { stream: true });
-    const lines = sseBuffer.split('\n');
-    sseBuffer = lines.pop() || '';
+      sseBuffer += decoder.decode(value, { stream: true });
+      const lines = sseBuffer.split('\n');
+      sseBuffer = lines.pop() || '';
 
-    for (const line of lines) {
-      const trimmed = line.trim();
-      if (!trimmed || !trimmed.startsWith('data:')) continue;
-      const data = trimmed.slice(5).trim();
-      if (data === '[DONE]') continue;
+      for (const line of lines) {
+        const trimmed = line.trim();
+        if (!trimmed || !trimmed.startsWith('data:')) continue;
+        const data = trimmed.slice(5).trim();
+        if (data === '[DONE]') continue;
 
-      try {
-        const msg = JSON.parse(data);
-        if (msg.error && !msg.stage) throw new Error(msg.error);
+        try {
+          const msg = JSON.parse(data);
+          if (msg.error && !msg.stage) throw new Error(msg.error);
 
-        if (msg.stage === 'analyst') {
-          if (msg.text !== undefined) { analystText += msg.text; stage = 'analyst'; emit(); }
-          if (msg.reasoning) { analystReasoning += msg.reasoning; emit(); }
-          if (msg.done) completedMap.analyst = analystText;
-        }
-        if (msg.stage === 'debate') {
-          if (msg.role && msg.text !== undefined) completedMap[msg.role] = msg.text.replace(/\n+$/, '');
-          if (msg.text !== undefined) { debateText += msg.text; stage = 'debate'; emit(); }
-          if (msg.reasoning) { debateReasoning += msg.reasoning; emit(); }
-          if (msg.error) { debateError = msg.error; emit(); }
-        }
-        if (msg.stage === 'verdict') {
-          if (msg.text !== undefined) {
-            verdictText += msg.text;
-            stage = 'verdict';
-            emit(parseVerdictContent(verdictText, ctx.tradeLevels));
+          // 辩论角色实时增量（stage=tech/risk/...）：追加到角色缓冲，拼装顺序固定
+          if ((DEBATE_R1_KEYS as readonly string[]).includes(msg.stage) || (DEBATE_R2_KEYS as readonly string[]).includes(msg.stage)) {
+            if (msg.text !== undefined) { roleBuf[msg.stage] = (roleBuf[msg.stage] || '') + msg.text; advanceStage('debate'); emit(); }
+            if (msg.reasoning) { roleReasonBuf[msg.stage] = (roleReasonBuf[msg.stage] || '') + msg.reasoning; emit(); }
           }
-          if (msg.reasoning) { verdictReasoning += msg.reasoning; emit(); }
-          if (msg.done) completedMap.verdict = verdictText;
-          if (msg.error) { verdictError = msg.error; emit(); }
-        }
-      } catch (e: any) {
-        if (e.message && !e.message.includes('JSON')) {
-          // 服务器路径中途失败：保存断点（含直连回放 + 服务器新完成阶段），刷新后可续跑
-          saveDeepResume(ctx.stockCode, completedMap);
-          throw e;
+          if (msg.stage === 'analyst') {
+            // full 为权威全量（回放/完成校正），否则是流式增量
+            if (msg.full !== undefined) { analystText = msg.full; advanceStage('analyst'); emit(); }
+            else if (msg.text !== undefined) { analystText += msg.text; advanceStage('analyst'); emit(); }
+            if (msg.reasoning) { analystReasoning += msg.reasoning; emit(); }
+            if (msg.done) { completedMap.analyst = analystText; saveDeepResume(ctx.stockCode, completedMap); }
+          }
+          if (msg.stage === 'debate') {
+            // 角色完成消息：权威覆盖（防重试/丢包造成的增量重复或缺失）
+            if (msg.role && msg.text !== undefined) {
+              const text = msg.text.replace(/\n+$/, '');
+              roleBuf[msg.role] = text;
+              completedMap[msg.role] = text;
+              saveDeepResume(ctx.stockCode, completedMap);
+              advanceStage('debate');
+              emit();
+            }
+            if (msg.reasoning && msg.role) { roleReasonBuf[msg.role] = msg.reasoning; emit(); }
+            if (msg.error) { debateError = msg.error; emit(); }
+          }
+          if (msg.stage === 'verdict') {
+            // reset：路由裁决降级重试前清掉已流式残片，防前缀重复
+            if (msg.reset) {
+              verdictText = '';
+              verdictReasoning = '';
+              verdictError = undefined;
+              emit(parseVerdictContent('', ctx.tradeLevels));
+            }
+            // warnings：路由把降级清单透传上来（上游角色被跳过的提示）
+            if (Array.isArray(msg.warnings)) {
+              warnings.push(...msg.warnings.map(String));
+              emit();
+            }
+            if (msg.full !== undefined) { verdictText = msg.full; advanceStage('verdict'); emit(parseVerdictContent(verdictText, ctx.tradeLevels)); }
+            else if (msg.text !== undefined) {
+              verdictText += msg.text;
+              advanceStage('verdict');
+              emit(parseVerdictContent(verdictText, ctx.tradeLevels));
+            }
+            if (msg.reasoning) { verdictReasoning += msg.reasoning; emit(); }
+            if (msg.done) { completedMap.verdict = verdictText; saveDeepResume(ctx.stockCode, completedMap); }
+            if (msg.error) { verdictError = msg.error; emit(); }
+          }
+        } catch (e: any) {
+          if (e.message && !e.message.includes('JSON')) {
+            // 服务器路径中途失败（断点已由各 done 消息实时落盘）→ 交给外层 catch 做规则兜底
+            throw e;
+          }
         }
       }
     }
+  } catch (e: any) {
+    if (e.name === 'AbortError') throw e;
+    // 裁决彻底失败 → 规则兜底（levels + 规则信号），保证"最坏情况也有裁决输出"
+    warnings.push('server_verdict_failed', 'fallback_rule');
+    console.warn('[Deep AI Direct] 服务器中转裁决失败，退回规则兜底:', e.message);
+    const fb = buildFallbackVerdict(ctx, warnings);
+    verdictText = fb.text;
+    verdictError = `AI 裁决生成失败（${e.message || '未知原因'}），已退回规则引擎兜底`;
+    emit(fb.structured);
   }
 
   const finalStructured = parseVerdictContent(verdictText, ctx.tradeLevels);
@@ -726,14 +939,17 @@ async function runDeepAnalysisViaServer(opts: RunDeepOptions): Promise<RunDeepOu
     result: {
       analyst: analystText,
       analystReasoning: analystReasoning || undefined,
-      debate: debateText,
-      debateReasoning: debateReasoning || undefined,
+      debate: composeDebate(),
+      debateReasoning: composeDebateReasoning() || undefined,
       debateError: debateError || undefined,
       verdict: verdictText,
       verdictReasoning: verdictReasoning || undefined,
       verdictError: verdictError || undefined,
       levels: { current: ctx.tradeLevels.currentPrice, supports: ctx.tradeLevels.supports, resistances: ctx.tradeLevels.resistances },
       structured: finalStructured,
+      analystDone: true,
+      debateDone: true,
+      warnings: warnings.length > 0 ? [...warnings] : undefined,
     },
     completedMap,
   };
@@ -741,9 +957,12 @@ async function runDeepAnalysisViaServer(opts: RunDeepOptions): Promise<RunDeepOu
 
 // ── 历史摘要组装 + 全局回测落库 ─────────────────────────────────────
 export function buildDeepSummary(result: DeepResult): string {
-  let debateConclusion = '';
-  const debateMatch = result.debate.match(/【综合评判】([\s\S]*?)(?=\n【|\n###|\n$|$)/);
-  if (debateMatch) debateConclusion = debateMatch[1].trim();
+  // 综合评判已并入裁决输出（structured.consensus）；旧格式历史记录兜底从辩论文本解析
+  let debateConclusion = result.structured?.consensus || '';
+  if (!debateConclusion) {
+    const debateMatch = result.debate.match(/【综合评判】([\s\S]*?)(?=\n【|\n###|\n$|$)/);
+    if (debateMatch) debateConclusion = debateMatch[1].trim();
+  }
 
   const parts: string[] = [];
   if (debateConclusion) parts.push(`📊 综合评判：${debateConclusion}`);

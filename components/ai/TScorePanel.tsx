@@ -11,7 +11,8 @@ import type { IntradayContext } from '@/services/t-score/intraday';
 import type { TFactorScore } from '@/services/t-score/scorer';
 import { SELL_RULE_IDS } from '@/services/alertRules';
 import { cn } from '@/lib/utils';
-import { Activity, AlertTriangle, Loader2 } from 'lucide-react';
+import { useState } from 'react';
+import { Activity, AlertTriangle, ChevronDown, ChevronUp, Loader2 } from 'lucide-react';
 
 export interface TScorePanelResult {
   degraded: boolean;
@@ -93,6 +94,9 @@ function FactorTable({ factors }: { factors: TFactorScore[] }) {
 }
 
 export function TScorePanel({ result, isRunning }: Props) {
+  // 因子分解默认折叠：得分/权重对多数用户是噪声，想深究再点开（hooks 须在 degraded 早退前）
+  const [showFactors, setShowFactors] = useState(false);
+
   if (result.degraded) {
     return (
       <div className="rounded-xl p-5 bg-amber-50 dark:bg-amber-950/30 border border-amber-200 dark:border-amber-800 mb-4">
@@ -152,15 +156,25 @@ export function TScorePanel({ result, isRunning }: Props) {
         </div>
       ) : null}
 
-      {/* 因子分解 */}
+      {/* 因子分解（默认折叠） */}
       <div className="rounded-xl p-4 bg-white dark:bg-gray-900 shadow-sm">
-        <h3 className="font-semibold mb-3 text-sm">因子分解</h3>
-        <FactorTable factors={result.buyFactors} />
-        {result.sellFactors.length > 0 && (
-          <>
-            <div className="my-2 border-t border-gray-100 dark:border-gray-800" />
-            <FactorTable factors={result.sellFactors} />
-          </>
+        <button
+          onClick={() => setShowFactors(!showFactors)}
+          className="w-full flex items-center justify-between text-sm font-semibold text-gray-900 dark:text-white"
+        >
+          <span>因子分解 <span className="font-normal text-xs text-gray-400">各因子得分与权重</span></span>
+          {showFactors ? <ChevronUp className="w-4 h-4 text-gray-400" /> : <ChevronDown className="w-4 h-4 text-gray-400" />}
+        </button>
+        {showFactors && (
+          <div className="mt-3">
+            <FactorTable factors={result.buyFactors} />
+            {result.sellFactors.length > 0 && (
+              <>
+                <div className="my-2 border-t border-gray-100 dark:border-gray-800" />
+                <FactorTable factors={result.sellFactors} />
+              </>
+            )}
+          </div>
         )}
       </div>
 

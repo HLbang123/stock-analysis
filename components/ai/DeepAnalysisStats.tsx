@@ -11,7 +11,7 @@ import Link from 'next/link';
 import { Card } from '@/components/ui/card';
 import { Activity, Target, Trophy } from 'lucide-react';
 import { cn } from '@/lib/utils';
-import { pct, signed, Metric, StatsHeader, StatsEmpty } from './stats-primitives';
+import { pct, signed, Metric, StatsHeader, StatsEmpty, TuningDetails } from './stats-primitives';
 
 interface Stats {
   summary: {
@@ -179,25 +179,6 @@ export function DeepAnalysisStats() {
             </div>
           </Card>
 
-          {/* ②.5 月度趋势（验证 P2 校准注入是否逐步起效） */}
-          {stats.byMonth.length > 0 && (
-            <Card className="p-4">
-              <div className="text-sm font-medium mb-2">月度胜率趋势 · T+5</div>
-              <p className="text-xs text-gray-400 mb-2">按分析落库月份聚合。校准注入（P2）上线后，若胜率随月份走高说明自校准在起效。</p>
-              <div className="flex flex-wrap gap-x-4 gap-y-2">
-                {stats.byMonth.map((m) => (
-                  <div key={m.month} className={cn('text-center', weakCls(m.count))} title={weak(m.count) ? `样本仅 ${m.count} 条` : undefined}>
-                    <div className="text-xs text-gray-400">{m.month.slice(0, 4)}-{m.month.slice(4)}</div>
-                    <div className={cn('text-base font-semibold mt-0.5', m.winRate != null ? 'text-gray-900 dark:text-white' : 'text-gray-400')}>
-                      {pct(m.winRate, 0)}%
-                    </div>
-                    <div className="text-[10px] text-gray-400">{m.count}次 {m.avgReturn != null ? signed(m.avgReturn) : '--'}</div>
-                  </div>
-                ))}
-              </div>
-            </Card>
-          )}
-
           {/* ③ 买入目标/止损命中（聚焦买入时展开） */}
           {focus === '买入' && focusRow?.targetStop && (
             <Card className="p-4">
@@ -229,6 +210,27 @@ export function DeepAnalysisStats() {
                     ))}
                   </tbody>
                 </table>
+              </div>
+            </Card>
+          )}
+
+          {/* 调优细节：月度趋势 / 大盘环境分桶 / 置信度·仓位校准（默认收起） */}
+          <TuningDetails hint="月度趋势 · 大盘分桶 · 校准">
+          {/* ②.5 月度趋势（验证 P2 校准注入是否逐步起效） */}
+          {stats.byMonth.length > 0 && (
+            <Card className="p-4">
+              <div className="text-sm font-medium mb-2">月度胜率趋势 · T+5</div>
+              <p className="text-xs text-gray-400 mb-2">按分析落库月份聚合。校准注入（P2）上线后，若胜率随月份走高说明自校准在起效。</p>
+              <div className="flex flex-wrap gap-x-4 gap-y-2">
+                {stats.byMonth.map((m) => (
+                  <div key={m.month} className={cn('text-center', weakCls(m.count))} title={weak(m.count) ? `样本仅 ${m.count} 条` : undefined}>
+                    <div className="text-xs text-gray-400">{m.month.slice(0, 4)}-{m.month.slice(4)}</div>
+                    <div className={cn('text-base font-semibold mt-0.5', m.winRate != null ? 'text-gray-900 dark:text-white' : 'text-gray-400')}>
+                      {pct(m.winRate, 0)}%
+                    </div>
+                    <div className="text-[10px] text-gray-400">{m.count}次 {m.avgReturn != null ? signed(m.avgReturn) : '--'}</div>
+                  </div>
+                ))}
               </div>
             </Card>
           )}
@@ -285,6 +287,7 @@ export function DeepAnalysisStats() {
               <CalibTable rows={stats.positionBuckets} />
             </Card>
           </div>
+          </TuningDetails>
         </>
       )}
     </div>

@@ -16,6 +16,15 @@ interface ChangeEntry {
 
 const CHANGELOG: ChangeEntry[] = [
   {
+    date: '2026-08-07',
+    items: [
+      '新增「复盘」入口（首页顶部）：周报、深度分析胜率、AI筛选胜率、预警规则健康四处数据收拢一处，分页签切换',
+      '新增「云同步」：自选、分组、AI 配置、分析历史加密备份，换设备用配对码即可恢复，自动同步实时更新',
+      '深度分析提速约一半：情报收集与辩论第一轮并行生成，研究经理综合评判并入最终裁决',
+      '深度分析、AI 对话正文改为逐字流式输出',
+    ],
+  },
+  {
     date: '2026-08-06',
     items: [
       'AI 调用链路升级：深度分析、波段评分、AI 对话改为浏览器直连 AI 平台，服务器不再中转大流量，响应更快、更省带宽；直连异常时自动回退服务器中转',
@@ -244,7 +253,7 @@ const THANKS = `这个小工具能跑起来，离不开群里大家的支持。
 • Tushare 数据接口：600 元/年｜2026-07-18 + 2026-07-22 支出
 • 合计：1499 元/年`;
 
-export function UpdateLog() {
+export function UpdateLog({ onShowRules }: { onShowRules?: () => void }) {
   const [menuOpen, setMenuOpen] = useState(false);
   const [panel, setPanel] = useState<'log' | 'thanks' | null>(null);
   const wrapRef = useRef<HTMLDivElement>(null);
@@ -292,6 +301,14 @@ export function UpdateLog() {
           >
             鸣谢
           </button>
+          {onShowRules && (
+            <button
+              onClick={() => { setMenuOpen(false); onShowRules(); }}
+              className="w-full px-3 py-2 text-sm text-left text-gray-600 dark:text-gray-300 hover:bg-gray-50 dark:hover:bg-gray-800 transition border-t border-gray-100 dark:border-gray-800"
+            >
+              规则说明
+            </button>
+          )}
         </div>
       )}
 

@@ -1,6 +1,6 @@
 'use client';
 
-import { useMemo, useState } from 'react';
+import { useEffect, useMemo, useState } from 'react';
 import { useRouter } from 'next/navigation';
 import { useStockStore } from '@/store';
 import { getRealtimeQuote, getKLineSina, getChipData } from '@/services/stockApi';
@@ -8,10 +8,12 @@ import { ALERT_RULES, checkAllRules, isBuyRule, REFERENCE_RULE_IDS, buyRuleWeigh
 import { AlertRecord } from '@/types';
 import { formatTime, cn } from '@/lib/utils';
 import { buildUpdatedKLines } from '@/lib/stock-helpers';
-import { AlertTriangle, Trash2, BookOpen, CalendarDays } from 'lucide-react';
+import { AlertTriangle, Trash2, BarChart3, Cloud } from 'lucide-react';
 import { UpdateLog } from '@/components/UpdateLog';
 import { AlertRulesModal } from '@/components/AlertRulesModal';
-import { WeeklyReviewModal } from '@/components/ai/WeeklyReviewModal';
+import { ReviewModal } from '@/components/ReviewModal';
+import { SyncModal } from '@/components/SyncModal';
+import { useSyncStore } from '@/store/sync-store';
 import { Button } from '@/components/ui/button';
 import { PageHeader } from '@/components/ui/page-header';
 
@@ -53,7 +55,36 @@ export default function HomePage() {
   const [resultMessage, setResultMessage] = useState<string | null>(null);
   const [buyExpanded, setBuyExpanded] = useState<Set<string>>(new Set());
   const [showRules, setShowRules] = useState(false);
-  const [showWeekly, setShowWeekly] = useState(false);
+  const [showReview, setShowReview] = useState(false);
+  const [showSync, setShowSync] = useState(false);
+  // 周报未读角标：周五 cron 更新后本地记"上次已读的 generatedAt"，新的周报生成就亮角标，点开即清
+  const [weeklyLatestAt, setWeeklyLatestAt] = useState<string>('');
+  const [weeklyUnread, setWeeklyUnread] = useState(false);
+  const WEEKLY_READ_KEY = 'weekly-review-last-read';
+  useEffect(() => {
+    fetch('/api/weekly-review?meta=1')
+      .then((r) => r.json())
+      .then((data) => {
+        const generatedAt = data?.review?.generatedAt as string | undefined;
+        if (!generatedAt) return;
+        setWeeklyLatestAt(generatedAt);
+        try {
+          const last = localStorage.getItem(WEEKLY_READ_KEY);
+          setWeeklyUnread(!last || generatedAt > last);
+        } catch { setWeeklyUnread(false); }
+      })
+      .catch(() => { /* 静默 */ });
+  }, []);
+  const openReview = () => {
+    setShowReview(true);
+    if (weeklyUnread) {
+      setWeeklyUnread(false);
+      try { localStorage.setItem(WEEKLY_READ_KEY, weeklyLatestAt); } catch { /* ignore */ }
+    }
+  };
+  // 云同步引导条：有自选但未开启且未关闭过提示时显示（中性措辞，换机用户应走"配对码恢复"而非"开启"）
+  const syncEnabled = useSyncStore((s) => s.enabled);
+  const bannerDismissed = useSyncStore((s) => s.bannerDismissed);
   const toggleBuyExpand = (code: string) => {
     setBuyExpanded(prev => {
       const next = new Set(prev);
@@ -272,24 +303,27 @@ export default function HomePage() {
       {/* 页面头部：标题 + 操作 */}
       <PageHeader
         title="预警"
-        icon={<UpdateLog />}
+        icon={<UpdateLog onShowRules={() => setShowRules(true)} />}
         actions={
           <>
             <button
-              onClick={() => setShowWeekly(true)}
-              className="flex items-center gap-1 px-3 py-1.5 text-sm text-gray-600 dark:text-gray-300 hover:bg-gray-100 dark:hover:bg-gray-800 rounded-[var(--radius-md)] transition"
-              title="本周回顾"
+              onClick={openReview}
+              className="relative flex items-center gap-1 px-3 py-1.5 text-sm text-gray-600 dark:text-gray-300 hover:bg-gray-100 dark:hover:bg-gray-800 rounded-[var(--radius-md)] transition"
+              title="复盘：周报与胜率统计"
             >
-              <CalendarDays className="w-4 h-4" />
-              周报
+              <BarChart3 className="w-4 h-4" />
+              复盘
+              {weeklyUnread && (
+                <span className="absolute -top-0.5 -right-0.5 w-2 h-2 rounded-full bg-[var(--color-danger)] animate-pulse" />
+              )}
             </button>
             <button
-              onClick={() => setShowRules(true)}
+              onClick={() => setShowSync(true)}
               className="flex items-center gap-1 px-3 py-1.5 text-sm text-gray-600 dark:text-gray-300 hover:bg-gray-100 dark:hover:bg-gray-800 rounded-[var(--radius-md)] transition"
-              title="查看预警规则说明"
+              title="云同步：多设备共享数据"
             >
-              <BookOpen className="w-4 h-4" />
-              规则说明
+              <Cloud className="w-4 h-4" />
+              同步
             </button>
             {alerts.length > 0 && (
               <button
@@ -302,6 +336,24 @@ export default function HomePage() {
           </>
         }
       />
+
+      {/* 云同步引导条（一次性，可关闭） */}
+      {watchlist.length > 0 && !syncEnabled && !bannerDismissed && (
+        <div className="mt-3 flex items-center gap-2 px-3 py-2.5 rounded-[var(--radius-md)] bg-[var(--color-brand-soft)]/60 dark:bg-[var(--color-brand-soft)]/30 text-sm">
+          <Cloud className="w-4 h-4 text-[var(--color-brand)] shrink-0" />
+          <span className="flex-1 text-gray-700 dark:text-gray-200">多设备共享自选、分组与 AI 配置</span>
+          <button onClick={() => setShowSync(true)} className="text-xs text-[var(--color-accent)] hover:underline shrink-0">
+            去设置
+          </button>
+          <button
+            onClick={() => useSyncStore.getState().dismissBanner()}
+            className="px-1 text-gray-400 hover:text-gray-600 shrink-0"
+            aria-label="关闭"
+          >
+            ×
+          </button>
+        </div>
+      )}
 
       {/* 操作区 */}
       <Button
@@ -423,7 +475,8 @@ export default function HomePage() {
         )}
 
       {showRules && <AlertRulesModal onClose={() => setShowRules(false)} />}
-      {showWeekly && <WeeklyReviewModal open={showWeekly} onClose={() => setShowWeekly(false)} />}
+      {showReview && <ReviewModal open={showReview} onClose={() => setShowReview(false)} />}
+      {showSync && <SyncModal open={showSync} onClose={() => setShowSync(false)} />}
     </div>
   );
 }

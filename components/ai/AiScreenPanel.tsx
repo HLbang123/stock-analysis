@@ -11,11 +11,10 @@ import { useRouter } from 'next/navigation';
 import { useAiScreenStore } from '@/store/ai-screen-store';
 import { cn } from '@/lib/utils';
 import { Card } from '@/components/ui/card';
-import { Loader2, ChevronDown, ChevronUp, AlertTriangle, History, Info, Sparkles, BarChart3, Filter } from 'lucide-react';
+import { Loader2, ChevronDown, ChevronUp, AlertTriangle, History, Info, Sparkles, Filter } from 'lucide-react';
 import { toast } from 'sonner';
 import type { AiProfile } from '@/store/ai-store';
 import type { AiPick, AiScreenRun } from '@/services/ai-screen/types';
-import { AiScreenStats } from './AiScreenStats';
 
 interface StrategyInfo {
   id: string;
@@ -57,7 +56,6 @@ export function AiScreenPanel({ currentProfile }: { currentProfile: AiProfile })
   const [expanded, setExpanded] = useState<number | null>(null);
   const [showLlmDetail, setShowLlmDetail] = useState(false);
   const [showHistory, setShowHistory] = useState(false);
-  const [view, setView] = useState<'screen' | 'stats'>('screen');
   const [sector, setSector] = useState('');
   const [level, setLevel] = useState<'L1' | 'L2'>('L1');
   const [board, setBoard] = useState('all');
@@ -110,17 +108,35 @@ export function AiScreenPanel({ currentProfile }: { currentProfile: AiProfile })
     const t0 = Date.now();
     const tick = setInterval(() => setElapsed(Math.floor((Date.now() - t0) / 1000)), 1000);
     try {
-      const res = await fetch('/api/ai-screen', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          strategyId: selectedStrategyId,
-          baseUrl: currentProfile.baseUrl,
-          apiKey: currentProfile.apiKey,
-          model: currentProfile.model,
-        }),
-      });
-      const data = await res.json();
+      // 网络波动自动重试：POST 幂等（服务器按策略+数据日去重），重发要么挂到在途执行要么秒中缓存
+      const MAX_ATTEMPTS = 3;
+      let data: any = null;
+      for (let attempt = 0; attempt < MAX_ATTEMPTS; attempt++) {
+        const ctl = new AbortController();
+        const timer = setTimeout(() => ctl.abort(), 330000); // 略大于服务器 LLM 300s 上限
+        try {
+          const res = await fetch('/api/ai-screen', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({
+              strategyId: selectedStrategyId,
+              baseUrl: currentProfile.baseUrl,
+              apiKey: currentProfile.apiKey,
+              model: currentProfile.model,
+            }),
+            signal: ctl.signal,
+          });
+          data = await res.json();
+          clearTimeout(timer);
+          break;
+        } catch (e) {
+          clearTimeout(timer);
+          if (attempt >= MAX_ATTEMPTS - 1) throw e;
+          toast.info(`网络波动，正在自动重试…（${attempt + 1}/${MAX_ATTEMPTS - 1}）`);
+          await new Promise(r => setTimeout(r, 3000 * (attempt + 1)));
+        }
+      }
+      if (!data) throw new Error('请求失败');
       if (data.error) {
         toast.error(data.error);
       } else {
@@ -174,19 +190,9 @@ export function AiScreenPanel({ currentProfile }: { currentProfile: AiProfile })
 
   return (
     <div>
-      {/* 视图切换 */}
-      <div className="flex gap-1 mb-3 p-1 bg-gray-100 dark:bg-gray-800/50 rounded-lg w-fit">
-        <button onClick={() => setView('screen')} className={cn('px-3 py-1 rounded-md text-xs font-medium', view === 'screen' ? 'bg-white dark:bg-gray-900 text-purple-600 shadow-sm' : 'text-gray-500')}>筛选</button>
-        <button onClick={() => setView('stats')} className={cn('px-3 py-1 rounded-md text-xs font-medium flex items-center gap-1', view === 'stats' ? 'bg-white dark:bg-gray-900 text-purple-600 shadow-sm' : 'text-gray-500')}><BarChart3 className="w-3.5 h-3.5" /> 胜率复盘</button>
-      </div>
-
-      {view === 'stats' ? (
-        <AiScreenStats />
-      ) : (
-        <>
-          <p className="text-xs text-gray-500 dark:text-gray-400 mb-3">
-            规则硬筛 → 多因子打分 → AI 横向重排 → 风险/组合约束。AI 只在候选池内排序,不给目标价。
-          </p>
+      <p className="text-xs text-gray-500 dark:text-gray-400 mb-3">
+        规则硬筛 → 多因子打分 → AI 横向重排 → 风险/组合约束。AI 只在候选池内排序,不给目标价。
+      </p>
 
       {/* 策略选择 */}
       <div className="grid grid-cols-2 sm:grid-cols-4 gap-2 mb-4">
@@ -355,8 +361,6 @@ export function AiScreenPanel({ currentProfile }: { currentProfile: AiProfile })
             <p className="text-sm mt-2">AI 在规则筛出的候选池内做横向排序与风险标注</p>
           </div>
         )
-      )}
-        </>
       )}
     </div>
   );

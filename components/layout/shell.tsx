@@ -4,6 +4,7 @@ import type { ReactNode } from "react";
 import { usePathname } from "next/navigation";
 import { BottomNav } from "@/components/layout/bottom-nav";
 import { SidebarNav } from "@/components/layout/sidebar-nav";
+import { SyncEngine } from "@/components/SyncEngine";
 
 export function Shell({ children }: { children: ReactNode }) {
   const pathname = usePathname();
@@ -20,6 +21,7 @@ export function Shell({ children }: { children: ReactNode }) {
         </div>
       </main>
       <BottomNav />
+      <SyncEngine />
     </div>
   );
 }

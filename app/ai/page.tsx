@@ -14,7 +14,7 @@ import { calculateIndicators } from '@/lib/indicators';
 import { isETF } from '@/lib/identify';
 import { cn } from '@/lib/utils';
 import { buildUpdatedKLines } from '@/lib/stock-helpers';
-import { Brain, Settings, Loader2, Sparkles, Send, History, BarChart3, Search } from 'lucide-react';
+import { Brain, Settings, Loader2, Sparkles, Send, History, Search } from 'lucide-react';
 import { postJSON } from '@/services/api';
 import { toast } from 'sonner';
 import { Button } from '@/components/ui/button';
@@ -25,10 +25,20 @@ import { Input, Select } from '@/components/ui/input';
 import { ProfileSettingsModal } from '@/components/ai/ProfileSettingsModal';
 import { ProfileFormModal } from '@/components/ai/ProfileFormModal';
 import { AnalysisHistory } from '@/components/ai/AnalysisHistory';
-import { DeepAnalysisStats } from '@/components/ai/DeepAnalysisStats';
-import { AlertRuleHealth } from '@/components/ai/AlertRuleHealth';
 import { AiChat } from '@/components/ai/AiChat';
 import { ReasoningPanel } from '@/components/ai/ReasoningPanel';
+
+/** 深度分析降级标记 → 友好中文（warnings 数组里是 engine 的代码段名） */
+const WARN_LABELS: Record<string, string> = {
+  analyst: '情报收集',
+  tech: '技术分析师', risk: '风控专家', xinjie: '心姐',
+  tech_r2: '技术分析师反驳', risk_r2: '风控专家反驳', xinjie_r2: '心姐反驳',
+  verdict_attempt1: '完整版裁决', verdict_attempt2: '降级版裁决', verdict_attempt3: '极简版裁决',
+  fallback_rule: 'AI 裁决',
+  server_verdict_failed: '服务器裁决',
+};
+/** 辩论角色阶段键（判定辩论是否部分失败） */
+const DEBATE_ROLE_KEYS = ['tech', 'risk', 'xinjie', 'tech_r2', 'risk_r2', 'xinjie_r2'];
 import { AiScreenPanel } from '@/components/ai/AiScreenPanel';
 import { TScorePanel, type TScorePanelResult } from '@/components/ai/TScorePanel';
 import { StockTrackStrip, VerdictCalibrationNote } from '@/components/ai/DeepCalibration';
@@ -62,8 +72,8 @@ export default function AiPage() {
   const [showSettings, setShowSettings] = useState(false);
   const [showAddProfile, setShowAddProfile] = useState(false);
   const [mode, setMode] = useState<'analyze' | 'screen'>('analyze');
-  // 底部平级切换：AI 对话 / 历史分析 / 胜率复盘
-  const [deepTab, setDeepTab] = useState<'chat' | 'history' | 'stats'>('chat');
+  // 底部平级切换：AI 对话 / 历史分析（胜率复盘已迁至首页「复盘」弹窗）
+  const [deepTab, setDeepTab] = useState<'chat' | 'history'>('chat');
   const [editingProfile, setEditingProfile] = useState<AiProfile | null>(null);
   const [selectedCode, setSelectedCode] = useState<string>(aiStore.lastSession?.selectedCode ?? '');
   // 搜索选中的非自选标的（自选内标的为 null）；随 lastSession 持久化
@@ -342,21 +352,46 @@ export default function AiPage() {
         toast.warning(`基本面数据部分缺失：${ctx.tushareIssues.join('；')}`);
       }
 
-      // SSE 流式三阶段分析
-      const { result: finalResult, completedMap } = await runDeepAnalysisStream({
-        ctx,
-        cfg: { baseUrl: currentProfile.baseUrl, apiKey: currentProfile.apiKey, model: currentProfile.model },
-        resumeCompleted,
-        userView: userView || undefined,
-        userViewReason: userViewReason || undefined,
-        signal: abortController.signal,
-        onProgress: (p) => {
-          setDeepStage(p.stage);
-          setDeepResult(p.result);
-        },
-      });
+      // 网络波动自动续跑：非用户取消的失败且有断点进度时，自动从断点重试（最多 2 次）
+      const MAX_AUTO_RESUME = 2;
+      let resumeCur = resumeCompleted;
+      let outcome: Awaited<ReturnType<typeof runDeepAnalysisStream>> | null = null;
+      for (let attempt = 0; attempt <= MAX_AUTO_RESUME; attempt++) {
+        try {
+          // SSE 流式三阶段分析
+          outcome = await runDeepAnalysisStream({
+            ctx,
+            cfg: { baseUrl: currentProfile.baseUrl, apiKey: currentProfile.apiKey, model: currentProfile.model },
+            resumeCompleted: resumeCur,
+            userView: userView || undefined,
+            userViewReason: userViewReason || undefined,
+            signal: abortController.signal,
+            onProgress: (p) => {
+              setDeepStage(p.stage);
+              setDeepResult(p.result);
+            },
+          });
+          break;
+        } catch (e: any) {
+          if (e.name === 'AbortError' || abortController.signal.aborted) throw e;
+          const resume = loadDeepResume();
+          const hasProgress = !!resume && resume.stockCode === selectedCode && Object.keys(resume.completed).length > 0;
+          if (!hasProgress || attempt >= MAX_AUTO_RESUME) throw e;
+          resumeCur = { ...resume.completed };
+          toast.info(`网络波动，正在自动续跑…（${attempt + 1}/${MAX_AUTO_RESUME}）`);
+          await new Promise(r => setTimeout(r, 2500 * (attempt + 1)));
+          if (abortController.signal.aborted) {
+            const abortErr = new Error('cancelled');
+            abortErr.name = 'AbortError';
+            throw abortErr;
+          }
+        }
+      }
+      if (!outcome) throw new Error('深度分析失败');
+      const { result: finalResult } = outcome;
+      const isDegraded = !!finalResult.warnings && finalResult.warnings.length > 0;
 
-      // 保存深度分析历史
+      // 保存深度分析历史（残缺分析打标记，本地也能看出不完整）
       aiStore.addHistory({
         id: generateId(),
         stockCode: selectedCode,
@@ -364,7 +399,7 @@ export default function AiPage() {
         profileName: currentProfile.name,
         model: currentProfile.model,
         riskLevel: finalResult.structured?.action || '深度分析',
-        analysis: buildDeepSummary(finalResult),
+        analysis: (isDegraded ? '[内容不完整] ' : '') + buildDeepSummary(finalResult),
         suggestion: buildDeepSuggestion(finalResult.structured),
         triggeredRulesJson: JSON.stringify([]),
         supportPrice: String(finalResult.structured?.targetLow ?? ''),
@@ -373,18 +408,25 @@ export default function AiPage() {
         entryDate: ctx.entryDate,
       });
 
-      // 全局回测落库（匿名，失败不阻断）
-      saveDeepEval({
-        stockCode: selectedCode, stockName: stock.name,
-        entryDate: ctx.entryDate, entryPrice: ctx.quote.price,
-        structured: finalResult.structured,
-        marketRegime: ctx.marketRegime,
-      });
+      // 全局回测落库（匿名，失败不阻断）。残缺分析（任一阶段失败/降级/规则兜底）不落库——
+      // 否则这类"未经验证的残缺建议"会进 T+N 回测与胜率复盘，污染统计口径。
+      if (!isDegraded) {
+        saveDeepEval({
+          stockCode: selectedCode, stockName: stock.name,
+          entryDate: ctx.entryDate, entryPrice: ctx.quote.price,
+          structured: finalResult.structured,
+          marketRegime: ctx.marketRegime,
+        });
+      }
 
       // 持久化最终结果（避开 state 异步；流式中间态不写 localStorage）
       aiStore.updateLastSession({ deepResult: finalResult });
 
-      toast.success('深度分析完成');
+      if (isDegraded) {
+        toast.warning('本次分析部分内容生成失败，结果可能不完整，请留意标注');
+      } else {
+        toast.success('深度分析完成');
+      }
       setDeepCompleted({});
     } catch (err: any) {
       if (err.name === 'AbortError') {
@@ -684,23 +726,31 @@ export default function AiPage() {
             </div>
           )}
 
-          {/* 阶段一：情报分析 */}
-          {deepResult?.analyst && (
+          {/* 阶段一：情报分析（失败也展示标注，不让用户误以为正常） */}
+          {(deepResult?.analyst || deepResult?.warnings?.includes('analyst')) && (
             <div className="bg-white dark:bg-gray-900 rounded-xl p-4 shadow-sm">
               <h3 className="font-semibold mb-3 flex items-center gap-2">
                 <span className="w-2 h-2 rounded-full bg-blue-500" />
                 阶段一：情报分析
               </h3>
-              <div className="text-sm text-gray-600 dark:text-gray-400 whitespace-pre-wrap leading-relaxed">
-                {deepResult.analyst}
-                {isDeepAnalyzing && deepStage === 'analyst' && (
-                  <span className="text-blue-500 animate-pulse text-lg font-bold">···</span>
-                )}
-              </div>
-              <ReasoningPanel
-                reasoning={deepResult.analystReasoning || ''}
-                isStreaming={isDeepAnalyzing && deepStage === 'analyst'}
-              />
+              {deepResult?.warnings?.includes('analyst') ? (
+                <div className="text-xs text-amber-600 p-2 bg-amber-50 dark:bg-amber-950 rounded">
+                  ⚠️ 情报收集生成失败，已跳过。本次分析基于其余数据完成，结果可能不完整。
+                </div>
+              ) : (
+                <>
+                  <div className="text-sm text-gray-600 dark:text-gray-400 whitespace-pre-wrap leading-relaxed">
+                    {deepResult.analyst}
+                    {isDeepAnalyzing && !deepResult?.analystDone && (
+                      <span className="text-blue-500 animate-pulse text-lg font-bold">···</span>
+                    )}
+                  </div>
+                  <ReasoningPanel
+                    reasoning={deepResult.analystReasoning || ''}
+                    isStreaming={isDeepAnalyzing && !deepResult?.analystDone}
+                  />
+                </>
+              )}
             </div>
           )}
           {isDeepAnalyzing && deepStage === 'debate' && !deepResult?.debate && (
@@ -711,7 +761,7 @@ export default function AiPage() {
           )}
 
           {/* 阶段二：多空辩论 */}
-          {(deepResult?.debate || deepResult?.debateError || (isDeepAnalyzing && (deepStage === 'debate' || deepStage === 'verdict'))) && (
+          {(deepResult?.debate || deepResult?.debateError || deepResult?.warnings?.some((w) => DEBATE_ROLE_KEYS.includes(w)) || (isDeepAnalyzing && (deepStage === 'debate' || deepStage === 'verdict'))) && (
             <div className="bg-white dark:bg-gray-900 rounded-xl p-4 shadow-sm">
               <h3 className="font-semibold mb-3 flex items-center gap-2">
                 <span className="w-2 h-2 rounded-full bg-amber-500" />
@@ -720,19 +770,33 @@ export default function AiPage() {
               {deepResult?.debateError && (
                 <div className="text-xs text-amber-600 mb-2 p-2 bg-amber-50 dark:bg-amber-950 rounded">{deepResult.debateError}</div>
               )}
+              {/* 辩论部分失败就地标注 */}
+              {(() => {
+                const failed = DEBATE_ROLE_KEYS.filter((k) => deepResult?.warnings?.includes(k));
+                if (failed.length > 0) {
+                  return (
+                    <div className="text-xs text-amber-600 mb-2 p-2 bg-amber-50 dark:bg-amber-950 rounded">
+                      ⚠️ 辩论部分角色生成失败已跳过（{failed.map((k) => WARN_LABELS[k] ?? k).join('、')}），辩论不完整。
+                    </div>
+                  );
+                }
+                return null;
+              })()}
               {deepResult?.debate ? (
                 <div className="text-sm text-gray-600 dark:text-gray-400 whitespace-pre-wrap leading-relaxed">
                   {deepResult.debate}
-                  {isDeepAnalyzing && deepStage === 'debate' && (
+                  {isDeepAnalyzing && !deepResult?.debateDone && (
                     <span className="text-amber-500 animate-pulse">...</span>
                   )}
                 </div>
               ) : isDeepAnalyzing && (deepStage === 'debate' || deepStage === 'verdict') ? (
                 <div className="text-sm text-gray-400 animate-pulse">等待辩论结果...</div>
+              ) : deepResult?.warnings?.some((w) => DEBATE_ROLE_KEYS.includes(w)) ? (
+                <div className="text-sm text-amber-600 p-2 bg-amber-50 dark:bg-amber-950 rounded">辩论全部生成失败，已跳过。</div>
               ) : null}
               <ReasoningPanel
                 reasoning={deepResult?.debateReasoning || ''}
-                isStreaming={isDeepAnalyzing && deepStage === 'debate'}
+                isStreaming={isDeepAnalyzing && !deepResult?.debateDone}
               />
             </div>
           )}
@@ -752,6 +816,19 @@ export default function AiPage() {
               </h3>
               {deepResult?.verdictError && (
                 <div className="text-xs text-red-600 mb-2 p-2 bg-red-50 dark:bg-red-950 rounded">{deepResult.verdictError}</div>
+              )}
+              {/* 降级提示：上游角色被跳过/裁决降级/规则兜底——告诉用户这份分析不完整 */}
+              {deepResult?.warnings && deepResult.warnings.length > 0 && (
+                <div className={cn(
+                  'text-xs mb-2 p-2 rounded',
+                  deepResult.warnings.includes('fallback_rule')
+                    ? 'text-red-600 bg-red-50 dark:bg-red-950'
+                    : 'text-amber-600 bg-amber-50 dark:bg-amber-950'
+                )}>
+                  {deepResult.warnings.includes('fallback_rule')
+                    ? '⚠️ 本次为规则引擎兜底结果，AI 深度分析未能完成，结论未经多空辩论校验，仅供参考'
+                    : `⚠️ 分析不完整：${deepResult.warnings.map((w) => WARN_LABELS[w] ?? w).join('、')} 生成失败已跳过，已基于现有数据完成决策`}
+                </div>
               )}
 
               {/* 结构化决策卡片 */}
@@ -867,6 +944,14 @@ export default function AiPage() {
                 </div>
               ) : null}
 
+              {/* 综合评判（原研究经理职责已并入裁决） */}
+              {deepResult?.structured?.consensus && (
+                <div className="mb-3">
+                  <h4 className="text-sm font-medium text-gray-700 dark:text-gray-300 mb-1">综合评判</h4>
+                  <p className="text-sm text-gray-600 dark:text-gray-400 whitespace-pre-wrap">{deepResult.structured.consensus}</p>
+                </div>
+              )}
+
               {/* 决策理由 */}
               {deepResult?.structured?.reasoning && (
                 <div className="mb-3">
@@ -914,7 +999,7 @@ export default function AiPage() {
         </div>
       )}
 
-      {/* 底部平级切换：AI 对话 / 历史分析 / 胜率复盘 */}
+      {/* 底部平级切换：AI 对话 / 历史分析 */}
       <div className="flex gap-1 p-1 bg-gray-100 dark:bg-gray-800/50 rounded-lg w-fit mb-4">
         <button
           onClick={() => setDeepTab('chat')}
@@ -934,15 +1019,6 @@ export default function AiPage() {
         >
           <History className="w-3.5 h-3.5" /> 历史分析
         </button>
-        <button
-          onClick={() => setDeepTab('stats')}
-          className={cn(
-            'px-3 py-1.5 rounded-md text-sm font-medium flex items-center gap-1 transition',
-            deepTab === 'stats' ? 'bg-white dark:bg-gray-900 text-purple-600 shadow-sm' : 'text-gray-500 hover:text-gray-700'
-          )}
-        >
-          <BarChart3 className="w-3.5 h-3.5" /> 胜率复盘
-        </button>
       </div>
 
       {/* AI 对话 */}
@@ -959,14 +1035,6 @@ export default function AiPage() {
       {/* 历史记录 */}
       {deepTab === 'history' && (
         <AnalysisHistory history={history} />
-      )}
-
-      {/* 胜率复盘 */}
-      {deepTab === 'stats' && (
-        <div className="space-y-4">
-          <AlertRuleHealth />
-          <DeepAnalysisStats />
-        </div>
       )}
 
       </>

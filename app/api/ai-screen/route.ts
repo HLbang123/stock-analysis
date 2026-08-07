@@ -13,7 +13,7 @@ import { NextRequest, NextResponse } from 'next/server';
 import { prisma } from '@/lib/db';
 import { STRATEGY_PRESETS, getPreset } from '@/services/ai-screen/strategies';
 import { runScreen, rescueRun, dbPickToAiPick } from '@/services/ai-screen/engine';
-import type { AiPick, AiScreenRun, LlmConfig } from '@/services/ai-screen/types';
+import type { AiPick, AiScreenRun, LlmConfig, StrategyPreset } from '@/services/ai-screen/types';
 
 /** 质量门控：只有 DeepSeek v4 及以上模型跑的结果才落库成为全员共享缓存。
  *  非 DeepSeek 或低于 v4 的用户：有合格缓存则白嫖，无缓存则用自己模型跑一次性结果给他看（不落库）。
@@ -127,6 +127,60 @@ function recordRescueFailure(key: string): void {
 }
 function clearRescueCircuit(key: string): void {
   rescueCircuit.delete(key);
+}
+
+// ── 首跑 in-flight 去重：同策略同数据日的并发请求共享同一次执行 ──
+// （客户端断网自动重试/双击/多用户同时首跑时，不会重复跑 runScreen 烧 token）
+const firstRunInflight = new Map<string, Promise<{ run: AiScreenRun; picks: AiPick[] }>>();
+
+/** 首跑执行体：runScreen + 按质量门控落库；P2002 并发兜底取对方结果 */
+async function runFirstRun(preset: StrategyPreset, cfg?: LlmConfig): Promise<{ run: AiScreenRun; picks: AiPick[] }> {
+  // 无缓存：首跑。runScreen 内部已含 LLM 重排 + 风险 + 组合
+  const { run, candidates, picks } = await runScreen(preset, cfg);
+
+  // 质量门控：LLM 策略只有 DeepSeek 模型跑的结果才落库共享；非 DeepSeek 用户跑的一次性结果只返回给他看，不落库。
+  // 非 LLM 策略（纯规则）无模型质量差异，首跑即落库。
+  const shouldPersist = !preset.llmRerank || isPreferredModel(cfg?.model);
+  if (!shouldPersist) {
+    return { run, picks };
+  }
+
+  try {
+    await prisma.aiScreenRun.create({
+      data: {
+        id: run.id,
+        strategyId: run.strategyId,
+        strategyName: run.strategyName,
+        createdAt: run.createdAt,
+        barDate: run.barDate,
+        rpsPeriod: run.rpsPeriod,
+        candidateCount: run.candidateCount,
+        pickCount: run.pickCount,
+        llmReranked: run.llmReranked,
+        llmRescued: false,
+        llmModel: run.llmModel,
+        llmMarketView: run.llmMarketView || null,
+        llmSelectionLogic: run.llmSelectionLogic || null,
+        llmPortfolioRisk: run.llmPortfolioRisk || null,
+        llmCoverage: run.llmCoverage,
+        degradation: run.degradation,
+        riskEnabled: run.riskEnabled,
+        portfolioEnabled: run.portfolioEnabled,
+        picks: { create: candidates.map(pickToCreate) },
+      },
+    });
+  } catch (e: any) {
+    // 并发：另一个用户刚建了同策略当日 Run → 取他的
+    if (e?.code === 'P2002') {
+      const r = await prisma.aiScreenRun.findUnique({
+        where: { strategyId_barDate: { strategyId: preset.id, barDate: run.barDate } },
+        include: { picks: { orderBy: { rank: 'asc' } } },
+      });
+      if (r) return { run: serializeRun(r), picks: displayPicks(r.picks) };
+    }
+    throw e;
+  }
+  return { run, picks };
 }
 
 /** DB Run 行 → AiScreenRun（前端用） */
@@ -260,52 +314,24 @@ export async function POST(request: NextRequest) {
       return NextResponse.json({ run: serializeRun(existing), picks: displayPicks(existing.picks) });
     }
 
-    // 无缓存：首跑。runScreen 内部已含 LLM 重排 + 风险 + 组合
-    const { run, candidates, picks } = await runScreen(preset, cfg);
-
-    // 质量门控：LLM 策略只有 DeepSeek 模型跑的结果才落库共享；非 DeepSeek 用户跑的一次性结果只返回给他看，不落库。
-    // 非 LLM 策略（纯规则）无模型质量差异，首跑即落库。
-    const shouldPersist = !preset.llmRerank || isPreferredModel(cfg?.model);
-    if (!shouldPersist) {
-      return NextResponse.json({ run, picks });
-    }
-
-    try {
-      await prisma.aiScreenRun.create({
-        data: {
-          id: run.id,
-          strategyId: run.strategyId,
-          strategyName: run.strategyName,
-          createdAt: run.createdAt,
-          barDate: run.barDate,
-          rpsPeriod: run.rpsPeriod,
-          candidateCount: run.candidateCount,
-          pickCount: run.pickCount,
-          llmReranked: run.llmReranked,
-          llmRescued: false,
-          llmModel: run.llmModel,
-          llmMarketView: run.llmMarketView || null,
-          llmSelectionLogic: run.llmSelectionLogic || null,
-          llmPortfolioRisk: run.llmPortfolioRisk || null,
-          llmCoverage: run.llmCoverage,
-          degradation: run.degradation,
-          riskEnabled: run.riskEnabled,
-          portfolioEnabled: run.portfolioEnabled,
-          picks: { create: candidates.map(pickToCreate) },
-        },
-      });
-    } catch (e: any) {
-      // 并发：另一个用户刚建了同策略当日 Run → 取他的
-      if (e?.code === 'P2002') {
-        const r = await prisma.aiScreenRun.findUnique({
-          where: { strategyId_barDate: { strategyId: preset.id, barDate } },
-          include: { picks: { orderBy: { rank: 'asc' } } },
-        });
-        if (r) return NextResponse.json({ run: serializeRun(r), picks: displayPicks(r.picks) });
+    // 无缓存：首跑（in-flight 去重——并发/自动重试的请求共享同一次执行，防重复烧 token）
+    const flightKey = circuitKey(preset.id, barDate);
+    const pending = firstRunInflight.get(flightKey);
+    if (pending) {
+      try {
+        return NextResponse.json(await pending);
+      } catch {
+        // 在途执行失败则落到下方自己跑一遍（重新占位）
       }
-      throw e;
     }
-    return NextResponse.json({ run, picks });
+    const task = runFirstRun(preset, cfg);
+    firstRunInflight.set(flightKey, task);
+    try {
+      return NextResponse.json(await task);
+    } finally {
+      // 仅当 map 里仍是自己的任务才删——在途任务失败后新任务覆盖了占位，旧请求的 finally 不得误删
+      if (firstRunInflight.get(flightKey) === task) firstRunInflight.delete(flightKey);
+    }
   } catch (e: any) {
     console.error('[api/ai-screen POST]', e);
     return NextResponse.json({ error: e.message || 'AI 筛选失败' }, { status: 500 });

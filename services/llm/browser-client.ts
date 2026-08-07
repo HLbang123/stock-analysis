@@ -13,7 +13,7 @@
  */
 
 import { buildChatUrl, buildLLMHeaders } from '@/lib/llm/shared';
-import { readLlmDeltas, type LlmDelta } from '@/lib/llm-stream';
+import { readLlmDeltas, readLlmDeltasWithTools, type AccumulatedToolCall, type LlmDelta } from '@/lib/llm-stream';
 import { formatAiError, formatNetworkError } from '@/lib/ai-error';
 
 export interface LlmConfigLike {
@@ -149,4 +149,42 @@ export async function streamChatDirect(opts: BaseChatOptions & { onDelta: (d: Ll
     throw new LlmHttpError(formatAiError(res.status, text), res.status);
   }
   await readLlmDeltas(res, opts.onDelta);
+}
+
+/**
+ * 流式调用 + 工具调用分片累积（对话工具轮用）。
+ * content/reasoning 逐字直播；tool_calls 静默累积，流结束返回（空数组 = 本轮纯文本回答）。
+ * 返回 content 全量供 assistant 消息回传（OpenAI 规范要求 tool_calls 轮带上 content）。
+ */
+export async function streamChatDirectWithTools(
+  opts: BaseChatOptions & { onDelta: (d: LlmDelta) => void }
+): Promise<{ content: string; toolCalls: AccumulatedToolCall[] }> {
+  const url = buildChatUrl(opts.baseUrl);
+  const { signal, clear, timedOut } = mergeSignals(opts.signal, opts.timeoutMs ?? 120000);
+  let res: Response;
+  try {
+    res = await fetch(url, {
+      method: 'POST',
+      headers: buildLLMHeaders(opts.apiKey),
+      body: JSON.stringify(buildBody(opts, true)),
+      signal,
+    });
+  } catch (e) {
+    clear();
+    if (timedOut()) throw new Error('AI 请求超时，模型未在限定时间内响应');
+    if (opts.signal?.aborted) throw e as Error; // 用户取消，原样抛
+    throw new Error(formatNetworkError(e as Error), { cause: e });
+  }
+  clear();
+
+  if (!res.ok) {
+    const text = await res.text().catch(() => '');
+    throw new LlmHttpError(formatAiError(res.status, text), res.status);
+  }
+  let content = '';
+  const toolCalls = await readLlmDeltasWithTools(res, (d) => {
+    if (d.content) content += d.content;
+    opts.onDelta(d);
+  });
+  return { content, toolCalls };
 }

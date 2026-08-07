@@ -468,3 +468,28 @@ model StockLimit {
   @@index([tradeDate])
   @@map("stock_limits")
 }
+
+/// 云同步快照（零知识）— sync_id 客户端随机 uuid；blob 为客户端 AES-GCM 密文（先 gzip）；
+/// key_hash=sha256(syncKey)，写/删请求的 bearer 鉴权（脱库也推不出 syncKey）
+model SyncSnapshot {
+  syncId    String   @id @map("sync_id") @db.VarChar(36)
+  keyHash   String   @map("key_hash") @db.VarChar(64)
+  version   Int      @default(1)
+  blob      String   @db.Text
+  createdAt DateTime @default(now()) @map("created_at")
+  updatedAt DateTime @updatedAt @map("updated_at")
+
+  @@map("sync_snapshots")
+}
+
+/// 配对码（一次性，10 分钟 TTL）— code_hash=sha256(6位码)；wrapped_key 为配对码派生密钥加密的 syncKey
+model SyncPairing {
+  codeHash   String   @id @map("code_hash") @db.VarChar(64)
+  syncId     String   @map("sync_id") @db.VarChar(36)
+  wrappedKey String   @map("wrapped_key") @db.Text
+  createdAt  DateTime @default(now()) @map("created_at")
+  expiresAt  DateTime @map("expires_at")
+
+  @@index([syncId])
+  @@map("sync_pairings")
+}

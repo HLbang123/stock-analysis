@@ -26,6 +26,8 @@ const STEPS: { name: string; cmd: string; fatal?: boolean }[] = [
   { name: "预警触发T+N回填", cmd: "npx tsx scripts/backfill-alert-triggers.ts", fatal: false },
   // 波段评分(做T)信号收益回填(日内/隔日)
   { name: "做T信号收益回填", cmd: "npx tsx scripts/backfill-tscore-records.ts", fatal: false },
+  // 云同步清理：过期配对 + 90天未更新快照
+  { name: "云同步清理", cmd: "npx tsx scripts/cleanup-sync-snapshots.ts", fatal: false },
   // 基本面(ROE) + 申万成分股 不进每日——按需手动跑
 ];
 
