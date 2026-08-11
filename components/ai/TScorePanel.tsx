@@ -109,7 +109,6 @@ export function TScorePanel({ result, isRunning }: Props) {
             ? '当前非交易时段，波段评分需在盘中（9:30-11:30 / 13:00-15:00）使用。'
             : '分时数据不足，暂无法计算盘中信号。'}
         </p>
-        <p className="text-xs text-amber-500/70 mt-1">信号参考，非操作指令。</p>
       </div>
     );
   }
@@ -152,7 +151,7 @@ export function TScorePanel({ result, isRunning }: Props) {
         </div>
       ) : llmPending ? (
         <div className="rounded-xl p-4 bg-gray-50 dark:bg-gray-900/50 border border-gray-200 dark:border-gray-800 flex items-center gap-2 text-sm text-gray-400">
-          <Loader2 className="w-4 h-4 animate-spin" /> 因子分已就绪，LLM 微调中...
+          <Loader2 className="w-4 h-4 animate-spin" /> 分析中...
         </div>
       ) : null}
 
@@ -186,7 +185,6 @@ export function TScorePanel({ result, isRunning }: Props) {
           <span>日内 {ctx.low.toFixed(2)} - {ctx.high.toFixed(2)}</span>
           <span>位置 {ctx.rangePosPct.toFixed(0)}%</span>
           <span>动量 {ctx.mom15.toFixed(2)} bps/分</span>
-          {ctx.granularity === 'm5' && <span className="text-amber-500">分时为5分K回退，低保真</span>}
         </div>
       </div>
 

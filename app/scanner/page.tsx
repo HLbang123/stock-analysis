@@ -369,7 +369,7 @@ function ManualScan() {
                   className="px-3 py-1.5 border border-gray-200 dark:border-gray-700 rounded-lg bg-white dark:bg-gray-800 text-sm">
                   {[70, 75, 80, 85, 87, 90, 92, 95, 97, 99].map(n => <option key={n} value={n}>{n}</option>)}
                 </select>
-                <span className="text-xs text-gray-400">周期可多选，多周期共振（每个都≥阈值）</span>
+                <span className="text-xs text-gray-400">可多选</span>
               </>
             )}
           </div>
@@ -444,7 +444,6 @@ function ManualScan() {
                   onChange={e => setMinMv(Math.max(0, Number(e.target.value) || 0))}
                   className="w-20 px-2 py-1.5 border border-gray-200 dark:border-gray-700 rounded-lg bg-white dark:bg-gray-800 text-sm" />
                 <span className="text-sm text-gray-500">亿</span>
-                <span className="text-xs text-gray-400">过滤小市值标的</span>
               </>
             )}
           </div>
@@ -475,7 +474,7 @@ function ManualScan() {
                 <input type="number" min={0} max={100} value={rsiMax ?? ''} placeholder="不限"
                   onChange={e => { const v = e.target.value; setRsiMax(v === '' ? null : Math.max(0, Math.min(100, Number(v)))); }}
                   className="w-16 px-2 py-1.5 border border-gray-200 dark:border-gray-700 rounded-lg bg-white dark:bg-gray-800 text-sm" />
-                <span className="text-xs text-gray-400">如 ≤30 筛超卖、≥70 筛超买；空=不限</span>
+                <span className="text-xs text-gray-400">空=不限</span>
               </>
             )}
           </div>
@@ -610,7 +609,6 @@ function ManualScan() {
           ) : (
             <>
               <p className="text-lg">勾选条件，点击查询</p>
-              <p className="text-sm mt-2">不选板块=全市场，不勾条件=按 RPS 排序</p>
             </>
           )}
         </div>

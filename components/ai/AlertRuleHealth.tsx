@@ -56,11 +56,8 @@ export function AlertRuleHealth() {
   return (
     <Card className="p-4">
       <div className="text-sm font-medium mb-1 flex items-center gap-1"><Activity className="w-4 h-4" /> 预警规则健康</div>
-      <p className="text-xs text-gray-400 mb-2">
-        在线触发落库后 T+5 真实收益。弱市下胜率普遍低于 50%，重点看趋势与相对高低；样本 &lt;10 灰显。
-      </p>
       <StatsHeader
-        note={<>触发后 T+5 绝对收益&gt;0 胜率。数据从落库日起累积，需触发 + 回填双就绪。</>}
+        note={<>触发后 T+5 收益胜率，样本不足灰显</>}
         onRefresh={load}
         loading={loading}
       />

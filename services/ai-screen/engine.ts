@@ -11,7 +11,7 @@ import type { AiPick, AiScreenRun, CandidateRaw, LlmConfig, StrategyPreset } fro
 import { fetchCandidates } from './candidates';
 import { macdStatus, rsiStatus, volatility20d, maxDrawdown20d, atr20pct, volumeRatio, signalScore, maBullish, pullbackToMa20Pct, breakout20dPct, chipFeatures } from './indicators';
 import { computeScreenScores } from './scorer';
-import { rankCandidates, rankAllCandidates } from './ranker';
+import { rankCandidates } from './ranker';
 import { applyRiskOverlay, applyPortfolioOverlay } from './risk';
 
 /** CandidateRaw → AiPick，计算技术特征；返回 null 表示被 TS 侧技术硬筛剔除 */
@@ -106,10 +106,10 @@ export interface ScreenOutcome {
  * 跑一次 AI 筛选。
  * @param preset 策略预设
  * @param llmCfg LLM 配置(preset.llmRerank=false 时可不传)
- * @param fullRank true=全池分批重排（每日调度用，时间换空间，每条都有 LLM 分）；false=仅 top-K（API 路径）
- * @param preScored 跨 run 断点续打标尺（旧 run 已有 LLM 分的候选快照）
+ * @param fullRank true=全池分批重排（已废弃，改用 top-K）；false=仅 top-K（默认）
+ * @param preScored 跨 run 断点续打标尺（当前未用，保留接口）
  */
-export async function runScreen(preset: StrategyPreset, llmCfg?: LlmConfig, fullRank = false, preScored?: Map<string, AiPick>): Promise<ScreenOutcome> {
+export async function runScreen(preset: StrategyPreset, llmCfg?: LlmConfig, _fullRank = false, _preScored?: Map<string, AiPick>): Promise<ScreenOutcome> {
   const degradation: string[] = [];
   const { barDate, candidates } = await fetchCandidates(preset);
 
@@ -140,7 +140,7 @@ export async function runScreen(preset: StrategyPreset, llmCfg?: LlmConfig, full
 
   if (preset.llmRerank && llmCfg && picks.length > 0) {
     llmModel = llmCfg.model;
-    const r = fullRank ? await rankAllCandidates(picks, preset, llmCfg, preScored) : await rankCandidates(picks, preset, llmCfg);
+    const r = await rankCandidates(picks, preset, llmCfg);
     picks = r.picks;
     // 增量续打语义：topK 全部有 LLM 分才算"重排完成"（可共享缓存）；部分有分保留但不封版，后续补救续打
     llmRanked = r.completed;

@@ -205,7 +205,6 @@ export function WeeklyReview() {
                   {winRate?.n ? (
                     <>
                       <div className="text-[10px] text-gray-400 mt-0.5">{winRate.win}/{winRate.n} 上涨 · 平均 {signed(winRate.avgReturn)}</div>
-                      {winRate.n < 10 && <div className="text-[10px] text-amber-500 mt-1">样本少，仅供参考</div>}
                       {winRate.byStrategy?.slice(0, 3).map((s) => (
                         <div key={s.name} className="flex items-center justify-between text-[11px] mt-1.5">
                           <span className="text-gray-600 dark:text-gray-300">{s.name}</span>
@@ -214,7 +213,7 @@ export function WeeklyReview() {
                       ))}
                     </>
                   ) : (
-                    <div className="text-[11px] text-gray-400 mt-1.5">本周暂无已回填的 T+1 样本</div>
+                    <div className="text-[11px] text-gray-400 mt-1.5">本周暂无样本</div>
                   )}
                 </div>
                 {/* 做T 次日 */}
@@ -236,10 +235,9 @@ export function WeeklyReview() {
                           <div className="text-[10px] text-gray-400">卖点（{tscore!.sell.n}）次日跌</div>
                         </div>
                       </div>
-                      {tscoreTotalN < 10 && <div className="text-[10px] text-amber-500 mt-1.5 text-center">样本少，仅供参考</div>}
                     </>
                   ) : (
-                    <div className="text-[11px] text-gray-400">本周暂无已回填的次日样本</div>
+                    <div className="text-[11px] text-gray-400">本周暂无样本</div>
                   )}
                 </div>
               </div>

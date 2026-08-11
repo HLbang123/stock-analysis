@@ -36,6 +36,7 @@ const WARN_LABELS: Record<string, string> = {
   verdict_attempt1: '完整版裁决', verdict_attempt2: '降级版裁决', verdict_attempt3: '极简版裁决',
   fallback_rule: 'AI 裁决',
   server_verdict_failed: '服务器裁决',
+  rate_limited: '接口限流',
 };
 /** 辩论角色阶段键（判定辩论是否部分失败） */
 const DEBATE_ROLE_KEYS = ['tech', 'risk', 'xinjie', 'tech_r2', 'risk_r2', 'xinjie_r2'];
@@ -305,7 +306,7 @@ export default function AiPage() {
         llmAdjusted: final.llmAdjusted,
       });
 
-      toast.success(final.llmAdjusted ? '波段评分完成' : '波段评分完成（LLM 未生效，已用纯因子分）');
+      toast.success('波段评分完成');
     } catch (err: any) {
       if (err.name === 'AbortError') {
         // 用户主动取消，不显示错误
@@ -491,7 +492,7 @@ export default function AiPage() {
         </Card>
       ) : (
         <Card variant="accent" className="mb-4 text-center">
-          <p className="text-sm text-[var(--color-brand)] mb-2">尚未配置AI模型</p>
+          <p className="text-sm text-[var(--color-brand)] mb-2">尚未配置AI服务</p>
           <Button onClick={() => setShowSettings(true)}>添加API配置</Button>
         </Card>
       )}
@@ -797,19 +798,32 @@ export default function AiPage() {
               {deepResult?.verdictError && (
                 <div className="text-xs text-red-600 mb-2 p-2 bg-red-50 dark:bg-red-950 rounded">{deepResult.verdictError}</div>
               )}
-              {/* 降级提示：上游角色被跳过/裁决降级/规则兜底——告诉用户这份分析不完整 */}
-              {deepResult?.warnings && deepResult.warnings.length > 0 && (
-                <div className={cn(
-                  'text-xs mb-2 p-2 rounded',
-                  deepResult.warnings.includes('fallback_rule')
-                    ? 'text-red-600 bg-red-50 dark:bg-red-950'
-                    : 'text-amber-600 bg-amber-50 dark:bg-amber-950'
-                )}>
-                  {deepResult.warnings.includes('fallback_rule')
-                    ? '⚠️ 本次为规则引擎兜底结果，AI 深度分析未能完成，结论未经多空辩论校验，仅供参考'
-                    : `⚠️ 分析不完整：${deepResult.warnings.map((w) => WARN_LABELS[w] ?? w).join('、')} 生成失败已跳过，已基于现有数据完成决策`}
-                </div>
-              )}
+              {/* 降级提示：上游角色被跳过/裁决降级/规则兜底——告诉用户这份分析不完整；
+                  rate_limited 不算失败（已自动排队串行，结果完整），单独措辞 */}
+              {deepResult?.warnings && deepResult.warnings.length > 0 && (() => {
+                const rateLimited = deepResult.warnings.includes('rate_limited');
+                const failed = deepResult.warnings.filter((w) => w !== 'rate_limited');
+                if (failed.length === 0) {
+                  return (
+                    <div className="text-xs mb-2 p-2 rounded text-amber-600 bg-amber-50 dark:bg-amber-950">
+                      ⚠️ 接口并发受限，已自动切换排队模式——生成较慢，但结果完整
+                    </div>
+                  );
+                }
+                return (
+                  <div className={cn(
+                    'text-xs mb-2 p-2 rounded',
+                    failed.includes('fallback_rule')
+                      ? 'text-red-600 bg-red-50 dark:bg-red-950'
+                      : 'text-amber-600 bg-amber-50 dark:bg-amber-950'
+                  )}>
+                    {failed.includes('fallback_rule')
+                      ? '⚠️ 本次分析未能完成，以下为规则兜底结果，仅供参考'
+                      : `⚠️ 分析不完整：${failed.map((w) => WARN_LABELS[w] ?? w).join('、')} 生成失败已跳过，已基于现有数据完成决策`}
+                    {rateLimited && '（另：接口并发受限，已自动排队处理）'}
+                  </div>
+                );
+              })()}
 
               {/* 结构化决策卡片 */}
               {deepResult?.structured?.action ? (
@@ -888,7 +902,7 @@ export default function AiPage() {
                   {deepResult.structured.confidenceScore !== undefined && (
                     <div className="mt-3 pt-3 border-t border-gray-200/60 dark:border-gray-700/60">
                       <div className="flex items-center gap-2">
-                        <span className="text-gray-500 text-xs w-16 shrink-0"><TermTooltip term="信心指数" explain="AI 对此判断的把握程度，越高越自信。≥70% 较确定，40-70% 有一定把握，<40% 不确定。" /></span>
+                        <span className="text-gray-500 text-xs w-16 shrink-0"><TermTooltip term="信心指数" explain="对判断的把握程度，越高越确定" /></span>
                         <div className="flex-1 h-2.5 bg-gray-200 dark:bg-gray-700 rounded-full overflow-hidden">
                           <div
                             className={cn(
@@ -975,7 +989,6 @@ export default function AiPage() {
         <div className="text-center py-16 text-gray-400">
           <Brain className="w-16 h-16 mx-auto mb-4 opacity-20" />
           <p className="text-lg">选择标的开始AI分析</p>
-          <p className="text-sm mt-2">支持所有OpenAI兼容API（DeepSeek、GLM、GPT等）</p>
         </div>
       )}
 

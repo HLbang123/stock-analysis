@@ -147,6 +147,19 @@ export const useAiStore = create<AiStoreState>()(
     }),
     {
       name: 'stock-ai-store',
+      version: 1,
+      // v1：智谱旧免费 flash（glm-4-flash / glm-4.5-flash 等）批量升级到 glm-4.7-flash。
+      // 旧模型已隔代（4.5-flash 官方已下线自动路由），反正都是免费档，直接换更强力所能及的新免费模型。
+      migrate: (persisted: any, version: number) => {
+        if (version < 1 && Array.isArray(persisted?.profiles)) {
+          persisted.profiles = persisted.profiles.map((p: any) =>
+            p?.baseUrl?.includes('bigmodel') && /^glm-4(\.5)?-flash(-\d{6})?$/i.test(p?.model ?? '')
+              ? { ...p, model: 'glm-4.7-flash' }
+              : p
+          );
+        }
+        return persisted;
+      },
       partialize: (state) => ({
         profiles: state.profiles,
         currentProfileId: state.currentProfileId,

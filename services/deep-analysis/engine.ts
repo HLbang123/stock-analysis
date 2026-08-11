@@ -24,6 +24,7 @@ import { getIndustry, getRealtimeQuoteCached, getKLineSinaCached, getChipData, f
 import { fetchTushareDataCached, formatTushareForPrompt } from '@/services/tushareData';
 import { getJSONOr, postJSON, getJSON } from '@/services/api';
 import { streamChatDirect, LlmHttpError, isDirectConnectionError } from '@/services/llm/browser-client';
+import { acquireLlmSlot, noteLlmRateLimited } from './concurrency';
 import type { StockRpsResp, BreadthResp, FuyaoFundResp } from '@/types/api';
 import { isETF } from '@/lib/identify';
 
@@ -76,6 +77,17 @@ export type DeepStage = 'idle' | 'analyst' | 'debate' | 'verdict';
 export interface DeepProgress {
   stage: DeepStage;
   result: DeepResult;
+}
+
+/** 归一化 ACTION 输出：剥离 markdown/括号等杂讯，把常见变体映射到 买入/持有/卖出 三选一
+ *  LLM 偶发输出 `** 持有`、`观望`、`（买入）` 等，直接落库会污染方向胜率榜分组 */
+export function normalizeAction(raw: string | undefined): string {
+  const s = (raw || '').replace(/[*_`~]/g, '').replace(/[（）()]/g, '').trim();
+  if (!s) return '';
+  if (/买入|看多|增持|低吸/.test(s)) return '买入';
+  if (/卖出|看空|减仓|清仓|减持|高抛/.test(s)) return '卖出';
+  if (/持有|观望|不动|拿住|持仓/.test(s)) return '持有';
+  return s; // 无法识别保留原文，便于后续排查而非误归类
 }
 
 /** 解析 verdict 文本为结构化字段；levels 传入时对目标价/止损/仓位做越界夹紧 */
@@ -132,7 +144,7 @@ export function parseVerdictContent(text: string, levels?: TradeLevels | null): 
   const position = pR ? clamp(toNum(posMatch?.[1]), pR.low, pR.high, 'position') : toNum(posMatch?.[1]);
 
   return {
-    action: actionMatch?.[1]?.trim() || '',
+    action: normalizeAction(actionMatch?.[1]?.trim()),
     oneLiner: oneLinerMatch?.[1]?.trim() || '',
     consensus: consensusMatch?.[1]?.trim() || undefined,
     riskLevel: riskMatch?.[1]?.trim() || '',
@@ -393,6 +405,8 @@ function buildFallbackVerdict(ctx: DeepContext, degraded: string[]): { text: str
 async function runDeepAnalysisDirect(opts: RunDeepOptions, completedMap: Record<string, string>): Promise<RunDeepOutcome> {
   const { ctx, cfg, userView, userViewReason, signal, onProgress } = opts;
   console.info(`[Deep AI Direct] 直连分析开始 model=${cfg.model} baseUrl=${cfg.baseUrl}`);
+  // 低并发自适应槽位 key：429 学习按 provider+model+key尾 维度记忆（见 concurrency.ts）
+  const llmSlotKey = `${cfg.baseUrl}|${cfg.model}|${(cfg.apiKey || '').slice(-8)}`;
 
   let analystText = '', analystReasoning = '';
   const debateError = '';
@@ -452,6 +466,7 @@ async function runDeepAnalysisDirect(opts: RunDeepOptions, completedMap: Record<
     let lastDelta = '', repeatCount = 0;
     let stuckWarning = false;
     let finishReason = '';
+    const releaseSlot = await acquireLlmSlot(llmSlotKey);
     try {
       await streamChatDirect({
         baseUrl: cfg.baseUrl, apiKey: cfg.apiKey, model: cfg.model,
@@ -484,6 +499,10 @@ async function runDeepAnalysisDirect(opts: RunDeepOptions, completedMap: Record<
       });
     } catch (e: any) {
       if (e.name === 'AbortError') throw e; // 用户取消，原样冒泡
+      // 429 限流：学到该 key 低并发（后续调用串行排队），warnings 记一条"变慢但完整"的提示
+      if (e instanceof LlmHttpError && e.status === 429) {
+        if (noteLlmRateLimited(llmSlotKey) && !degraded.includes('rate_limited')) degraded.push('rate_limited');
+      }
       const isTimeout = /超时|timeout/i.test(e.message || '');
       if (isTimeout) throw new Error(`[${stageKey}] 阶段超时（240s），模型未在限定时间内响应`);
       const isRetryableNetwork = e.name === 'TypeError' || /fetch|network/i.test(e.message || '');
@@ -504,6 +523,8 @@ async function runDeepAnalysisDirect(opts: RunDeepOptions, completedMap: Record<
       throw e.message?.startsWith(`[${stageKey}]`)
         ? e
         : new Error(`[${stageKey}] ${e.message || '未知错误'}`);
+    } finally {
+      releaseSlot();
     }
 
     if (!fullOutput.trim()) {

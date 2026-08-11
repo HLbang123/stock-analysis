@@ -2,7 +2,7 @@
 
 /**
  * 复盘弹窗 — 预警首页「复盘」按钮入口，全站唯一的复盘数据聚合处。
- * tab：周报(周五快照) / 深度分析胜率 / AI筛选胜率 / 预警规则健康。
+ * 顶部 tab：盘前提示 / 日报 / 周报 / 胜率复盘；胜率复盘内嵌子 tab：深度分析 / AI筛选 / 预警规则。
  * 原 AI 页两处「胜率复盘」入口（分析 tab、筛选 view）已收拢至此，AI 页只留分析与筛选。
  * tab 为条件渲染：切到才挂载拉数，切走卸载；再切回重新拉（回填可能已更新，正好刷新生效）。
  */
@@ -10,19 +10,24 @@
 import { useState } from 'react';
 import { Modal } from '@/components/ui/modal';
 import { cn } from '@/lib/utils';
-import { CalendarDays, Brain, Sparkles, AlertTriangle, Sunrise, Sunset } from 'lucide-react';
+import { CalendarDays, Brain, Sparkles, AlertTriangle, Sunrise, Sunset, TrendingUp } from 'lucide-react';
 import { WeeklyReview } from '@/components/ai/WeeklyReview';
 import { DailyBrief } from '@/components/ai/DailyBrief';
 import { DeepAnalysisStats } from '@/components/ai/DeepAnalysisStats';
 import { AiScreenStats } from '@/components/ai/AiScreenStats';
 import { AlertRuleHealth } from '@/components/ai/AlertRuleHealth';
 
-type Tab = 'morning' | 'weekly' | 'daily' | 'deep' | 'screen' | 'rule';
+type Tab = 'morning' | 'daily' | 'weekly' | 'stats';
+type StatsTab = 'deep' | 'screen' | 'rule';
 
 const TABS: { key: Tab; label: string; icon: typeof CalendarDays }[] = [
   { key: 'morning', label: '盘前提示', icon: Sunrise },
   { key: 'daily', label: '日报', icon: Sunset },
   { key: 'weekly', label: '周报', icon: CalendarDays },
+  { key: 'stats', label: '胜率复盘', icon: TrendingUp },
+];
+
+const STATS_TABS: { key: StatsTab; label: string; icon: typeof Brain }[] = [
   { key: 'deep', label: '深度分析', icon: Brain },
   { key: 'screen', label: 'AI筛选', icon: Sparkles },
   { key: 'rule', label: '预警规则', icon: AlertTriangle },
@@ -30,6 +35,7 @@ const TABS: { key: Tab; label: string; icon: typeof CalendarDays }[] = [
 
 export function ReviewModal({ open, onClose }: { open: boolean; onClose: () => void }) {
   const [tab, setTab] = useState<Tab>('morning');
+  const [statsTab, setStatsTab] = useState<StatsTab>('deep');
 
   // 必须守卫 open（在 hooks 之后）：无此守卫时父组件一旦渲染本组件，弹窗永远显示、叉不掉
   if (!open) return null;
@@ -59,9 +65,30 @@ export function ReviewModal({ open, onClose }: { open: boolean; onClose: () => v
       {tab === 'morning' && <DailyBrief type="morning" />}
       {tab === 'daily' && <DailyBrief type="daily" />}
       {tab === 'weekly' && <WeeklyReview />}
-      {tab === 'deep' && <div className="p-4"><DeepAnalysisStats /></div>}
-      {tab === 'screen' && <div className="p-4"><AiScreenStats /></div>}
-      {tab === 'rule' && <div className="p-4"><AlertRuleHealth /></div>}
+      {tab === 'stats' && (
+        <div className="p-4">
+          {/* 胜率复盘子 tab：三个统计面板同属一类，收进二级切换 */}
+          <div className="flex gap-1 p-0.5 mb-3 bg-gray-100 dark:bg-gray-800/50 rounded-lg w-fit">
+            {STATS_TABS.map(({ key, label, icon: Icon }) => (
+              <button
+                key={key}
+                onClick={() => setStatsTab(key)}
+                className={cn(
+                  'px-2.5 py-1 rounded-md text-xs flex items-center gap-1 whitespace-nowrap transition',
+                  statsTab === key
+                    ? 'bg-white dark:bg-gray-900 text-[var(--color-accent)] shadow-sm font-medium'
+                    : 'text-gray-500 hover:text-gray-700 dark:hover:text-gray-300'
+                )}
+              >
+                <Icon className="w-3 h-3" /> {label}
+              </button>
+            ))}
+          </div>
+          {statsTab === 'deep' && <DeepAnalysisStats />}
+          {statsTab === 'screen' && <AiScreenStats />}
+          {statsTab === 'rule' && <AlertRuleHealth />}
+        </div>
+      )}
     </Modal>
   );
 }

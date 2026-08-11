@@ -60,7 +60,7 @@ export function AiScreenStats() {
   return (
     <div className="space-y-4">
       <StatsHeader
-        note={<>基于 T+{stats?.primaryN ?? 5} 绝对收益&gt;0 胜率。数据从部署后累积,样本不足时显示 --。</>}
+        note={<>T+{stats?.primaryN ?? 5} 胜率，样本不足显示 --</>}
         onRefresh={load}
         loading={loading}
       />
@@ -130,7 +130,6 @@ export function AiScreenStats() {
           {stats.byMonth && stats.byMonth.length > 0 && (
             <Card className="p-4">
               <div className="text-sm font-medium mb-2">月度胜率趋势 · T+{stats.primaryN}</div>
-              <p className="text-xs text-gray-400 mb-2">按运行交易日月份聚合入选建议。胜率随月份走高 = 规则/LLM 调优在起效。</p>
               <div className="flex flex-wrap gap-x-4 gap-y-2">
                 {stats.byMonth.map((m) => (
                   <div key={m.month} className={cn('text-center', weakCls(m.count))} title={weak(m.count) ? `样本仅 ${m.count} 条` : undefined}>
@@ -149,7 +148,6 @@ export function AiScreenStats() {
           {focusIC && (
             <Card className="p-4">
               <div className="text-sm font-medium mb-2">因子 IC 与 5 分位胜率 · {focusIC.strategyName}</div>
-              <p className="text-xs text-gray-400 mb-2">IC = 因子分与 T+5 收益的 Spearman 秩相关(&gt;0 有效,越大越强)。分位 Q1=因子分最低→Q5=最高,胜率应随分位递增才说明因子有效。</p>
               <div className="overflow-x-auto">
                 <table className="w-full text-xs">
                   <thead>
@@ -185,7 +183,6 @@ export function AiScreenStats() {
           {focusAB && (
             <Card className="p-4">
               <div className="text-sm font-medium mb-2">LLM 重排 A/B · {focusAB.strategyName}</div>
-              <p className="text-xs text-gray-400 mb-2">在 topK 池内反算三种选法的 T+5 胜率,判断 LLM 重排是提分还是拖累。</p>
               <div className="grid grid-cols-3 gap-2 text-center text-xs">
                 <ABCell label="纯规则分" s={focusAB.pureScreen} />
                 <ABCell label="0.6规则+0.4LLM" s={focusAB.fusion} highlight />
@@ -193,8 +190,8 @@ export function AiScreenStats() {
               </div>
               {focusAB.deltaWin != null && (
                 <p className={cn('mt-2 text-xs flex items-center gap-1', focusAB.deltaWin >= 0 ? 'text-[var(--color-up)]' : 'text-[var(--color-warning)]')}>
-                  LLM 融合 vs 纯规则：胜率 {focusAB.deltaWin >= 0 ? '+' : ''}{focusAB.deltaWin}pp · 均值 {signed(focusAB.deltaAvg)}
-                  → {focusAB.deltaWin >= 0 ? 'LLM 重排加分' : 'LLM 重排拖累'}
+                  重排 vs 纯规则：胜率 {focusAB.deltaWin >= 0 ? '+' : ''}{focusAB.deltaWin}pp · 均值 {signed(focusAB.deltaAvg)}
+                  → {focusAB.deltaWin >= 0 ? '重排加分' : '重排拖累'}
                 </p>
               )}
             </Card>
@@ -204,7 +201,6 @@ export function AiScreenStats() {
           {stats.eventSignals.length > 0 && (
             <Card className="p-4">
               <div className="text-sm font-medium mb-2">事件信号复盘(T+5)</div>
-              <p className="text-xs text-gray-400 mb-2">LLM 产的标签/催化/风险当信号,按后续收益分类。prefer 可加权重、avoid 可规避。</p>
               <div className="space-y-1 max-h-64 overflow-y-auto">
                 {stats.eventSignals.map((s, i) => (
                   <div key={i} className="flex items-center gap-2 text-xs px-2 py-1 rounded bg-gray-50 dark:bg-gray-800/40">

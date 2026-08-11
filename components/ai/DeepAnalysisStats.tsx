@@ -90,7 +90,7 @@ export function DeepAnalysisStats() {
   return (
     <div className="space-y-4">
       <StatsHeader
-        note={<>基于 T+{stats?.summary.primaryN ?? 5} 绝对收益。全局匿名聚合，样本不足显示 --。</>}
+        note={<>T+{stats?.summary.primaryN ?? 5} 胜率，样本不足显示 --</>}
         onRefresh={load}
         loading={loading}
       />
@@ -125,7 +125,7 @@ export function DeepAnalysisStats() {
           {stats.topPicks.backed.length + stats.topPicks.highConf.length > 0 && (
             <Card className="p-4">
               <div className="text-sm font-medium mb-1 flex items-center gap-1"><Trophy className="w-4 h-4 text-[var(--color-warning)]" /> 优质买入建议榜</div>
-              <p className="text-xs text-gray-400 mb-2">按标的合并（取最近一次分析）。「高胜率背书」= 该票历史买入建议 T+5 胜率≥50% 且样本≥2；「近期高信心」= 近30天置信度≥70。点击行看标的详情。</p>
+              <p className="text-xs text-gray-400 mb-2">按标的合并，取最近一次分析。点击行看标的详情。</p>
               <TopPickGroup title="高胜率背书" rows={stats.topPicks.backed} />
               <div className="h-2" />
               <TopPickGroup title="近期高信心" rows={stats.topPicks.highConf} />
@@ -183,10 +183,6 @@ export function DeepAnalysisStats() {
           {focus === '买入' && focusRow?.targetStop && (
             <Card className="p-4">
               <div className="text-sm font-medium mb-2 flex items-center gap-1"><Target className="w-4 h-4" /> 买入目标/止损命中（深度分析定价验证）</div>
-              <p className="text-xs text-gray-400 mb-2">
-                买入建议给出了 targetHigh 和 stopLoss，此处验证 N 日内最高价是否触及目标、最低价是否触及止损——价格被市场验证的程度。
-                「先达目标未触止损」= 建议的入场到止盈区间被完整兑现。
-              </p>
               <div className="overflow-x-auto">
                 <table className="w-full text-xs">
                   <thead>
@@ -220,7 +216,6 @@ export function DeepAnalysisStats() {
           {stats.byMonth.length > 0 && (
             <Card className="p-4">
               <div className="text-sm font-medium mb-2">月度胜率趋势 · T+5</div>
-              <p className="text-xs text-gray-400 mb-2">按分析落库月份聚合。校准注入（P2）上线后，若胜率随月份走高说明自校准在起效。</p>
               <div className="flex flex-wrap gap-x-4 gap-y-2">
                 {stats.byMonth.map((m) => (
                   <div key={m.month} className={cn('text-center', weakCls(m.count))} title={weak(m.count) ? `样本仅 ${m.count} 条` : undefined}>
@@ -239,7 +234,6 @@ export function DeepAnalysisStats() {
           {stats.byRegime.length > 0 && (
             <Card className="p-4">
               <div className="text-sm font-medium mb-1">大盘环境分桶 · T+5</div>
-              <p className="text-xs text-gray-400 mb-2">分析时的大盘强弱对建议质量的影响。弱势盘买入胜率若显著更低，说明应系统性收紧弱势盘的买入建议。</p>
               <table className="w-full text-xs">
                 <thead>
                   <tr className="border-b border-gray-100 dark:border-gray-800 text-left text-gray-400">
@@ -277,13 +271,11 @@ export function DeepAnalysisStats() {
           <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
             <Card className="p-4">
               <div className="text-sm font-medium mb-1">置信度校准</div>
-              <p className="text-xs text-gray-400 mb-2">胜率应随置信度递增（高分高胜率=校准好）</p>
               <CalibTable rows={stats.confidenceBuckets} />
               <ConfidenceViolation buckets={stats.confidenceBuckets} />
             </Card>
             <Card className="p-4">
               <div className="text-sm font-medium mb-1">仓位校准</div>
-              <p className="text-xs text-gray-400 mb-2">重仓建议应比轻仓更准（大仓位平均收益更高）</p>
               <CalibTable rows={stats.positionBuckets} />
             </Card>
           </div>
@@ -306,7 +298,7 @@ function ConfidenceViolation({ buckets }: { buckets: { bucket: string; count: nu
   if (!broken) return null;
   return (
     <div className="mt-2 px-2 py-1.5 rounded-[var(--radius-md)] bg-[var(--color-danger-soft)] border border-[var(--color-danger)]/30 text-xs text-[var(--color-danger)]">
-      校准失效：高信心档胜率（{pct(h?.winRate, 0)}%）低于{(m && h!.winRate! < m.winRate!) ? `中信心档（${pct(m.winRate, 0)}%）` : ''}{l && h!.winRate! < l.winRate! ? `低信心档（${pct(l.winRate, 0)}%）` : ''}——AI 在过度自信，建议关注 prompt 校准效果
+      校准失效：高信心档胜率（{pct(h?.winRate, 0)}%）低于{(m && h!.winRate! < m.winRate!) ? `中信心档（${pct(m.winRate, 0)}%）` : ''}{l && h!.winRate! < l.winRate! ? `低信心档（${pct(l.winRate, 0)}%）` : ''}——AI 在过度自信
     </div>
   );
 }

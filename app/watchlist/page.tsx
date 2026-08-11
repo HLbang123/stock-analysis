@@ -49,7 +49,7 @@ export default function WatchlistPage() {
   const handleOcrScan = async () => {
     if (!ocrImageFile) { toast.error('请先选择图片'); return; }
     setIsOcrProcessing(true);
-    setOcrStatus('正在下载中文语言包（首次约30MB）...');
+    setOcrStatus('正在准备识别引擎...');
     setOcrResults([]);
 
     try {
@@ -387,7 +387,7 @@ export default function WatchlistPage() {
         <Card className="text-center py-16 text-gray-400">
           <FolderInput className="w-12 h-12 mx-auto mb-3 opacity-20" />
           <p className="text-base">「{activeGroupName}」暂无自选</p>
-          <p className="text-sm mt-2">可搜索添加，或用卡片上的分组入口移动进来</p>
+          <p className="text-sm mt-2">可搜索添加</p>
         </Card>
       ) : (
         <>

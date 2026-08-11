@@ -36,7 +36,7 @@ export interface PortfolioProfile {
 export interface StrategyPreset {
   id: string;
   name: string;
-  description: string;
+  description: string; // 完整介绍（折叠区展示）
   category: 'balanced' | 'momentum' | 'quality' | 'defensive';
   hardFilters: HardFilterConfig;
   factorWeights: Record<string, number>; // 归一化前的权重，引擎内归一

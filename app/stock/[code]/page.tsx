@@ -447,7 +447,7 @@ export default function StockDetailPage() {
               {/* 资金流向 mini 图 */}
               {fundData.moneyflow?.length > 0 && (
                 <div>
-                  <p className="text-xs text-gray-500 mb-1">主力资金近{fundData.moneyflow.length}日（亿元，同花顺口径）</p>
+                  <p className="text-xs text-gray-500 mb-1">主力资金近{fundData.moneyflow.length}日（亿元）</p>
                   <div className="h-32">
                     <EChart option={{
                       tooltip: { trigger: 'axis', valueFormatter: (v: any) => `${(Number(v) / 10000).toFixed(2)}亿` },

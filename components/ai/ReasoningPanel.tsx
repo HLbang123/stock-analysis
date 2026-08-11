@@ -14,21 +14,23 @@ interface Props {
 
 /**
  * 可折叠的"思考过程"面板。
- * 展示 DeepSeek-R1 / GLM-4.5+ 等 reasoning 模型的 reasoning_content。
- * 默认窥视态：固定约 3 行高度、自动滚到底部——用户能看到文字在滚动，直观感知"AI 正在思考"；
- * 点标题行展开全文，再点回到窥视。短内容（≤120 字）直接全显不折叠。
+ * 展示 reasoning 模型的 reasoning_content。
+ * 流式生成时为窥视态（固定约 3 行高度、自动滚到底部——直观感知"AI 正在思考"）；
+ * 生成结束后默认全折叠，点标题行展开全文。短内容（≤120 字）直接全显不折叠。
  */
 export function ReasoningPanel({ reasoning, isStreaming, title = '思考过程', variant = 'plain' }: Props) {
   const [open, setOpen] = useState(false);
   const peekRef = useRef<HTMLDivElement>(null);
   const isLong = reasoning.length > 120;
   const showFull = open || !isLong;
+  // 仅流式时窥视：结束后收起，避免大段思考文本占据页面
+  const peeking = !showFull && !!isStreaming;
 
   // 窥视态：内容增长时自动滚到底部（看到最新文字在滚动）
   useEffect(() => {
     const el = peekRef.current;
-    if (el && !showFull) el.scrollTop = el.scrollHeight;
-  }, [reasoning, showFull]);
+    if (el && peeking) el.scrollTop = el.scrollHeight;
+  }, [reasoning, peeking]);
 
   if (!reasoning) return null;
 
@@ -57,7 +59,7 @@ export function ReasoningPanel({ reasoning, isStreaming, title = '思考过程',
           {reasoning}
           {isStreaming && <span className="inline-block w-0.5 h-3 bg-blue-400 ml-0.5 animate-pulse align-middle" />}
         </div>
-      ) : (
+      ) : peeking ? (
         <div className="relative border-t border-gray-200/60 dark:border-gray-700/60">
           <div
             ref={peekRef}
@@ -72,7 +74,7 @@ export function ReasoningPanel({ reasoning, isStreaming, title = '思考过程',
             variant === 'light' ? "from-gray-50/70 dark:from-gray-800/40" : "from-gray-50 dark:from-gray-800/40"
           )} />
         </div>
-      )}
+      ) : null}
     </div>
   );
 }

@@ -23,11 +23,8 @@ const LLM_TIMEOUT_MS = 300_000;
 // 12288 = 2k 正文 + 10k 思考余量：保住思考深度不撞线，真实花费仍随输入/输出瘦身降 ~40%。
 // 中转若把 max_tokens 卡得更小会 400，callLlm 内自动降级重试 4096。
 const LLM_MAX_TOKENS = 12288;
-// 单批送 LLM 的候选数上限：prompt 长度与 max_tokens 的甜点（08-05 审计后定 20，08-11 提到 30）。
-// 全池重排由 rankAllCandidates 分批调用（批间 sleep 防限流），本上限只管单批。
-const LLM_TOPK_CAP = 30;
-// 批量间隔：每日调度时间换空间，防 DeepSeek 限流
-const BATCH_DELAY_MS = 3000;
+// 送 LLM 的候选数上限：规则分 top 50（比 maxOutput=30 多 20 条，让 LLM 有机会把规则分 31-50 的遗珠捞进 top 30）
+const LLM_TOPK_CAP = 50;
 
 export interface RankResult {
   picks: AiPick[];
@@ -510,73 +507,6 @@ function emptyFallback(picks: AiPick[], _preset: StrategyPreset, degradation: st
     selectionLogic: '',
     portfolioRisk: '',
     coverage: null,
-    degradation,
-  };
-}
-
-/**
- * 全池重排（每日调度用，时间换空间）：
- * 按 screenScore 降序分批送 LLM（每批 ≤ LLM_TOPK_CAP，批间 sleep 防限流）。
- * 第一批的 marketView/selectionLogic/portfolioRisk 作为整体观点沿用。
- * 任何一批失败/解析失败 → 该批保留规则分，后续批次继续（不熔断——每日任务不赶时间）。
- */
-export async function rankAllCandidates(
-  picks: AiPick[],
-  preset: StrategyPreset,
-  cfg: LlmConfig,
-  preScored?: Map<string, AiPick>, // 跨 run 断点续打：旧 run 已有 LLM 分的候选，作标尺 + 免重打
-): Promise<RankResult> {
-  // 回填旧 run 已有分（新 run 候选未打分的才补；已打分的候选 rankCandidates 会当标尺参照）
-  if (preScored) {
-    for (const k of picks) {
-      const s = preScored.get(k.tsCode);
-      if (s && k.llmScore == null) {
-        k.llmScore = s.llmScore; k.llmConfidence = s.llmConfidence;
-        k.llmSector = s.llmSector; k.llmTheme = s.llmTheme; k.llmThesis = s.llmThesis;
-        k.rankingReason = s.rankingReason; k.riskSummary = s.riskSummary;
-        k.llmCatalysts = s.llmCatalysts; k.llmRisks = s.llmRisks; k.llmTags = s.llmTags;
-        k.llmStyleFit = s.llmStyleFit; k.llmWatchItems = s.llmWatchItems; k.llmInvalidators = s.llmInvalidators;
-      }
-    }
-  }
-  if (picks.length <= LLM_TOPK_CAP) return rankCandidates(picks, preset, cfg);
-
-  const sorted = [...picks].sort((a, b) => b.screenScore - a.screenScore);
-  const batches: AiPick[][] = [];
-  for (let i = 0; i < sorted.length; i += LLM_TOPK_CAP) batches.push(sorted.slice(i, i + LLM_TOPK_CAP));
-
-  let marketView = '', selectionLogic = '', portfolioRisk = '';
-  let anyRanked = false;
-  const degradation: string[] = [];
-  let totalMatched = 0;
-
-  for (let bi = 0; bi < batches.length; bi++) {
-    const r = await rankCandidates(batches[bi], preset, cfg);
-    totalMatched += r.matched;
-    if (r.llmRanked) anyRanked = true;
-    if (bi === 0) {
-      marketView = r.marketView;
-      selectionLogic = r.selectionLogic;
-      portfolioRisk = r.portfolioRisk;
-    }
-    degradation.push(...r.degradation.map((d) => `batch${bi + 1}:${d}`));
-    if (bi < batches.length - 1) await new Promise((res) => setTimeout(res, BATCH_DELAY_MS));
-  }
-
-  // 合并后按 finalScore 整体排序（各批次的 finalScore 已各自算好，标尺是全局 screenScore 混入，跨批可比）
-  const merged = batches.flat().sort((a, b) => b.finalScore - a.finalScore);
-  merged.forEach((k, i) => (k.rank = i + 1));
-  const withScore = merged.filter((k) => k.llmScore != null).length;
-
-  return {
-    picks: merged,
-    llmRanked: anyRanked,
-    completed: withScore === merged.length,
-    matched: totalMatched,
-    marketView,
-    selectionLogic,
-    portfolioRisk,
-    coverage: merged.length ? withScore / merged.length : null,
     degradation,
   };
 }

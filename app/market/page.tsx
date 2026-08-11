@@ -83,7 +83,7 @@ export default function MarketPage() {
       <PageHeader
         title="大盘"
         icon={<LineChart className="w-6 h-6 text-[var(--color-accent)]" />}
-        subtitle={`数据日期：${latest?.date || '--'} · 市场级宏观温度，辅助判断仓位轻重`}
+        subtitle={`数据日期：${latest?.date || '--'}`}
       />
 
       {loading && (
@@ -124,7 +124,7 @@ export default function MarketPage() {
           {/* 2. 大势温度 */}
           <Card className="p-4">
             <h3 className="font-medium mb-1">大势温度（多头占比）</h3>
-            <p className="text-xs text-gray-500 mb-2">MA55 上方 & RPS60 改善占比（5日前对比） & 20日新高占比（%），短线赚钱效应维度</p>
+            <p className="text-xs text-gray-500 mb-2">MA55 上方 · RPS60 改善 · 20日新高占比（%）</p>
             <div className="h-56">
               {breadth.length > 0 ? (
                 <EChart option={{
@@ -151,15 +151,19 @@ export default function MarketPage() {
             <h3 className="font-medium mb-1">行业强度榜（RPS60≥87 占比 %）</h3>
             <p className="text-xs text-gray-500 mb-2">资金在哪个方向（行业中期强势占比）</p>
             <div className="h-[30rem]">
-              {sectors.length > 0 ? (
+              {sectors.length > 0 ? (() => {
+                // API 按强势家数排序，此处按展示的占比重排
+                const top20 = [...sectors].sort((a, b) => b.ratio - a.ratio).slice(0, 20);
+                return (
                 <EChart option={{
                   tooltip: { formatter: '{b}: {c}%' },
                   grid: { left: 120, right: 30, top: 10, bottom: 20 },
                   xAxis: { type: 'value', max: 80 },
-                  yAxis: { type: 'category', data: sectors.slice(0, 20).map(s => s.industry), inverse: true, axisLabel: { fontSize: 11, interval: 0 } },
-                  series: [{ type: 'bar', data: sectors.slice(0, 20).map(s => s.ratio), itemStyle: { color: '#3b82f6' }, label: { show: true, position: 'right', fontSize: 10 } }],
+                  yAxis: { type: 'category', data: top20.map(s => s.industry), inverse: true, axisLabel: { fontSize: 11, interval: 0 } },
+                  series: [{ type: 'bar', data: top20.map(s => s.ratio), itemStyle: { color: '#3b82f6' }, label: { show: true, position: 'right', fontSize: 10 } }],
                 }} />
-              ) : <Empty />}
+                );
+              })() : <Empty />}
             </div>
           </Card>
 
@@ -167,9 +171,16 @@ export default function MarketPage() {
           <Card className="p-4">
             <h3 className="font-medium mb-1">板块资金流向（近5日主力净流入）</h3>
             <p className="text-xs text-gray-500 mb-2">红色=净流入，绿色=净流出（亿元）</p>
-            {sectorFlow.length > 0 ? (
+            {sectorFlow.length > 0 ? (() => {
+              // 流入前15 + 流出前15（sectorFlow 已按净额降序，净流出在尾部）
+              const inflow = sectorFlow.filter(s => (s.totalNet ?? 0) > 0).slice(0, 15);
+              const outflow = sectorFlow.filter(s => (s.totalNet ?? 0) < 0).slice(-15).reverse();
+              const rows = [...inflow, ...outflow];
+              // 比例尺按显示集合最大值自适应：最长条=半槽宽，各行可比
+              const maxAbs = Math.max(...rows.map(s => Math.abs(Number(s.totalNet ?? 0))), 1);
+              return (
               <div className="h-72 overflow-y-auto space-y-0.5">
-                {sectorFlow.slice(0, 30).map((s) => {
+                {rows.map((s) => {
                   // THS 行业口径：net_amount 已是亿元
                   const yi = s.totalNet != null ? Number(s.totalNet) : null;
                   return (
@@ -178,11 +189,11 @@ export default function MarketPage() {
                       <div className="flex-1 bg-gray-100 dark:bg-gray-800 rounded h-4 relative overflow-hidden">
                         {yi != null && yi >= 0 && (
                           <div className="absolute left-1/2 top-0 h-full bg-red-200 dark:bg-red-900/50"
-                            style={{ width: `${Math.min(Math.abs(yi) / 50 * 100, 50)}%` }} />
+                            style={{ width: `${Math.abs(yi) / maxAbs * 50}%` }} />
                         )}
                         {yi != null && yi < 0 && (
                           <div className="absolute right-1/2 top-0 h-full bg-green-200 dark:bg-green-900/50"
-                            style={{ width: `${Math.min(Math.abs(yi) / 50 * 100, 50)}%` }} />
+                            style={{ width: `${Math.abs(yi) / maxAbs * 50}%` }} />
                         )}
                         <div className="absolute left-1/2 top-0 w-px h-full bg-gray-300 dark:bg-gray-600" />
                       </div>
@@ -190,12 +201,13 @@ export default function MarketPage() {
                         yi != null && yi >= 0 ? "text-red-600" : "text-green-600")}>
                         {yi != null ? `${yi >= 0 ? '+' : ''}${yi.toFixed(1)}` : '--'}
                       </span>
-                      <span className="text-xs text-gray-400 shrink-0">{s.leadStock || `${s.companyNum ?? '--'}家`}</span>
+                      <span className="w-16 truncate text-right text-xs text-gray-400 shrink-0">{s.leadStock || `${s.companyNum ?? '--'}家`}</span>
                     </div>
                   );
                 })}
               </div>
-            ) : <Empty />}
+              );
+            })() : <Empty />}
           </Card>
 
           {/* 4. 指数估值分位 */}
@@ -377,7 +389,6 @@ function Empty() {
     <div className="h-full min-h-[120px] flex flex-col items-center justify-center text-gray-400 gap-2">
       <LineChart className="w-8 h-8 opacity-20" />
       <p className="text-xs">数据未生成</p>
-      <p className="text-[10px] text-gray-300 dark:text-gray-600">请在服务器运行 run-daily</p>
     </div>
   );
 }

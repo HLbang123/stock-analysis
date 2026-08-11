@@ -16,6 +16,7 @@ import { SyncModal } from '@/components/SyncModal';
 import { useSyncStore } from '@/store/sync-store';
 import { Button } from '@/components/ui/button';
 import { PageHeader } from '@/components/ui/page-header';
+import { ALL_GROUP_ID } from '@/components/GroupBar';
 
 /** 买入共振强度档位：按买入信号加权分(A级=2/B级=1)映射到情绪档位 */
 const buyTier = (score: number) => {
@@ -52,10 +53,11 @@ const groupTone = (group: { alerts: AlertRecord[] }): string => {
 
 export default function HomePage() {
   const router = useRouter();
-  const { watchlist, alerts, isCheckingAlerts, clearAlerts, clearAllAlerts, setIsCheckingAlerts } = useStockStore();
+  const { watchlist, groups, alerts, isCheckingAlerts, clearAlerts, clearAllAlerts, setIsCheckingAlerts } = useStockStore();
 
   const [resultMessage, setResultMessage] = useState<string | null>(null);
   const [buyExpanded, setBuyExpanded] = useState<Set<string>>(new Set());
+  const [selectedGroupId, setSelectedGroupId] = useState<string>(ALL_GROUP_ID);
   const [showRules, setShowRules] = useState(false);
   const [showReview, setShowReview] = useState(false);
   const [showSync, setShowSync] = useState(false);
@@ -152,6 +154,27 @@ export default function HomePage() {
       return b.latestTime - a.latestTime;
     });
   }, [alerts]);
+
+  // 自选分组过滤：标的 → 组 id（不在自选里 = 未分组，只在「全部」下出现，与自选页口径一致）
+  const groupOfCode = useMemo(() => {
+    const m = new Map<string, string | undefined>();
+    watchlist.forEach(s => m.set(s.code, s.groupId));
+    return m;
+  }, [watchlist]);
+  const visibleAlerts = selectedGroupId === ALL_GROUP_ID
+    ? groupedAlerts
+    : groupedAlerts.filter(g => groupOfCode.get(g.stockCode) === selectedGroupId);
+  const alertCountOf = (id: string) =>
+    id === ALL_GROUP_ID
+      ? groupedAlerts.length
+      : groupedAlerts.filter(g => groupOfCode.get(g.stockCode) === id).length;
+
+  // 选中组被删除时自动回退「全部」
+  useEffect(() => {
+    if (selectedGroupId !== ALL_GROUP_ID && !groups.some(g => g.id === selectedGroupId)) {
+      setSelectedGroupId(ALL_GROUP_ID);
+    }
+  }, [groups, selectedGroupId]);
 
   // 未读数（badge 已移除，保留口径供后续扩展）
 
@@ -432,7 +455,32 @@ export default function HomePage() {
           </div>
         ) : (
           <div className="mt-[var(--space-section)] space-y-3">
-            {groupedAlerts.map((group) => (
+            {/* 分组过滤栏（有分组才显示；计数=该组下有预警的标的数） */}
+            {groups.length > 0 && (
+              <div className="bg-white dark:bg-gray-900 rounded-xl p-2 shadow-sm flex items-center gap-1.5 overflow-x-auto">
+                {[ALL_GROUP_ID, ...groups.map(g => g.id)].map(id => (
+                  <button
+                    key={id}
+                    onClick={() => setSelectedGroupId(id)}
+                    className={cn(
+                      'shrink-0 px-3 py-1.5 rounded-lg text-sm whitespace-nowrap transition',
+                      selectedGroupId === id
+                        ? 'bg-blue-600 text-white'
+                        : 'text-gray-600 dark:text-gray-400 hover:bg-gray-100 dark:hover:bg-gray-800',
+                    )}
+                  >
+                    {id === ALL_GROUP_ID ? '全部' : groups.find(g => g.id === id)?.name}
+                    <span className={cn('ml-1.5 text-xs', selectedGroupId === id ? 'text-blue-100' : 'text-gray-400')}>
+                      {alertCountOf(id)}
+                    </span>
+                  </button>
+                ))}
+              </div>
+            )}
+
+            {visibleAlerts.length === 0 ? (
+              <div className="text-center py-12 text-gray-400 text-sm">该分组暂无预警</div>
+            ) : visibleAlerts.map((group) => (
               <div
                 key={group.stockCode}
                 onClick={() => router.push(`/stock/${group.stockCode}`)}

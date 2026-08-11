@@ -104,7 +104,7 @@ export function AnalysisHistory({ history }: Props) {
                     {record.entryDate && (
                       <div className="text-xs">
                         <p className="text-gray-500 mb-1">
-                          <TermTooltip term="回测验证" explain="深度分析建议后 T+N 个交易日的实际收益。买入看涨、卖出看跌、持有看震荡。入场日 {record.entryDate}，按当日收盘价基准。" />（入场日 {record.entryDate}）：
+                          <TermTooltip term="回测验证" explain="建议后 T+N 个交易日的实际收益" />（入场日 {record.entryDate}）：
                         </p>
                         {evals === undefined ? (
                           <p className="text-gray-400">加载中...</p>
