@@ -21,6 +21,12 @@ export async function fetchTencentQuote(symbol: string, signal: AbortSignal): Pr
     const preClose = parseFloat(data[4]);
     if (isNaN(price) || price === 0) return null;
 
+    // 字段[30]为行情自带时间戳（20260810150900），个股/指数同布局
+    const ts = data[30];
+    const updateTime = ts && ts.length >= 12
+      ? `${ts.slice(0, 4)}-${ts.slice(4, 6)}-${ts.slice(6, 8)} ${ts.slice(8, 10)}:${ts.slice(10, 12)}`
+      : undefined;
+
     return buildQuoteResponse({
       symbol,
       name: data[1],
@@ -31,6 +37,7 @@ export async function fetchTencentQuote(symbol: string, signal: AbortSignal): Pr
       low: parseFloat(data[34]),
       volume: parseInt(data[36]) || 0,
       amount: parseFloat(data[37]) || 0,
+      updateTime,
     });
   } catch {
     return null;

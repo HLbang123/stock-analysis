@@ -204,6 +204,44 @@ export async function getRealtimeQuoteCached(code: string): Promise<RealtimeQuot
   return null;
 }
 
+// ===== 市场指数实时行情 =====
+// 走个股同一 /api/quote 通道（腾讯/新浪 parser 对指数字段布局实测兼容，2026-08-10 验证）。
+// 用途：深度分析「今日大盘」块——tushare 指数数据盘后才有，盘中只能取 T-1。
+
+export const MARKET_INDICES = [
+  { code: 'sh000001', name: '上证综指' },
+  { code: 'sz399001', name: '深证成指' },
+  { code: 'sz399006', name: '创业板指' },
+  { code: 'sh000016', name: '上证50' },
+  { code: 'sh000905', name: '中证500' },
+  { code: 'sz399005', name: '中小板指' },
+] as const;
+
+export interface MarketIndexQuote {
+  code: string;
+  name: string;
+  price: number;
+  changePercent: number;
+  /** 行情自带时间（YYYY-MM-DD HH:mm），非交易日为最近交易日收盘时间 */
+  updateTime: string;
+}
+
+/** 六大指数实时行情（并行，各自走 hedged fallback；失败指数静默丢弃） */
+export async function getMarketIndexQuotes(): Promise<MarketIndexQuote[]> {
+  const results: (MarketIndexQuote | null)[] = await Promise.all(MARKET_INDICES.map(async (idx) => {
+    const q = await getRealtimeQuoteCached(idx.code);
+    if (!q || !q.price) return null;
+    return {
+      code: idx.code,
+      name: idx.name,
+      price: q.price,
+      changePercent: q.changePercent,
+      updateTime: q.updateTime || '',
+    };
+  }));
+  return results.filter((q): q is MarketIndexQuote => q !== null);
+}
+
 /**
  * 缓存版 getKLineSina
  * 日K TTL=5min，maxAge=15min

@@ -24,11 +24,14 @@ async function main() {
 
   const latestPrices = await prisma.dailyBar.findMany({
     where: { tradeDate: calcDate },
-    select: { tsCode: true, close: true },
+    select: { tsCode: true, close: true, adjFactor: true },
   });
 
-  const priceMap = new Map(latestPrices.map((p) => [p.tsCode, p.close]));
-  console.log(`[compute-rps] ${latestPrices.length} 只股票有当日数据`);
+  // 复权口径：收益 = (close0×f0)/(closeN×fN) − 1（后复权比率=真实收益，消除除权假跌幅）；
+  // adj_factor 缺失（回补未完成）时退化为原始价（与旧行为一致）
+  const adj = (close: number, f: number | null) => close * (f ?? 1);
+  const priceMap = new Map(latestPrices.map((p) => [p.tsCode, adj(p.close!, p.adjFactor)]));
+  console.log(`[compute-rps] ${latestPrices.length} 只股票有当日数据（复权口径）`);
 
   // 2. 获取历史交易日期列表（用于找 N 天前的日期）
   const allDates = await prisma.dailyBar.findMany({
@@ -53,12 +56,12 @@ async function main() {
       continue;
     }
 
-    // 获取 N 天前的收盘价
+    // 获取 N 天前的收盘价（复权口径，同上）
     const prevPrices = await prisma.dailyBar.findMany({
       where: { tradeDate: prevDate },
-      select: { tsCode: true, close: true },
+      select: { tsCode: true, close: true, adjFactor: true },
     });
-    const prevMap = new Map(prevPrices.map((p) => [p.tsCode, p.close]));
+    const prevMap = new Map(prevPrices.map((p) => [p.tsCode, adj(p.close!, p.adjFactor)]));
 
     // 计算每只股票的收益率
     const returns: { tsCode: string; ret: number }[] = [];

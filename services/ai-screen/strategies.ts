@@ -1,9 +1,16 @@
 /**
- * AI 筛选 — 策略预设(胜率优先重构)
+ * AI 筛选 — 策略预设（2026-08-11 因子回测定稿）
  *
- * 4 个预设按论点重组因子权重(7 因子:trend/entry_timing/risk/quality/liquidity/theme_heat/chip)。
- * 权重为初始占位值,后续由 T+N 因子 IC 数据围绕 T+5 胜率迭代调优。
- * factor_weights 不必归一,引擎内 normalizeWeights 会归一。
+ * 基于 2.8 年全市场回测（531+680 交易日，IS/OOS 时序分割，三窗口结论一致）：
+ *   - entry_timing +0.07 (t≈15)  唯一强正因子 → 两大策略主力
+ *   - risk +0.03~0.08             低波有效，激进池更强
+ *   - quality +0.06               强但带未来函数（当前快照），人工保留 0.20~0.25
+ *   - trend -0.06 (t≈-12)         反向显著 → 出局（仅留 0.05 防抖动）
+ *   - liquidity -0.08             反向 → 出局
+ *   - theme_heat ≈0 / chip ≈0     无效 → 出局
+ * 硬筛：RPS/量比 原始信号 IC 显著负（热度=均值回归），激进策略加 RPS 上限 + 量比上限；
+ *       池子整体超额在长窗口转正（balanced +0.08%），激进池仍负 → 热度过滤必须松。
+ * 保留 quality/defensive 两个旧预设（历史胜率数据延续），新 UI 只展示 momentum/balanced。
  */
 
 import type { StrategyPreset } from './types';
@@ -11,92 +18,102 @@ import type { StrategyPreset } from './types';
 export const STRATEGY_PRESETS: StrategyPreset[] = [
   {
     id: 'balanced',
-    name: '均衡筛选',
-    description: '趋势、业绩、风险都兼顾\n各项均衡，最稳妥的默认选择',
+    name: '稳健优选',
+    description: '趋势+回踩，基本面加持\n控制波动，稳稳的幸福',
     category: 'balanced',
     hardFilters: {
       excludeSt: true,
-      rpsMin: 80,
+      rpsMin: 70,
       rpsPeriod: 60,
       amountMin: 50_000_000, // 5 千万成交额
-      priceMin: 2,
-      changePctMin: -9.5,
-      changePctMax: 9.5,
+      priceMin: 3,
+      changePctMin: -7,
+      changePctMax: 7,
       change60dMax: 60,
-      requireMaBullish: false,
-      volatility20dPctMax: 55,
-      maxDrawdown20dPctMin: -18,
+      volumeRatioMax: 2.5, // 排除刚爆量（量比 IC -0.11 显著负）
+      volatility20dPctMax: 45,
+      maxDrawdown20dPctMin: -15,
     },
     factorWeights: {
-      trend: 0.30,
-      quality: 0.20,
+      entry_timing: 0.50,
+      quality: 0.25,
       risk: 0.15,
-      entry_timing: 0.13,
-      liquidity: 0.12,
-      theme_heat: 0.05,
-      chip: 0.05,
+      trend: 0.05,
+      liquidity: 0.03,
+      theme_heat: 0.02,
+      chip: 0.00,
+    },
+    scoringProfile: {
+      risk_high_volatility_pct: 38.0,
+      risk_drawdown_floor_pct: -12.0,
     },
     rankingHints: [
       '优先关注：',
-      '1. 趋势向上(RPS、60 日涨幅、MA 多头、量价配合)但未严重过热',
+      '1. 入场点在回踩位(距MA20 -5%~0%、RSI 不超买、当日不追涨)',
       '2. 基本面扎实(ROE、毛利率、营收增速靠前)',
-      '3. 入场点不追顶(回踩 MA20、RSI 不超买)',
-      '4. 波动与回撤可控、流动性充足',
+      '3. 波动与回撤可控、趋势方向向上但未过热',
+      '4. 规避刚放量爆量、单日大涨后的追高',
     ].join('\n'),
     rulesText: [
-      '硬筛：RPS(60日)≥80 · 成交额≥5千万 · 单日涨跌±9.5% · 60日涨幅≤60% · 波动率≤55% · 回撤≥-18%',
-      '因子侧重：趋势30% · 质量20% · 波动15% · 入场点13% · 流动性12% · 板块5% · 筹码5%',
+      '硬筛：RPS(60日)70~95 · 成交额≥5千万 · 单日±7% · 60日涨幅≤60% · 量比≤2.5 · 波动率≤45% · 回撤≥-15%',
+      '因子侧重：入场点50% · 质量25% · 波动15% · 趋势5%',
       '组合约束：同方向最多2只',
     ].join('\n'),
-    maxOutput: 20,
+    maxOutput: 30,
     llmRerank: true,
     portfolioProfile: { maxSameBucket: 2, concentrationPenalty: 3.5 },
   },
   {
     id: 'momentum',
-    name: '动量突破',
-    description: '只追强势上涨的票\n量价配合好，波动大也能接受',
+    name: '趋势猎手',
+    description: '强势趋势+低波入场\n波动容忍度更高，追求进攻',
     category: 'momentum',
     hardFilters: {
       excludeSt: true,
-      rpsMin: 87,
+      rpsMin: 70,
+      rpsMax: 97, // 排除最极端热度区（RPS 分位越高 T+5 越差）
       rpsPeriod: 60,
-      amountMin: 100_000_000,
+      amountMin: 80_000_000,
       priceMin: 3,
       changePctMin: -5,
-      changePctMax: 9.8,
-      change60dMin: 5,
+      changePctMax: 7, // 单日 +9.8% 收紧到 +7%，防追高
+      change60dMax: 60, // 去掉 60日涨≥5% 下限
       requireMaBullish: true,
+      volumeRatioMax: 2.5,
+      volatility20dPctMax: 60,
+      maxDrawdown20dPctMin: -25,
     },
     factorWeights: {
-      trend: 0.50,
-      theme_heat: 0.15,
-      liquidity: 0.12,
-      entry_timing: 0.10,
-      quality: 0.08,
-      risk: 0.03,
-      chip: 0.02,
+      entry_timing: 0.35,
+      risk: 0.35,
+      quality: 0.20,
+      trend: 0.05,
+      liquidity: 0.03,
+      theme_heat: 0.02,
+      chip: 0.00,
     },
     scoringProfile: {
-      trend_chase_start_pct: 7.0,
-      trend_60d_overheat_pct: 55.0,
+      risk_high_volatility_pct: 50.0,
+      risk_drawdown_floor_pct: -18.0,
+      risk_high_atr_pct: 8.0,
     },
     rankingHints: [
       '优先关注：',
-      '1. RPS 高位、MA 多头排列、MACD 金叉或红柱放大',
-      '2. 量价配合(放量上涨),量比适中',
-      '3. 行业指数当日强势,主题热度上升',
-      '4. 警惕连阳过热与单日追高,但允许较高波动',
+      '1. 强势趋势(MA 多头、MACD 多头)但入场点不追顶(回踩 MA20、RSI 不超买)',
+      '2. 波动回撤可控的前提下选趋势最强',
+      '3. 基本面健康加分',
+      '4. 规避刚放量爆量与单日大涨后的追高',
     ].join('\n'),
     rulesText: [
-      '硬筛：RPS(60日)≥87 · 成交额≥1亿 · 单日-5%~+9.8% · 60日涨>5% · 必须MA5>MA13>MA55多头排列',
-      '因子侧重：趋势50% · 板块15% · 流动性12% · 入场点10% · 质量8% · 波动3% · 筹码2%',
-      '组合约束：同方向最多2只(允许较高波动,追强加速段)',
+      '硬筛：RPS(60日)70~97 · 成交额≥8千万 · 单日-5%~+7% · 60日涨幅≤60% · MA5>MA13>MA55 · 量比≤2.5 · 波动率≤60% · 回撤≥-25%',
+      '因子侧重：入场点35% · 波动35% · 质量20% · 趋势5%',
+      '组合约束：同方向最多2只',
     ].join('\n'),
-    maxOutput: 20,
+    maxOutput: 30,
     llmRerank: true,
     portfolioProfile: { maxSameBucket: 2, concentrationPenalty: 4.0 },
   },
+  // —— 以下两个旧预设保留（历史胜率数据延续），新 UI 不展示 ——
   {
     id: 'quality',
     name: '高质量',

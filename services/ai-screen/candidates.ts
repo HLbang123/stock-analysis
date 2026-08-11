@@ -26,6 +26,10 @@ function buildWhere(hf: HardFilterConfig, startIdx: number): { sql: string[]; pa
     const col = RPS_COLS[hf.rpsPeriod ?? 60] ?? 'rps_60';
     push(`r.${col} >= $${startIdx + params.length}`, hf.rpsMin);
   }
+  if (hf.rpsMax != null) {
+    const col = RPS_COLS[hf.rpsPeriod ?? 60] ?? 'rps_60';
+    push(`r.${col} <= $${startIdx + params.length}`, hf.rpsMax);
+  }
   if (hf.amountMin != null) {
     // daily_bars.amount 单位千元 → 换算
     push(`db.amount * 1000 >= $${startIdx + params.length}`, hf.amountMin);

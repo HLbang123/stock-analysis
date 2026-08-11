@@ -21,6 +21,11 @@ export async function fetchSinaQuote(symbol: string, signal: AbortSignal): Promi
     const preClose = parseFloat(data[2]);
     if (isNaN(price) || price === 0) return null;
 
+    // 字段[30]/[31]为行情自带日期时间（2026-08-10 / 15:09:29），个股与指数同布局
+    const updateTime = data[30] && data[31]
+      ? `${data[30]} ${data[31].slice(0, 5)}`
+      : undefined;
+
     return buildQuoteResponse({
       symbol,
       name: data[0],
@@ -31,6 +36,7 @@ export async function fetchSinaQuote(symbol: string, signal: AbortSignal): Promi
       low: parseFloat(data[5]),
       volume: parseInt(data[8]) || 0,
       amount: parseFloat(data[9]) || 0,
+      updateTime,
     });
   } catch {
     return null;

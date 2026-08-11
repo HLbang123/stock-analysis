@@ -74,6 +74,7 @@ export interface HotStocksResp {
 // ── /api/stock/rps ───────────────────────────────────────────────────
 export interface StockRpsResp {
   rps20?: number | null; rps60?: number | null; rps120?: number | null; rps250?: number | null;
+  calcDate?: string | null; // YYYYMMDD，rps_scores 盘后计算，盘中恒为 T-1
   error?: string; [k: string]: any;
 }
 

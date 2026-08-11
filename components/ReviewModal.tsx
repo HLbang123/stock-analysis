@@ -10,15 +10,18 @@
 import { useState } from 'react';
 import { Modal } from '@/components/ui/modal';
 import { cn } from '@/lib/utils';
-import { CalendarDays, Brain, Sparkles, AlertTriangle } from 'lucide-react';
+import { CalendarDays, Brain, Sparkles, AlertTriangle, Sunrise, Sunset } from 'lucide-react';
 import { WeeklyReview } from '@/components/ai/WeeklyReview';
+import { DailyBrief } from '@/components/ai/DailyBrief';
 import { DeepAnalysisStats } from '@/components/ai/DeepAnalysisStats';
 import { AiScreenStats } from '@/components/ai/AiScreenStats';
 import { AlertRuleHealth } from '@/components/ai/AlertRuleHealth';
 
-type Tab = 'weekly' | 'deep' | 'screen' | 'rule';
+type Tab = 'morning' | 'weekly' | 'daily' | 'deep' | 'screen' | 'rule';
 
 const TABS: { key: Tab; label: string; icon: typeof CalendarDays }[] = [
+  { key: 'morning', label: '盘前提示', icon: Sunrise },
+  { key: 'daily', label: '日报', icon: Sunset },
   { key: 'weekly', label: '周报', icon: CalendarDays },
   { key: 'deep', label: '深度分析', icon: Brain },
   { key: 'screen', label: 'AI筛选', icon: Sparkles },
@@ -26,7 +29,7 @@ const TABS: { key: Tab; label: string; icon: typeof CalendarDays }[] = [
 ];
 
 export function ReviewModal({ open, onClose }: { open: boolean; onClose: () => void }) {
-  const [tab, setTab] = useState<Tab>('weekly');
+  const [tab, setTab] = useState<Tab>('morning');
 
   // 必须守卫 open（在 hooks 之后）：无此守卫时父组件一旦渲染本组件，弹窗永远显示、叉不掉
   if (!open) return null;
@@ -53,6 +56,8 @@ export function ReviewModal({ open, onClose }: { open: boolean; onClose: () => v
         </div>
       </div>
 
+      {tab === 'morning' && <DailyBrief type="morning" />}
+      {tab === 'daily' && <DailyBrief type="daily" />}
       {tab === 'weekly' && <WeeklyReview />}
       {tab === 'deep' && <div className="p-4"><DeepAnalysisStats /></div>}
       {tab === 'screen' && <div className="p-4"><AiScreenStats /></div>}

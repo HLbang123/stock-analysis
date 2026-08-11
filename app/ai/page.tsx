@@ -39,7 +39,6 @@ const WARN_LABELS: Record<string, string> = {
 };
 /** 辩论角色阶段键（判定辩论是否部分失败） */
 const DEBATE_ROLE_KEYS = ['tech', 'risk', 'xinjie', 'tech_r2', 'risk_r2', 'xinjie_r2'];
-import { AiScreenPanel } from '@/components/ai/AiScreenPanel';
 import { TScorePanel, type TScorePanelResult } from '@/components/ai/TScorePanel';
 import { StockTrackStrip, VerdictCalibrationNote } from '@/components/ai/DeepCalibration';
 import { TermTooltip } from '@/components/ui/TermTooltip';
@@ -71,7 +70,7 @@ export default function AiPage() {
 
   const [showSettings, setShowSettings] = useState(false);
   const [showAddProfile, setShowAddProfile] = useState(false);
-  const [mode, setMode] = useState<'analyze' | 'screen'>('analyze');
+  const [mode, setMode] = useState<'analyze'>('analyze');
   // 底部平级切换：AI 对话 / 历史分析（胜率复盘已迁至首页「复盘」弹窗）
   const [deepTab, setDeepTab] = useState<'chat' | 'history'>('chat');
   const [editingProfile, setEditingProfile] = useState<AiProfile | null>(null);
@@ -495,25 +494,6 @@ export default function AiPage() {
           <p className="text-sm text-[var(--color-brand)] mb-2">尚未配置AI模型</p>
           <Button onClick={() => setShowSettings(true)}>添加API配置</Button>
         </Card>
-      )}
-
-      {/* 模式切换：个股分析 / AI 筛选 */}
-      {currentProfile && (
-        <Tabs
-          className="mb-[var(--space-section)]"
-          variant="pills"
-          value={mode}
-          onChange={setMode}
-          items={[
-            { value: 'analyze', label: '标的分析', icon: <Brain className="w-4 h-4" /> },
-            { value: 'screen', label: 'AI 筛选', icon: <Sparkles className="w-4 h-4" /> },
-          ]}
-        />
-      )}
-
-      {/* AI 筛选模式 */}
-      {mode === 'screen' && currentProfile && (
-        <AiScreenPanel currentProfile={currentProfile} />
       )}
 
       {/* ===== 个股分析模式 ===== */}

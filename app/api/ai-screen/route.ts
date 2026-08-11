@@ -13,6 +13,8 @@ import { NextRequest, NextResponse } from 'next/server';
 import { prisma } from '@/lib/db';
 import { STRATEGY_PRESETS, getPreset } from '@/services/ai-screen/strategies';
 import { runScreen, rescueRun, dbPickToAiPick } from '@/services/ai-screen/engine';
+import { getServerScreenCfg } from '@/services/ai-screen/server-cfg';
+import { persistRun, serializeRun, pickToCreate } from '@/services/ai-screen/persist';
 import type { AiPick, AiScreenRun, LlmConfig, StrategyPreset } from '@/services/ai-screen/types';
 
 /** 质量门控：只有 DeepSeek v4 及以上模型跑的结果才落库成为全员共享缓存。
@@ -27,58 +29,8 @@ const isPreferredModel = (m?: string): boolean => {
   return parseInt(vm[1], 10) >= 4;
 };
 
-/** AiPick → Prisma pick create 数据(全候选落库;非入选 selected=false/rank=null) */
-function pickToCreate(k: AiPick) {
-  return {
-    selected: k.selected,
-    rank: k.selected ? k.rank : null,
-    tsCode: k.tsCode,
-    name: k.name,
-    industry: k.industry,
-    rps: k.rps,
-    latestClose: k.latestClose,
-    latestChange: k.latestChange,
-    latestAmount: k.latestAmount,
-    ret60d: k.ret60d,
-    macdStatus: k.macdStatus,
-    rsiStatus: k.rsiStatus,
-    volatility20d: k.volatility20d,
-    maxDrawdown20d: k.maxDrawdown20d,
-    atr20: k.atr20,
-    volumeRatio: k.volumeRatio,
-    signalScore: k.signalScore,
-    maBullish: k.maBullish,
-    pullbackToMa20Pct: k.pullbackToMa20Pct,
-    breakout20dPct: k.breakout20dPct,
-    roe: k.roe,
-    grossprofitMargin: k.grossprofitMargin,
-    orYoy: k.orYoy,
-    industryChangePct: k.industryChangePct,
-    factorScores: k.factorScores as any,
-    screenScore: k.screenScore,
-    llmScore: k.llmScore,
-    llmConfidence: k.llmConfidence,
-    finalScore: k.finalScore,
-    llmSector: k.llmSector || null,
-    llmTheme: k.llmTheme || null,
-    llmThesis: k.llmThesis || null,
-    rankingReason: k.rankingReason || null,
-    riskSummary: k.riskSummary || null,
-    llmCatalysts: k.llmCatalysts,
-    llmRisks: k.llmRisks,
-    llmTags: k.llmTags,
-    llmStyleFit: k.llmStyleFit || null,
-    llmWatchItems: k.llmWatchItems,
-    llmInvalidators: k.llmInvalidators,
-    riskScore: k.riskScore,
-    riskLevel: k.riskLevel,
-    riskPenalty: k.riskPenalty,
-    riskFlags: k.riskFlags,
-    portfolioPenalty: k.portfolioPenalty,
-    entryPrice: k.entryPrice,
-    entryDate: k.entryDate,
-  };
-}
+/** 展示用:只取入选行(rank!=null,兼容历史数据——旧 run 全员有 rank,新 run 仅 top-N 有 rank) */
+const displayPicks = (rows: any[]) => rows.filter((p: any) => p.rank != null).map(dbPickToAiPick);
 
 /** 补救成功后,AiPick → 需更新的字段(仅入选 top-N 才 selected=true/rank 有值；未入选 rank=null，displayPicks 据此过滤) */
 function pickToUpdate(k: AiPick) {
@@ -107,9 +59,6 @@ function pickToUpdate(k: AiPick) {
   };
 }
 
-/** 展示用:只取入选行(rank!=null,兼容历史数据——旧 run 全员有 rank,新 run 仅 top-N 有 rank) */
-const displayPicks = (rows: any[]) => rows.filter((p: any) => p.rank != null).map(dbPickToAiPick);
-
 // ── 跨用户补救熔断：连续失败后 6h 内不再补救（DeepSeek 故障日防无限烧 token）──
 const rescueCircuit = new Map<string, { failures: number; blockedAt: number }>();
 const RESCUE_CIRCUIT_MAX = 3;
@@ -133,42 +82,21 @@ function clearRescueCircuit(key: string): void {
 // （客户端断网自动重试/双击/多用户同时首跑时，不会重复跑 runScreen 烧 token）
 const firstRunInflight = new Map<string, Promise<{ run: AiScreenRun; picks: AiPick[] }>>();
 
-/** 首跑执行体：runScreen + 按质量门控落库；P2002 并发兜底取对方结果 */
-async function runFirstRun(preset: StrategyPreset, cfg?: LlmConfig): Promise<{ run: AiScreenRun; picks: AiPick[] }> {
+/** 首跑执行体：runScreen + 按质量门控落库；P2002 并发兜底取对方结果。
+ *  trusted=true（服务器 key 跑）→ 无条件落库共享；否则走旧质量门控（仅 DeepSeek v4+ 落库） */
+async function runFirstRun(preset: StrategyPreset, cfg?: LlmConfig, trusted = false): Promise<{ run: AiScreenRun; picks: AiPick[] }> {
   // 无缓存：首跑。runScreen 内部已含 LLM 重排 + 风险 + 组合
   const { run, candidates, picks } = await runScreen(preset, cfg);
 
-  // 质量门控：LLM 策略只有 DeepSeek 模型跑的结果才落库共享；非 DeepSeek 用户跑的一次性结果只返回给他看，不落库。
+  // 质量门控：服务器 key（trusted）无条件落库；用户 key 只有 DeepSeek 模型的结果才落库共享。
   // 非 LLM 策略（纯规则）无模型质量差异，首跑即落库。
-  const shouldPersist = !preset.llmRerank || isPreferredModel(cfg?.model);
+  const shouldPersist = trusted || !preset.llmRerank || isPreferredModel(cfg?.model);
   if (!shouldPersist) {
     return { run, picks };
   }
 
   try {
-    await prisma.aiScreenRun.create({
-      data: {
-        id: run.id,
-        strategyId: run.strategyId,
-        strategyName: run.strategyName,
-        createdAt: run.createdAt,
-        barDate: run.barDate,
-        rpsPeriod: run.rpsPeriod,
-        candidateCount: run.candidateCount,
-        pickCount: run.pickCount,
-        llmReranked: run.llmReranked,
-        llmRescued: false,
-        llmModel: run.llmModel,
-        llmMarketView: run.llmMarketView || null,
-        llmSelectionLogic: run.llmSelectionLogic || null,
-        llmPortfolioRisk: run.llmPortfolioRisk || null,
-        llmCoverage: run.llmCoverage,
-        degradation: run.degradation,
-        riskEnabled: run.riskEnabled,
-        portfolioEnabled: run.portfolioEnabled,
-        picks: { create: candidates.map(pickToCreate) },
-      },
-    });
+    await persistRun(run, candidates);
   } catch (e: any) {
     // 并发：另一个用户刚建了同策略当日 Run → 取他的
     if (e?.code === 'P2002') {
@@ -183,29 +111,6 @@ async function runFirstRun(preset: StrategyPreset, cfg?: LlmConfig): Promise<{ r
   return { run, picks };
 }
 
-/** DB Run 行 → AiScreenRun（前端用） */
-function serializeRun(r: any): AiScreenRun {
-  return {
-    id: r.id,
-    strategyId: r.strategyId,
-    strategyName: r.strategyName,
-    createdAt: r.createdAt,
-    barDate: r.barDate,
-    rpsPeriod: r.rpsPeriod,
-    candidateCount: r.candidateCount,
-    pickCount: r.pickCount,
-    llmReranked: r.llmReranked,
-    llmModel: r.llmModel,
-    llmMarketView: r.llmMarketView || '',
-    llmSelectionLogic: r.llmSelectionLogic || '',
-    llmPortfolioRisk: r.llmPortfolioRisk || '',
-    llmCoverage: r.llmCoverage,
-    degradation: r.degradation ?? [],
-    riskEnabled: r.riskEnabled,
-    portfolioEnabled: r.portfolioEnabled,
-  };
-}
-
 export async function POST(request: NextRequest) {
   try {
     const body = await request.json();
@@ -216,9 +121,11 @@ export async function POST(request: NextRequest) {
       return NextResponse.json({ error: `未知策略：${strategyId}` }, { status: 400 });
     }
 
-    const cfg: LlmConfig | undefined = baseUrl && model ? { baseUrl, apiKey, model } : undefined;
+    // 服务器 key 优先（每日调度共用）；未配置时回退客户端配置（旧 AI 页路径）
+    const serverCfg = getServerScreenCfg();
+    const cfg: LlmConfig | undefined = serverCfg ?? (baseUrl && model ? { baseUrl, apiKey, model } : undefined);
     if (preset.llmRerank && !cfg) {
-      return NextResponse.json({ error: '该策略启用 LLM 重排，需提供 baseUrl / model' }, { status: 400 });
+      return NextResponse.json({ error: '该策略启用 LLM 重排，需提供 baseUrl / model（或服务器配置 AI_SCREEN_API_KEY）' }, { status: 400 });
     }
 
     // 取最新数据日（去重 key 的一部分）
@@ -324,7 +231,7 @@ export async function POST(request: NextRequest) {
         // 在途执行失败则落到下方自己跑一遍（重新占位）
       }
     }
-    const task = runFirstRun(preset, cfg);
+    const task = runFirstRun(preset, cfg, !!serverCfg);
     firstRunInflight.set(flightKey, task);
     try {
       return NextResponse.json(await task);

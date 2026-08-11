@@ -31,9 +31,10 @@ const STEPS: { name: string; cmd: string; fatal?: boolean }[] = [
   // 基本面(ROE) + 申万成分股 不进每日——按需手动跑
 ];
 
-// 周一额外更新股票列表（上市/退市变动）
+// 周一额外更新股票列表（上市/退市变动）+ 同花顺指数成分（概念/行业成分变化低频，周级足够）
 const today = new Date();
 if (today.getDay() === 1) {
+  STEPS.unshift({ name: "同花顺指数成分", cmd: "npx tsx scripts/sync-ths-index.ts", fatal: false });
   STEPS.unshift({ name: "股票列表刷新", cmd: "npx tsx scripts/sync-stocks.ts" });
 }
 

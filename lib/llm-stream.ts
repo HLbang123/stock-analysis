@@ -9,12 +9,15 @@ export interface LlmDelta {
  * 自动处理 buffer 切分、`data:` 前缀、`[DONE]` 标记和无法解析的行
  * 同时读取 content 与 reasoning_content / reasoning（不同 provider 字段名不同），
  * 让 DeepSeek-R1、GLM-4.5+ 等推理模型的思考过程不再被丢弃。
+ * @param onFinish 可选：流结束时回调最后的 finish_reason（"stop" 正常结束 / "length" 达到 max_tokens 上限被截断）。
+ *                 调用方据此区分"模型写完"与"被掐断"，避免截断输出被静默当成功。
  */
 export async function readLlmDeltas(
   llmResponse: Response,
-  onDelta: (delta: LlmDelta) => void
+  onDelta: (delta: LlmDelta) => void,
+  onFinish?: (reason: string) => void
 ): Promise<void> {
-  return readLlmDeltasInternal(llmResponse, onDelta);
+  return readLlmDeltasInternal(llmResponse, onDelta, undefined, onFinish);
 }
 
 /** 将一段文本以 SSE 事件形式写入控制器 */
@@ -63,11 +66,14 @@ export async function readLlmDeltasWithTools(
 async function readLlmDeltasInternal(
   llmResponse: Response,
   onDelta: (delta: LlmDelta) => void,
-  onToolCalls?: (toolCalls: any[]) => void
+  onToolCalls?: (toolCalls: any[]) => void,
+  onFinish?: (reason: string) => void
 ): Promise<void> {
   const reader = llmResponse.body!.getReader();
   const decoder = new TextDecoder();
   let buffer = '';
+  // 记录最后一个非空 finish_reason（多数 provider 在末帧携带；中途帧为 null/空则跳过）
+  let finishReason = '';
 
   while (true) {
     const { done, value } = await reader.read();
@@ -86,7 +92,9 @@ async function readLlmDeltasInternal(
 
       try {
         const parsed = JSON.parse(data);
-        const delta = parsed.choices?.[0]?.delta;
+        const choice = parsed.choices?.[0];
+        if (choice?.finish_reason) finishReason = choice.finish_reason;
+        const delta = choice?.delta;
         if (!delta) continue;
         const content = typeof delta.content === 'string' ? delta.content : undefined;
         // reasoning 字段名兜底：DeepSeek/部分 GLM 用 reasoning_content，部分 OpenAI 兼容包装用 reasoning
@@ -100,4 +108,5 @@ async function readLlmDeltasInternal(
       }
     }
   }
+  if (onFinish && finishReason) onFinish(finishReason);
 }

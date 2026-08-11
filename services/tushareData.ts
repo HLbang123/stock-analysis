@@ -4,6 +4,7 @@
  */
 
 import { getCached, setCache } from '@/lib/cache';
+import { beijingTodayStr } from '@/lib/stock-helpers';
 
 interface DailyBasicItem {
   ts_code: string;
@@ -40,20 +41,15 @@ interface FinaIndicatorItem {
 }
 
 interface MoneyflowItem {
-  ts_code: string;
-  trade_date: string;
-  net_mf_amount?: number;
-  buy_elg_amount?: number;
-  sell_elg_amount?: number;
-  buy_lg_amount?: number;
-  sell_lg_amount?: number;
-  net_lg_amount?: number;
-  buy_md_amount?: number;
-  sell_md_amount?: number;
-  net_md_amount?: number;
-  buy_sm_amount?: number;
-  sell_sm_amount?: number;
-  net_sm_amount?: number;
+  // 同花顺 THS 口径（stock_moneyflow_ths 表，prisma camelCase 字段）
+  // 历史：2026-08 前为东财 snake_case 字段，迁移后本结构未同步导致全盘读出 0（"资金数据缺失"误判根因）
+  tradeDate?: string;      // YYYYMMDD
+  netAmount?: number;      // 主力净流入（万元）
+  netD5Amount?: number;    // 5日主力净额（万元）
+  buyLgAmount?: number;    // 大单净流入（万元）
+  buyLgRate?: number;      // 大单净流入占比(%)
+  buyMdRate?: number;      // 中单净流入占比(%)
+  buySmRate?: number;      // 小单净流入占比(%)
 }
 
 export interface TushareData {
@@ -65,6 +61,7 @@ export interface TushareData {
   hkHold?: HkHoldItem[];
   forecast?: ForecastItem[];
   topList?: TopListItem[];
+  dragonTiger?: DragonTigerData | null;
   indexData?: IndexDataItem[];
   errors?: string[];       // 服务端聚合接口的部分调用失败（来自 /api/tushare/stock-data）
   warnings?: string[];     // 客户端 sanitize 时丢弃的 section（数据异常）
@@ -127,6 +124,23 @@ interface TopListItem {
   net_rate?: number;
   amount_rate?: number;
   reason?: string;
+}
+
+/** 龙虎榜席位增强（同花顺 fuyao 口径，金额单位：元）。个股未上榜时为 null */
+interface DragonTigerData {
+  tradeDate: string;         // yyyy-MM-dd
+  items: {
+    rangeDays?: number;      // 1=当日榜 3=3日榜
+    netValue?: number;       // 龙虎榜净买入(元)
+    netRate?: number;        // 净买入占比(小数)
+    hotRank?: number;        // 同花顺人气排名
+    limitReason?: string;    // 涨跌停原因
+    orgNetValue?: number;    // 机构净买入(元)
+    orgBuyNum?: number;      // 买入机构数
+    orgSellNum?: number;     // 卖出机构数
+    hotMoneyNetValue?: number; // 游资合计净买入(元)
+    concepts?: string[];     // 所属概念
+  }[];
 }
 
 interface IndexDataItem {
@@ -264,8 +278,15 @@ function fmtYuan(yuan: number | undefined): string {
 /**
  * 将 Tushare 数据转换为 AI prompt 可读的文本
  * 这是关键函数 — 输出格式直接影响 AI 分析质量
+ *
+ * @param indexQuotes 六大指数实时行情（getMarketIndexQuotes）。
+ *   tushare 指数数据盘后才有（盘中恒为 T-1），实时涨跌必须由行情通道提供；
+ *   缺省时大盘块整体降级为带日期标注的 T-1 展示，防止 LLM 把旧数据写成"今日"。
  */
-export function formatTushareForPrompt(data: TushareData | null): string {
+export function formatTushareForPrompt(
+  data: TushareData | null,
+  indexQuotes?: { name: string; price: number; changePercent: number; updateTime: string }[] | null,
+): string {
   if (!data) return '';
 
   const sections: string[] = [];
@@ -293,26 +314,49 @@ export function formatTushareForPrompt(data: TushareData | null): string {
     sections.push(`### 估值与市值\n${valuationLines.join('\n')}`);
   }
 
-  // ===== 1.5. 大盘环境（六大指数最新指标） =====
+  // ===== 1.5. 大盘环境（两层：实时涨跌 + T-1 估值） =====
+  // 实时层：行情通道当日数据（盘中为盘中价，盘后/非交易日为最近交易日收盘，时间戳为行情自带）
+  const rt = (indexQuotes || []).filter(q => q && Number.isFinite(q.changePercent));
+  if (rt.length > 0) {
+    const qDate = rt[0].updateTime?.slice(0, 10) || '';
+    const qTime = rt[0].updateTime?.slice(11) || '';
+    const isToday = qDate === beijingTodayStr();
+    const title = isToday
+      ? `### 今日大盘（实时行情，截至 ${qTime}）`
+      : `### 大盘行情（${qDate ? `${qDate.slice(5)} 收盘数据，非今日` : '最近交易日数据，非今日'}）`;
+    const rtLines = rt.map(q =>
+      `- ${q.name} ${q.price.toFixed(2)}，${q.changePercent > 0 ? '+' : ''}${q.changePercent.toFixed(2)}%`
+    );
+    sections.push(`${title}\n${rtLines.join('\n')}`);
+  }
+  // T-1 层：tushare 盘后数据。有实时层时只保留估值字段（涨跌幅以实时层为准）；
+  // 无实时层时保留涨跌幅但标题强制带日期，杜绝"今日普涨"式误述
   const idxData = data.indexData;
   if (idxData && idxData.length > 0) {
     const IDX_NAMES: Record<string, string> = {
       '000001.SH': '上证综指', '399001.SZ': '深证成指', '399006.SZ': '创业板指',
       '000016.SH': '上证50', '000905.SH': '中证500', '399005.SZ': '中小板指',
     };
+    const td = idxData[0].trade_date;
+    const dateStr = td ? `${td.slice(4, 6)}-${td.slice(6, 8)}` : '最近交易日';
     const idxLines: string[] = [];
     for (const idx of idxData) {
       const name = IDX_NAMES[idx.ts_code] || idx.ts_code;
       const parts: string[] = [name];
-      if (idx.pct_chg != null) {
+      if (rt.length === 0 && idx.pct_chg != null) {
         parts.push(`${idx.pct_chg > 0 ? '+' : ''}${idx.pct_chg.toFixed(2)}%`);
       }
       if (idx.pe_ttm != null) parts.push(`PE ${idx.pe_ttm.toFixed(1)}`);
       if (idx.pb != null) parts.push(`PB ${idx.pb.toFixed(2)}`);
       if (idx.turnover_rate != null) parts.push(`换手 ${idx.turnover_rate.toFixed(2)}%`);
-      idxLines.push(`- ${parts.join('，')}`);
+      if (parts.length > 1) idxLines.push(`- ${parts.join('，')}`);
     }
-    sections.push(`### 大盘环境\n${idxLines.join('\n')}`);
+    if (idxLines.length > 0) {
+      const title = rt.length > 0
+        ? `### 大盘估值（${dateStr} 收盘）`
+        : `### 大盘环境（${dateStr} 收盘数据，非当日实时）`;
+      sections.push(`${title}\n${idxLines.join('\n')}`);
+    }
   }
 
   // ===== 2. 财务指标（最近一季度 + 同比） =====
@@ -380,29 +424,29 @@ export function formatTushareForPrompt(data: TushareData | null): string {
     sections.push(`### 财务指标\n${finLines.join('\n')}`);
   }
 
-  // ===== 3. 资金流向（最近五天） =====
+  // ===== 3. 资金流向（最近五天，同花顺 THS 口径） =====
   const mfData = data.moneyflow;
   if (mfData && mfData.length > 0) {
     const flowLines: string[] = [];
-    let totalNetMf = 0;
 
-    for (const mf of mfData) {
-      const dateStr = mf.trade_date
-        ? `${mf.trade_date.slice(4, 6)}-${mf.trade_date.slice(6, 8)}`
-        : '';
-      const netMf = mf.net_mf_amount || 0;
-      totalNetMf += netMf;
-      const direction = netMf > 0 ? '净流入' : netMf < 0 ? '净流出' : '持平';
-
-      // 计算大单净买入
-      const lgNet = (mf.buy_lg_amount || 0) - (mf.sell_lg_amount || 0);
-      const elgNet = (mf.buy_elg_amount || 0) - (mf.sell_elg_amount || 0);
-
-      flowLines.push(`- ${dateStr}：主力${direction} ${fmtFlow(Math.abs(netMf))}（超大单${elgNet > 0 ? '+' : ''}${fmtFlow(elgNet)}，大单${lgNet > 0 ? '+' : ''}${fmtFlow(lgNet)}）`);
+    for (const mf of mfData.slice(0, 5)) {
+      const td = mf.tradeDate;
+      const dateStr = td ? `${td.slice(4, 6)}-${td.slice(6, 8)}` : '';
+      const net = mf.netAmount ?? 0;
+      const direction = net > 0 ? '净流入' : net < 0 ? '净流出' : '持平';
+      const parts = [`主力${direction} ${fmtFlow(Math.abs(net))}`];
+      if (mf.buyLgAmount != null) parts.push(`大单${mf.buyLgAmount > 0 ? '+' : ''}${fmtFlow(mf.buyLgAmount)}`);
+      if (mf.buyLgRate != null) parts.push(`大单占比${mf.buyLgRate.toFixed(1)}%`);
+      if (mf.buyMdRate != null) parts.push(`中单占比${mf.buyMdRate.toFixed(1)}%`);
+      if (mf.buySmRate != null) parts.push(`小单占比${mf.buySmRate.toFixed(1)}%`);
+      flowLines.push(`- ${dateStr}：${parts.join('，')}`);
     }
 
-    const totalDir = totalNetMf > 0 ? '累计净流入' : '累计净流出';
-    flowLines.push(`\n近${mfData.length}日${totalDir}：${fmtFlow(Math.abs(totalNetMf))}`);
+    // 5日汇总用官方 netD5Amount（最近一行的滚动5日净额），比逐日自加更准
+    const d5 = mfData[0]?.netD5Amount;
+    if (d5 != null) {
+      flowLines.push(`\n近5日主力净额：${d5 > 0 ? '+' : ''}${fmtFlow(d5)}`);
+    }
     flowLines.push(`（注：资金流向为盘后数据，最新仅至上述最近交易日，非当日实时）`);
 
     sections.push(`### 资金流向\n${flowLines.join('\n')}`);
@@ -488,17 +532,36 @@ export function formatTushareForPrompt(data: TushareData | null): string {
     sections.push(`### 北向资金持股\n${hkLines.join('\n')}`);
   }
 
-  // ===== 7. 龙虎榜 =====
+  // ===== 7. 龙虎榜（tushare 汇总 + 同花顺席位拆分） =====
   const tlData = data.topList;
-  if (tlData && tlData.length > 0) {
-    const tl = tlData[0];
-    const netDir = (tl.net_amount || 0) > 0 ? '净买入' : '净卖出';
-    const tlLines = [
-      `- 上榜理由：${tl.reason || '--'}`,
-      `- 龙虎榜成交额：${fmtFlow(tl.l_amount)}（占当日总成交 ${tl.amount_rate?.toFixed(1) || '--'}%）`,
-      `- 龙虎榜${netDir}：${fmtFlow(Math.abs(tl.net_amount || 0))}（净占比 ${tl.net_rate?.toFixed(1) || '--'}%）`,
-      `- 买入额：${fmtFlow(tl.l_buy)} | 卖出额：${fmtFlow(tl.l_sell)}`,
-    ];
+  const dtData = data.dragonTiger;
+  if ((tlData && tlData.length > 0) || (dtData?.items?.length ?? 0) > 0) {
+    const tlLines: string[] = [];
+    if (tlData && tlData.length > 0) {
+      const tl = tlData[0];
+      const netDir = (tl.net_amount || 0) > 0 ? '净买入' : '净卖出';
+      tlLines.push(
+        `- 上榜理由：${tl.reason || '--'}`,
+        `- 龙虎榜成交额：${fmtFlow(tl.l_amount)}（占当日总成交 ${tl.amount_rate?.toFixed(1) || '--'}%）`,
+        `- 龙虎榜${netDir}：${fmtFlow(Math.abs(tl.net_amount || 0))}（净占比 ${tl.net_rate?.toFixed(1) || '--'}%）`,
+        `- 买入额：${fmtFlow(tl.l_buy)} | 卖出额：${fmtFlow(tl.l_sell)}`,
+      );
+    }
+    // 同花顺席位拆分（金额单位：元 → fmtYuan）：机构净买入/家数、游资净买入、人气排名
+    for (const item of dtData?.items ?? []) {
+      const rangeLabel = item.rangeDays === 3 ? '3日榜' : '当日榜';
+      const seats: string[] = [];
+      if (item.orgNetValue != null) {
+        seats.push(`机构${item.orgNetValue > 0 ? '净买入' : '净卖出'} ${fmtYuan(Math.abs(item.orgNetValue))}(买${item.orgBuyNum ?? 0}家/卖${item.orgSellNum ?? 0}家)`);
+      }
+      if (item.hotMoneyNetValue != null) {
+        seats.push(`游资${item.hotMoneyNetValue > 0 ? '净买入' : '净卖出'} ${fmtYuan(Math.abs(item.hotMoneyNetValue))}`);
+      }
+      if (item.hotRank != null) seats.push(`人气排名 ${item.hotRank}`);
+      if (seats.length > 0) tlLines.push(`- ${rangeLabel}席位：${seats.join('，')}`);
+      if (item.limitReason) tlLines.push(`- 涨跌停原因：${item.limitReason}`);
+      if (item.concepts?.length) tlLines.push(`- 所属概念：${item.concepts.join('、')}`);
+    }
     sections.push(`### 龙虎榜\n${tlLines.join('\n')}`);
   }
 

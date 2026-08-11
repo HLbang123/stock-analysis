@@ -18,10 +18,10 @@ import {
 } from '@/services/deepAnalysisPrompt';
 import { computeKeyLevels, formatLevelsForPrompt } from '@/services/deep-analysis/levels';
 import { calculateIndicators, formatIndicatorsForPrompt } from '@/lib/indicators';
-import { buildUpdatedKLines } from '@/lib/stock-helpers';
+import { buildUpdatedKLines, beijingTodayStr } from '@/lib/stock-helpers';
 import { checkAllRules, ALERT_RULES } from '@/services/alertRules';
-import { getIndustry, getRealtimeQuoteCached, getKLineSinaCached, getChipData, fetchMarketStatusNote } from '@/services/stockApi';
-import { fetchTushareData, formatTushareForPrompt } from '@/services/tushareData';
+import { getIndustry, getRealtimeQuoteCached, getKLineSinaCached, getChipData, fetchMarketStatusNote, getMarketIndexQuotes, type MarketIndexQuote } from '@/services/stockApi';
+import { fetchTushareDataCached, formatTushareForPrompt } from '@/services/tushareData';
 import { getJSONOr, postJSON, getJSON } from '@/services/api';
 import { streamChatDirect, LlmHttpError, isDirectConnectionError } from '@/services/llm/browser-client';
 import type { StockRpsResp, BreadthResp, FuyaoFundResp } from '@/types/api';
@@ -165,15 +165,15 @@ export async function prepareDeepContext(
   stock: Stock,
   history: AiAnalysisRecord[],
 ): Promise<DeepContext> {
-  const [quote, kLines, tushareData, rpsRes, breadthRes] = await Promise.all([
+  const [quote, kLines, tushareData, rpsRes, breadthRes, indexQuotes] = await Promise.all([
     getRealtimeQuoteCached(selectedCode),
     getKLineSinaCached(selectedCode, 240, 120),
-    fetchTushareData(selectedCode).catch(async () => {
-      await new Promise(r => setTimeout(r, 2000));
-      return fetchTushareData(selectedCode).catch(() => null);
-    }),
+    // 缓存版（10min TTL）：重复分析基本面秒出，且去掉原 2s 失败重试占用关键路径；fresh 失败时回退旧缓存
+    fetchTushareDataCached(selectedCode),
     getJSONOr<StockRpsResp | null>(`/api/stock/rps?code=${selectedCode}`, null),
     getJSONOr<BreadthResp | null>('/api/market/breadth?days=1', null),
+    // 六指数实时行情（行情通道，含盘中）；tushare 指数盘后才有，盘中恒为 T-1
+    getMarketIndexQuotes().catch((): MarketIndexQuote[] => []),
   ]);
 
   if (!quote) throw new Error('获取行情失败');
@@ -189,8 +189,24 @@ export async function prepareDeepContext(
     marketRegime = score >= 0.6 ? 'strong' : score <= 0.4 ? 'weak' : 'neutral';
   }
 
+  // 盘中背离检测：regime 源自最近交易日收盘宽度（T-1），若与今日实时指数明显背离则显式提示。
+  // 只提示不改 regimeFactor 数值——仓位公式未经回测验证，数值调整需单独评估。
+  let regimeConflictNote = '';
+  {
+    const pcts = indexQuotes.map(q => q.changePercent).filter(Number.isFinite);
+    const quoteDate = indexQuotes[0]?.updateTime?.slice(0, 10) || '';
+    if (pcts.length >= 4 && quoteDate === beijingTodayStr()) {
+      const avg = pcts.reduce((a, b) => a + b, 0) / pcts.length;
+      if (marketRegime === 'strong' && avg <= -1) {
+        regimeConflictNote = `[盘中提示] 市场状态基于最近交易日收盘宽度判定为「强势」，但今日六大指数平均 ${avg.toFixed(2)}%，明显背离，仓位评估请按偏弱市场谨慎对待。\n\n`;
+      } else if (marketRegime === 'weak' && avg >= 1) {
+        regimeConflictNote = `[盘中提示] 市场状态基于最近交易日收盘宽度判定为「弱势」，但今日六大指数平均 +${avg.toFixed(2)}%，明显背离，仓位评估可适当乐观。\n\n`;
+      }
+    }
+  }
+
   const tushareIssues = [...(tushareData?.errors || []), ...(tushareData?.warnings || [])];
-  const tushareBlock = formatTushareForPrompt(tushareData);
+  const tushareBlock = formatTushareForPrompt(tushareData, indexQuotes);
 
   const updatedKLines = kLines.length >= 5 ? buildUpdatedKLines(quote, kLines) : kLines;
   const chip: ChipDistribution | null = await getChipData(selectedCode).catch(() => null);
@@ -200,10 +216,11 @@ export async function prepareDeepContext(
     : '未触发任何破位/死叉/急跌等风险信号，技术面健康';
 
   const chipNote = chip
-    ? `[筹码分布]\n主峰价位: ${chip.dominantPeak} | 平均成本: ${chip.avgCost} | 获利盘: ${(chip.profitRatio * 100).toFixed(1)}% | 90%集中度: ${chip.concentration90.toFixed(3)}（越小越密集） | 峰位相对位置: ${chip.peakPos.toFixed(3)}（站上主峰为正） | 5日峰位漂移: ${chip.peakDrift.toFixed(3)}（下移为吸筹）\n（筹码形态仅供参考，需结合趋势与量能综合判断）\n\n`
+    ? `[筹码分布]（数据截至 ${chip.asOfDate ? `${chip.asOfDate.slice(4, 6)}-${chip.asOfDate.slice(6, 8)}` : '最近交易日'} 收盘）\n主峰价位: ${chip.dominantPeak} | 平均成本: ${chip.avgCost} | 获利盘: ${(chip.profitRatio * 100).toFixed(1)}% | 90%集中度: ${chip.concentration90.toFixed(3)}（越小越密集） | 峰位相对位置: ${chip.peakPos.toFixed(3)}（站上主峰为正） | 5日峰位漂移: ${chip.peakDrift.toFixed(3)}（下移为吸筹）\n（筹码形态仅供参考，需结合趋势与量能综合判断）\n\n`
     : '';
 
-  const quoteJson = JSON.stringify(quote, null, 2);
+  // 紧凑序列化（去掉 2 空格缩进）：quoteJson 同时进分析师与辩论两份 prompt，少 ~40% quote token，无数据损失
+  const quoteJson = JSON.stringify(quote);
   const klineSummary = kLines.slice(-60).map(k => `${k.date} ${k.open} ${k.high} ${k.low} ${k.close} ${k.volume}`).join('\n');
   const klineSummary20 = kLines.slice(-20).map(k => `${k.date} ${k.open} ${k.high} ${k.low} ${k.close} ${k.volume}`).join('\n');
 
@@ -219,8 +236,10 @@ export async function prepareDeepContext(
     rps250: rpsRes && !rpsRes.error ? (rpsRes.rps250 ?? null) : null,
     positionPercent: stock.positionPercent,
     marketRegime,
+    breadthDate: breadthLatest?.date,
   });
-  const levelsText = formatLevelsForPrompt(tradeLevels);
+  // 背离提示同时进裁决 prompt（stage3 只带 levelsText，不带 marketStatusNote）
+  const levelsText = formatLevelsForPrompt(tradeLevels) + (regimeConflictNote ? `\n${regimeConflictNote.trim()}` : '');
 
   const reflectionBlock = buildReflectionContext(selectedCode, history, { price: quote.price, changePercent: quote.changePercent });
 
@@ -231,9 +250,12 @@ export async function prepareDeepContext(
     ? `用户当前持仓占比为${stock.positionPercent}%，请在仓位建议中考虑现有持仓，如需减持请明确说明。`
     : undefined;
 
-  const marketStatusNote = `[市场状态] ${await fetchMarketStatusNote()}\n\n`;
+  const marketStatusNote = `[市场状态] ${await fetchMarketStatusNote()}\n\n${regimeConflictNote}`;
+  const rpsDateStr = rpsRes?.calcDate && rpsRes.calcDate.length === 8
+    ? `${rpsRes.calcDate.slice(4, 6)}-${rpsRes.calcDate.slice(6, 8)}`
+    : '';
   const rpsNote = rpsRes && !rpsRes.error
-    ? `[RPS强度] 20日:${rpsRes.rps20?.toFixed(1)} 60日:${rpsRes.rps60?.toFixed(1)} 120日:${rpsRes.rps120?.toFixed(1)} 250日:${rpsRes.rps250?.toFixed(1)}（${(rpsRes.rps250 ?? 0) >= 95 ? '全市场前5%极强' : (rpsRes.rps250 ?? 0) >= 87 ? '强势' : '中等偏弱'}）\n\n`
+    ? `[RPS强度] 20日:${rpsRes.rps20?.toFixed(1)} 60日:${rpsRes.rps60?.toFixed(1)} 120日:${rpsRes.rps120?.toFixed(1)} 250日:${rpsRes.rps250?.toFixed(1)}（${(rpsRes.rps250 ?? 0) >= 95 ? '全市场前5%极强' : (rpsRes.rps250 ?? 0) >= 87 ? '强势' : '中等偏弱'}${rpsDateStr ? `，数据截至 ${rpsDateStr} 收盘` : ''}）\n\n`
     : '';
   const etf = isETF(selectedCode);
   let etfHoldingsNote = '';
@@ -429,12 +451,15 @@ async function runDeepAnalysisDirect(opts: RunDeepOptions, completedMap: Record<
     let fullOutput = '', fullReasoning = '';
     let lastDelta = '', repeatCount = 0;
     let stuckWarning = false;
+    let finishReason = '';
     try {
       await streamChatDirect({
         baseUrl: cfg.baseUrl, apiKey: cfg.apiKey, model: cfg.model,
         messages: [{ role: 'system', content: systemPrompt }, { role: 'user', content: userPrompt }],
         temperature: 0.3, maxTokens,
-        signal, timeoutMs: 120000,
+        // 240s：思考型模型 + 12288 预算下复杂裁决可思考 8-10k token（约 100-200s），120s 必然撞线（ranker 以 300s 配 12288）
+        signal, timeoutMs: 240000,
+        onFinish: (r) => { finishReason = r; },
         onDelta: (d) => {
           if (d.reasoning) {
             fullReasoning += d.reasoning;
@@ -460,17 +485,21 @@ async function runDeepAnalysisDirect(opts: RunDeepOptions, completedMap: Record<
     } catch (e: any) {
       if (e.name === 'AbortError') throw e; // 用户取消，原样冒泡
       const isTimeout = /超时|timeout/i.test(e.message || '');
-      if (isTimeout) throw new Error(`[${stageKey}] 阶段超时（120s），模型未在限定时间内响应`);
+      if (isTimeout) throw new Error(`[${stageKey}] 阶段超时（240s），模型未在限定时间内响应`);
       const isRetryableNetwork = e.name === 'TypeError' || /fetch|network/i.test(e.message || '');
+      // max_tokens 400 兜底（镜像 ranker）：中转/厂商把 max_tokens 卡得更小时报 400，降档 4096 重试避免整档失败
+      const maxTokensTooBig = e instanceof LlmHttpError && e.status === 400
+        && /max[_ -]?tokens?|max completion/i.test(e.message || '') && maxTokens > 4096;
       const retryable = (attempt < 2 && isRetryableNetwork)
-        || (e instanceof LlmHttpError && attempt < 2 && (e.status === 429 || e.status >= 500));
+        || (e instanceof LlmHttpError && attempt < 2 && (e.status === 429 || e.status >= 500))
+        || maxTokensTooBig;
       if (retryable) {
         rollbackLive(stageKey, fullOutput.length, fullReasoning.length);
         emit();
         const backoff = 2000 * attempt;
-        console.warn(`[Deep AI Direct] ${stageKey} 可重试错误，${backoff}ms 后重试 ${attempt}/2`);
+        console.warn(`[Deep AI Direct] ${stageKey} 可重试错误，${backoff}ms 后重试 ${attempt}/2${maxTokensTooBig ? '（max_tokens 降档 4096）' : ''}`);
         await new Promise(r => setTimeout(r, backoff));
-        return runStage(stageKey, systemPrompt, userPrompt, maxTokens, attempt + 1);
+        return runStage(stageKey, systemPrompt, userPrompt, maxTokensTooBig ? 4096 : maxTokens, attempt + 1);
       }
       throw e.message?.startsWith(`[${stageKey}]`)
         ? e
@@ -485,6 +514,11 @@ async function runDeepAnalysisDirect(opts: RunDeepOptions, completedMap: Record<
         return runStage(stageKey, systemPrompt, userPrompt, maxTokens, attempt + 1);
       }
       throw new Error(`[${stageKey}] 输出为空`);
+    }
+    // finish_reason='length'：思考型模型思考烧光预算、正文被截断。同样输入重试会同样截断，
+    // 直接抛给外层降级链（裁决三档递减/规则兜底），而不是把残次输出静默当成功
+    if (finishReason === 'length') {
+      throw new Error(`[${stageKey}] 输出被截断（达到 token 上限 ${maxTokens}）`);
     }
     return { text: fullOutput, reasoning: fullReasoning };
   };
@@ -541,26 +575,31 @@ async function runDeepAnalysisDirect(opts: RunDeepOptions, completedMap: Record<
   };
 
   // ===== 波1：分析师 + R1 三人 4 路并发（宽容：成功几个算几个）=====
-  const wave1 = await Promise.allSettled([
-    safeRun('analyst', ctx.stage1.systemPrompt, ctx.stage1.userPrompt, 4096),
-    safeRun('tech', buildTechR1SystemPrompt(), debateData, 2048, true),
-    safeRun('risk', buildRiskR1SystemPrompt(), debateData, 2048, true),
-    safeRun('xinjie', buildXinJieR1DebatePrompt(), debateData, 2048, true),
+  // max_tokens 分级：分析师/裁决 12288（重思考，同 ranker 实测值），辩论 4096（思考量小，2倍余量防截断）
+  // 分析师在后台跑，R2 反驳链不依赖分析师报告 → R1 完成后立即启动 R2，让 R2 串行耗时与分析师生成重叠（提速，质量不变）
+  const analystPromise = safeRun('analyst', ctx.stage1.systemPrompt, ctx.stage1.userPrompt, 12288);
+  analystPromise.catch(() => {}); // 后台 promise 仅在用户取消时 reject，统一由后续 await 处理
+  const r1Settled = await Promise.allSettled([
+    safeRun('tech', buildTechR1SystemPrompt(), debateData, 4096, true),
+    safeRun('risk', buildRiskR1SystemPrompt(), debateData, 4096, true),
+    safeRun('xinjie', buildXinJieR1DebatePrompt(), debateData, 4096, true),
   ]);
-  const stage1Output = (wave1[0] as PromiseFulfilledResult<string>).value;
-  const t1 = (wave1[1] as PromiseFulfilledResult<string>).value;
-  const r1 = (wave1[2] as PromiseFulfilledResult<string>).value;
-  const x1 = (wave1[3] as PromiseFulfilledResult<string>).value;
+  const t1 = (r1Settled[0] as PromiseFulfilledResult<string>).value;
+  const r1 = (r1Settled[1] as PromiseFulfilledResult<string>).value;
+  const x1 = (r1Settled[2] as PromiseFulfilledResult<string>).value;
 
   // ===== R2：串行反驳链（宽容；前一步失败用空串占位，不阻断后续）=====
   const techR2Ctx = `前面两人的第一轮发言：\n${r1}\n${x1}\n\n请回应以上两人的观点。`;
-  const techR2 = await safeRun('tech_r2', buildTechR2RebuttalPrompt(), techR2Ctx, 2048, true);
+  const techR2 = await safeRun('tech_r2', buildTechR2RebuttalPrompt(), techR2Ctx, 4096, true);
 
   const riskR2Ctx = `第一轮发言回顾：\n${t1}\n${x1}\n\n技术分析师的回应：\n${techR2}\n\n请回应以上内容。`;
-  const riskR2 = await safeRun('risk_r2', buildRiskR2RebuttalPrompt(), riskR2Ctx, 2048, true);
+  const riskR2 = await safeRun('risk_r2', buildRiskR2RebuttalPrompt(), riskR2Ctx, 4096, true);
 
   const xinjieR2Ctx = `第一轮：\n${t1}\n${r1}\n\n第二轮回应：\n技术分析师："${techR2.slice(0, 200)}"\n风控专家："${riskR2.slice(0, 200)}"\n\n请给出你的最终判断。`;
-  const xinjieR2 = await safeRun('xinjie_r2', buildXinJieR2RebuttalPrompt(), xinjieR2Ctx, 2048, true);
+  const xinjieR2 = await safeRun('xinjie_r2', buildXinJieR2RebuttalPrompt(), xinjieR2Ctx, 4096, true);
+
+  // 裁决需要分析师报告：R2 链完成后收口等分析师结束（若分析师更快，这里已 resolve）
+  const stage1Output = await analystPromise;
 
   const r1Text = [t1, r1, x1].filter(Boolean).join('\n\n');
   const r2Text = [techR2, riskR2, xinjieR2].filter(Boolean).join('\n\n');
@@ -613,7 +652,7 @@ async function runDeepAnalysisDirect(opts: RunDeepOptions, completedMap: Record<
     }
     try {
       const usr = buildS3User(withAnalyst, withDebate, withCalibration);
-      await runOrReplay('verdict', s3System, usr, 4096);
+      await runOrReplay('verdict', s3System, usr, 12288);
       verdictOk = true;
       break;
     } catch (e: any) {

@@ -11,7 +11,7 @@ import type { AiPick, AiScreenRun, CandidateRaw, LlmConfig, StrategyPreset } fro
 import { fetchCandidates } from './candidates';
 import { macdStatus, rsiStatus, volatility20d, maxDrawdown20d, atr20pct, volumeRatio, signalScore, maBullish, pullbackToMa20Pct, breakout20dPct, chipFeatures } from './indicators';
 import { computeScreenScores } from './scorer';
-import { rankCandidates } from './ranker';
+import { rankCandidates, rankAllCandidates } from './ranker';
 import { applyRiskOverlay, applyPortfolioOverlay } from './risk';
 
 /** CandidateRaw → AiPick，计算技术特征；返回 null 表示被 TS 侧技术硬筛剔除 */
@@ -36,6 +36,7 @@ function enrich(c: CandidateRaw, preset: StrategyPreset): AiPick | null {
 
   // TS 侧技术硬筛
   const hf = preset.hardFilters;
+  if (hf.volumeRatioMax != null && vr != null && vr > hf.volumeRatioMax) return null;
   if (hf.volatility20dPctMax != null && vol20 != null && vol20 > hf.volatility20dPctMax) return null;
   if (hf.maxDrawdown20dPctMin != null && dd20 != null && dd20 < hf.maxDrawdown20dPctMin) return null;
   if (hf.requireMaBullish && mab !== true) return null;
@@ -105,8 +106,10 @@ export interface ScreenOutcome {
  * 跑一次 AI 筛选。
  * @param preset 策略预设
  * @param llmCfg LLM 配置(preset.llmRerank=false 时可不传)
+ * @param fullRank true=全池分批重排（每日调度用，时间换空间，每条都有 LLM 分）；false=仅 top-K（API 路径）
+ * @param preScored 跨 run 断点续打标尺（旧 run 已有 LLM 分的候选快照）
  */
-export async function runScreen(preset: StrategyPreset, llmCfg?: LlmConfig): Promise<ScreenOutcome> {
+export async function runScreen(preset: StrategyPreset, llmCfg?: LlmConfig, fullRank = false, preScored?: Map<string, AiPick>): Promise<ScreenOutcome> {
   const degradation: string[] = [];
   const { barDate, candidates } = await fetchCandidates(preset);
 
@@ -137,7 +140,7 @@ export async function runScreen(preset: StrategyPreset, llmCfg?: LlmConfig): Pro
 
   if (preset.llmRerank && llmCfg && picks.length > 0) {
     llmModel = llmCfg.model;
-    const r = await rankCandidates(picks, preset, llmCfg);
+    const r = fullRank ? await rankAllCandidates(picks, preset, llmCfg, preScored) : await rankCandidates(picks, preset, llmCfg);
     picks = r.picks;
     // 增量续打语义：topK 全部有 LLM 分才算"重排完成"（可共享缓存）；部分有分保留但不封版，后续补救续打
     llmRanked = r.completed;

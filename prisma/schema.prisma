@@ -33,6 +33,10 @@ model DailyBar {
   amount    Float?
   turnoverRate Float? @map("turnover_rate")
   circMv    Float? @map("circ_mv")
+  // tushare adj_factor（上市起累计复权因子）。OHLC 均为未复权原始价；
+  // 窗口涨幅/均线/RPS 等多日计算须用 close*adj_factor 两端取值（后复权比率=真实收益），
+  // 展示给用户的"最新价"仍用原始 close。
+  adjFactor Float? @map("adj_factor")
 
   stock Stock @relation(fields: [tsCode], references: [tsCode])
 
@@ -376,6 +380,19 @@ model WeeklyReview {
   @@map("weekly_reviews")
 }
 
+/// 每日简报（盘前提示 morning / 盘后日报 daily）— 复盘弹窗 tab 数据源
+model DailyBrief {
+  id        String @id @default(uuid()) @db.VarChar(36)
+  briefDate String @map("brief_date") @db.VarChar(8) // 交易日 YYYYMMDD
+  type      String @db.VarChar(8)                    // morning=盘前提示 / daily=盘后日报
+  payload   String @db.Text                          // 完整简报 JSON
+  createdAt String @map("created_at") @db.VarChar(32)
+
+  @@unique([briefDate, type])
+  @@index([briefDate])
+  @@map("daily_briefs")
+}
+
 /// 波段评分(做T)信号在线落库 — 每次用户算评分顺手记一条（因子分口径），日内/隔日收益回填
 /// 样本来源是真实使用（无历史分时可回放），攒够后做因子权重扫描
 model TScoreRecord {
@@ -397,6 +414,30 @@ model TScoreRecord {
   @@unique([tsCode, tradeDate, minuteOfDay])
   @@index([tradeDate])
   @@map("tscore_records")
+}
+
+/// 同花顺指数（概念/行业，fuyao 源，sync-ths-index 维护；申万口径 sw_* 表并存）
+model ThsIndex {
+  thscode   String          @id @db.VarChar(12) // 886042.TI(概念) / 881101.TI(行业)
+  name      String          @db.VarChar(50)
+  tag       String          @db.VarChar(20) // cn_concept / industry
+  members   ThsIndexMember[]
+  updatedAt DateTime        @default(now()) @map("updated_at")
+
+  @@map("ths_index")
+}
+
+/// 同花顺指数成分股（按指数全量覆盖式刷新；个股反查概念走 tsCode 索引）
+model ThsIndexMember {
+  thscode    String   @db.VarChar(12)
+  tsCode     String   @map("ts_code") @db.VarChar(12)
+  memberName String?  @map("member_name") @db.VarChar(40)
+
+  index ThsIndex @relation(fields: [thscode], references: [thscode], onDelete: Cascade)
+
+  @@id([thscode, tsCode])
+  @@index([tsCode])
+  @@map("ths_index_member")
 }
 
 /// 个股资金流向（同花顺 THS 口径，2026-08 起；旧东财口径 stock_moneyflow 保留历史不删）

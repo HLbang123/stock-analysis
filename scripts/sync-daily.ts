@@ -5,9 +5,11 @@
  * 首次运行拉取近 300 个交易日（覆盖 RPS 250 计算）
  * 之后只拉增量（最近几天）
  *
- * 运行：npx tsx scripts/sync-daily.ts [--init] [--backfill-chip]
+ * 运行：npx tsx scripts/sync-daily.ts [--init] [--days=N] [--backfill-chip] [--backfill-adj]
  *   --init           首次拉取近 300 个交易日
+ *   --days=N         深度回补最近 N 个交易日（≈1.5×N 日历日；配合因子回测用，默认 300，上限 1500）
  *   --backfill-chip  仅回补缺 turnover_rate/circ_mv 的历史交易日
+ *   --backfill-adj   仅回补缺 adj_factor 的历史交易日（复权因子，RPS/窗口涨幅/均线复权口径用）
  */
 
 import { callTushare, toRecords } from "../lib/tushare";
@@ -38,6 +40,12 @@ interface BasicItem {
   circ_mv: number | null;
 }
 
+interface AdjItem {
+  ts_code: string;
+  trade_date: string;
+  adj_factor: number | null;
+}
+
 async function syncDate(tradeDate: string): Promise<number> {
   const res = await callTushare<DailyItem>("daily", {
     trade_date: tradeDate,
@@ -59,27 +67,43 @@ async function syncDate(tradeDate: string): Promise<number> {
     console.error(`[sync-daily] ${tradeDate} daily_basic 失败: ${e.message?.slice(0, 80)}`);
   }
 
-  // 原始 SQL 批量写入；DO UPDATE 保证增量重跑能刷新 turnover_rate/circ_mv
+  // 并取 adj_factor（累计复权因子，窗口涨幅/均线/RPS 复权口径用），按 ts_code+trade_date 合并
+  const adjMap = new Map<string, number | null>();
+  try {
+    const adjRes = await callTushare<AdjItem>("adj_factor", {
+      trade_date: tradeDate,
+    }, "ts_code,trade_date,adj_factor");
+    for (const a of toRecords<AdjItem>(adjRes)) {
+      adjMap.set(`${a.ts_code}_${a.trade_date}`, a.adj_factor);
+    }
+  } catch (e: any) {
+    console.error(`[sync-daily] ${tradeDate} adj_factor 失败: ${e.message?.slice(0, 80)}`);
+  }
+
+  // 原始 SQL 批量写入；DO UPDATE 保证增量重跑能刷新 turnover_rate/circ_mv/adj_factor
   for (let i = 0; i < bars.length; i += 500) {
     const batch = bars.slice(i, i + 500);
     const values: string[] = [];
     const params: any[] = [];
     for (const b of batch) {
       const idx = params.length;
-      values.push(`($${idx + 1},$${idx + 2},$${idx + 3},$${idx + 4},$${idx + 5},$${idx + 6},$${idx + 7},$${idx + 8},$${idx + 9},$${idx + 10},$${idx + 11},$${idx + 12})`);
+      values.push(`($${idx + 1},$${idx + 2},$${idx + 3},$${idx + 4},$${idx + 5},$${idx + 6},$${idx + 7},$${idx + 8},$${idx + 9},$${idx + 10},$${idx + 11},$${idx + 12},$${idx + 13})`);
       const basic = basicMap.get(`${b.ts_code}_${b.trade_date}`);
       params.push(
         b.ts_code, b.trade_date, b.open, b.high, b.low, b.close,
         b.pre_close, b.pct_chg, b.vol, b.amount,
         basic?.turnover_rate ?? null, basic?.circ_mv ?? null,
+        adjMap.get(`${b.ts_code}_${b.trade_date}`) ?? null,
       );
     }
     await prisma.$executeRawUnsafe(
-      `INSERT INTO daily_bars ("tsCode", "tradeDate", open, high, low, close, pre_close, change_pct, vol, amount, turnover_rate, circ_mv)
+      `INSERT INTO daily_bars ("tsCode", "tradeDate", open, high, low, close, pre_close, change_pct, vol, amount, turnover_rate, circ_mv, adj_factor)
        VALUES ${values.join(", ")}
        ON CONFLICT ("tsCode", "tradeDate") DO UPDATE SET
          turnover_rate = EXCLUDED.turnover_rate,
          circ_mv = EXCLUDED.circ_mv,
+         -- COALESCE：当日 adj_factor 拉取失败时 EXCLUDED 为 null，不能把已回补的因子清空
+         adj_factor = COALESCE(EXCLUDED.adj_factor, daily_bars.adj_factor),
          open = EXCLUDED.open,
          high = EXCLUDED.high,
          low = EXCLUDED.low,
@@ -142,13 +166,67 @@ async function backfillChip(): Promise<number> {
   return filled;
 }
 
+/** 回补模式：对已有 daily_bars 缺 adj_factor 的交易日，按 trade_date 拉 adj_factor 补齐（复权口径用） */
+async function backfillAdj(): Promise<number> {
+  const rows: { tradeDate: string }[] = await prisma.$queryRawUnsafe(
+    `SELECT DISTINCT "tradeDate" FROM daily_bars WHERE adj_factor IS NULL ORDER BY "tradeDate"`
+  );
+  console.log(`[sync-daily] backfill-adj：${rows.length} 个交易日待补复权因子`);
+  let filled = 0;
+  for (let i = 0; i < rows.length; i++) {
+    const tradeDate = rows[i].tradeDate;
+    try {
+      const adjRes = await callTushare<AdjItem>("adj_factor", {
+        trade_date: tradeDate,
+      }, "ts_code,trade_date,adj_factor");
+      const adjs = toRecords<AdjItem>(adjRes);
+      if (adjs.length === 0) continue;
+      // upsert 方案（与主同步 syncDate 同模式）：仅更新 adj_factor，不动已有 OHLC/换手率
+      for (let j = 0; j < adjs.length; j += 500) {
+        const batch = adjs.slice(j, j + 500);
+        const values: string[] = [];
+        const params: any[] = [];
+        for (const a of batch) {
+          const idx = params.length;
+          values.push(`($${idx + 1},$${idx + 2},$${idx + 3})`);
+          params.push(a.ts_code, a.trade_date, a.adj_factor);
+        }
+        await prisma.$executeRawUnsafe(
+          `INSERT INTO daily_bars ("tsCode", "tradeDate", adj_factor)
+           VALUES ${values.join(", ")}
+           ON CONFLICT ("tsCode", "tradeDate") DO UPDATE SET
+             adj_factor = COALESCE(EXCLUDED.adj_factor, daily_bars.adj_factor)`,
+          ...params
+        );
+      }
+      filled += adjs.length;
+      if ((i + 1) % 20 === 0 || i === rows.length - 1) {
+        console.log(`[sync-daily] backfill-adj ${i + 1}/${rows.length} 天，累计更新 ${filled} 条`);
+      }
+    } catch (e: any) {
+      console.error(`[sync-daily] backfill-adj ${tradeDate} 失败:`, e?.code ?? "", e?.message ?? e);
+    }
+  }
+  return filled;
+}
+
 async function main() {
   const isInit = process.argv.includes("--init");
   const isBackfillChip = process.argv.includes("--backfill-chip");
+  const isBackfillAdj = process.argv.includes("--backfill-adj");
+  const daysArg = process.argv.find((a) => a.startsWith("--days="))?.split("=")[1];
+  const wantDays = Math.min(Math.max(parseInt(daysArg || "300") || 300, 60), 2600);
 
   if (isBackfillChip) {
     const filled = await backfillChip();
     console.log(`\n[sync-daily] backfill-chip 完成：更新 ${filled} 条换手率`);
+    await prisma.$disconnect();
+    return;
+  }
+
+  if (isBackfillAdj) {
+    const filled = await backfillAdj();
+    console.log(`\n[sync-daily] backfill-adj 完成：更新 ${filled} 条复权因子`);
     await prisma.$disconnect();
     return;
   }
@@ -163,13 +241,13 @@ async function main() {
   const today = new Date();
   const dates: string[] = [];
 
-  if (isInit || !latestBar) {
-    // 首次：拉取近 300 个交易日
+  if (isInit || !latestBar || daysArg) {
+    // 首次/深度回补：拉取近 wantDays 个交易日（300个交易日 ≈ 450个日历日）
     const d = new Date();
-    d.setDate(d.getDate() - 450); // 300个交易日 ≈ 450个日历日
+    d.setDate(d.getDate() - Math.round(wantDays * 1.5));
     const startStr = fmtDate(d);
     const endStr = fmtDate(today);
-    console.log(`[sync-daily] 首次初始化：按交易日批量拉取 ${startStr} ~ ${endStr}`);
+    console.log(`[sync-daily] 深度回补：按交易日批量拉取 ${startStr} ~ ${endStr}（目标 ${wantDays} 个交易日）`);
 
     // 生成所有日期
     const startDate = new Date(

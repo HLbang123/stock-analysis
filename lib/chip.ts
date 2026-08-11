@@ -29,6 +29,7 @@ export interface ChipDistribution {
   avgCost: number;             // 加权平均成本
   concentration90: number;     // (P95 − P5) / avgCost，越小越密集
   profitRatio: number;         // 当前价下方筹码占比 0-1
+  asOfDate?: string;           // 数据基准日（最新一根日线交易日，YYYYMMDD）——盘中为 T-1
   peakPos: number;             // (currentPrice − dominantPeak) / avgCost，站上主峰为正
   peakDrift: number;           // (主峰今 − 主峰5日前) / avgCost，上移为正(派发)，下移为负(吸筹)
   peaks: number[];             // 局部极大峰价位列表
@@ -159,7 +160,7 @@ export function computeChipDistribution(bars: ChipBar[], currentPrice: number): 
   };
 }
 
-interface DbBar { high: number | null; low: number | null; close: number | null; vol: number | null; turnover_rate: number | null }
+interface DbBar { high: number | null; low: number | null; close: number | null; vol: number | null; turnover_rate: number | null; tradeDate: string }
 
 /**
  * 从 DB 取数计算筹码分布。code 接受 sh600519 / 000001 / 000001.SZ 等任意格式。
@@ -169,7 +170,7 @@ export async function getChipDistribution(code: string, days = 90): Promise<Chip
   const tsCode = toTsCode(code);
   const fetch = days + 5;
   const rows: DbBar[] = await prisma.$queryRawUnsafe(
-    `SELECT high, low, close, vol, turnover_rate
+    `SELECT high, low, close, vol, turnover_rate, "tradeDate"
      FROM daily_bars
      WHERE "tsCode" = $1 AND high IS NOT NULL AND close IS NOT NULL
      ORDER BY "tradeDate" DESC
@@ -189,6 +190,7 @@ export async function getChipDistribution(code: string, days = 90): Promise<Chip
   const mainBars = bars.slice(Math.max(0, bars.length - days));
   const dist = computeChipDistribution(mainBars, currentPrice);
   if (!dist) return null;
+  dist.asOfDate = rows[0].tradeDate; // rows 为 DESC，首行即最新交易日
 
   // peakDrift：与 5 日前窗口的主峰对比
   if (bars.length > days + 5 && bars.length >= 10) {

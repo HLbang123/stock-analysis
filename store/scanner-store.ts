@@ -8,7 +8,9 @@ export interface RpsItem {
   tsCode: string;
   name: string;
   industry: string | null;
-  rps: number | null;
+  /** 多周期 RPS（每个选中周期一个值）；旧持久化结果可能没有此字段，前端回退显示 rps */
+  rpsList?: { period: number; rps: number | null }[];
+  rps: number | null; // 主周期（最短选中周期）RPS
   ret: number | null;
   latestClose: number | null;
   latestChange: number | null;
@@ -19,7 +21,6 @@ export interface RpsItem {
   gcFresh: boolean;
   gcState: boolean;
   ma55Up: boolean;
-  vcp: boolean;
   roe: number | null;
   rsi: number | null;
 }
@@ -27,7 +28,7 @@ export interface RpsItem {
 interface ScannerState {
   // 持久化字段（切走再切回保留上次的选择与结果）
   selectedSectors: string[];
-  rpsPeriod: number;
+  rpsPeriods: number[];   // RPS 周期多选（AND 共振：每个周期都 ≥ rpsMin）
   rpsMin: number;
   rpsIndustry: string;
   industryLevel: 'L1' | 'L2';
@@ -35,11 +36,10 @@ interface ScannerState {
   // 过滤器（AND 组合）
   filterRps: boolean;
   goldenCross: boolean;
-  gcDays: number;
+  gcDaysList: number[];   // 金叉窗口多选（OR 并集；0=即将金叉，正数=近N日上穿）
   ma55Up: boolean;
   filterRoe: boolean;
   minRoe: number;
-  vcp: boolean;
   filterRsi: boolean;
   rsiPeriod: number;
   rsiMin: number | null;
@@ -49,18 +49,17 @@ interface ScannerState {
   minMv: number; // 流通市值下限（亿元）
 
   setSelectedSectors: (updater: string[] | ((prev: string[]) => string[])) => void;
-  setRpsPeriod: (n: number) => void;
+  setRpsPeriods: (updater: number[] | ((prev: number[]) => number[])) => void;
   setRpsMin: (n: number) => void;
   setRpsIndustry: (updater: string | ((prev: string) => string)) => void;
   setIndustryLevel: (v: 'L1' | 'L2') => void;
   setRpsResults: (updater: RpsItem[] | ((prev: RpsItem[]) => RpsItem[])) => void;
   setFilterRps: (v: boolean) => void;
   setGoldenCross: (v: boolean) => void;
-  setGcDays: (n: number) => void;
+  setGcDaysList: (updater: number[] | ((prev: number[]) => number[])) => void;
   setMa55Up: (v: boolean) => void;
   setFilterRoe: (v: boolean) => void;
   setMinRoe: (n: number) => void;
-  setVcp: (v: boolean) => void;
   setFilterRsi: (v: boolean) => void;
   setRsiPeriod: (n: number) => void;
   setRsiMin: (v: number | null) => void;
@@ -78,18 +77,17 @@ export const useScannerStore = create<ScannerState>()(
   persist(
     (set) => ({
       selectedSectors: [],
-      rpsPeriod: 250,
+      rpsPeriods: [250],
       rpsMin: 87,
       rpsIndustry: '',
       industryLevel: 'L1',
       rpsResults: [],
       filterRps: true,
       goldenCross: false,
-      gcDays: 5,
+      gcDaysList: [5],
       ma55Up: false,
       filterRoe: false,
       minRoe: 15,
-      vcp: false,
       filterRsi: false,
       rsiPeriod: 6,
       rsiMin: null,
@@ -99,18 +97,17 @@ export const useScannerStore = create<ScannerState>()(
       minMv: 100,
 
       setSelectedSectors: (updater) => set((s) => ({ selectedSectors: resolve(updater, s.selectedSectors) })),
-      setRpsPeriod: (rpsPeriod) => set({ rpsPeriod }),
+      setRpsPeriods: (updater) => set((s) => ({ rpsPeriods: resolve(updater, s.rpsPeriods) })),
       setRpsMin: (rpsMin) => set({ rpsMin }),
       setRpsIndustry: (updater) => set((s) => ({ rpsIndustry: resolve(updater, s.rpsIndustry) })),
       setIndustryLevel: (industryLevel) => set({ industryLevel }),
       setRpsResults: (updater) => set((s) => ({ rpsResults: resolve(updater, s.rpsResults) })),
       setFilterRps: (filterRps) => set({ filterRps }),
       setGoldenCross: (goldenCross) => set({ goldenCross }),
-      setGcDays: (gcDays) => set({ gcDays }),
+      setGcDaysList: (updater) => set((s) => ({ gcDaysList: resolve(updater, s.gcDaysList) })),
       setMa55Up: (ma55Up) => set({ ma55Up }),
       setFilterRoe: (filterRoe) => set({ filterRoe }),
       setMinRoe: (minRoe) => set({ minRoe }),
-      setVcp: (vcp) => set({ vcp }),
       setFilterRsi: (filterRsi) => set({ filterRsi }),
       setRsiPeriod: (rsiPeriod) => set({ rsiPeriod }),
       setRsiMin: (rsiMin) => set({ rsiMin }),
@@ -122,21 +119,20 @@ export const useScannerStore = create<ScannerState>()(
     }),
     {
       name: 'scanner-store',
-      version: 7,
+      version: 9,
       partialize: (s) => ({
         selectedSectors: s.selectedSectors,
-        rpsPeriod: s.rpsPeriod,
+        rpsPeriods: s.rpsPeriods,
         rpsMin: s.rpsMin,
         rpsIndustry: s.rpsIndustry,
         industryLevel: s.industryLevel,
         rpsResults: s.rpsResults,
         filterRps: s.filterRps,
         goldenCross: s.goldenCross,
-        gcDays: s.gcDays,
+        gcDaysList: s.gcDaysList,
         ma55Up: s.ma55Up,
         filterRoe: s.filterRoe,
         minRoe: s.minRoe,
-        vcp: s.vcp,
         filterRsi: s.filterRsi,
         rsiPeriod: s.rsiPeriod,
         rsiMin: s.rsiMin,
@@ -145,7 +141,7 @@ export const useScannerStore = create<ScannerState>()(
         filterMv: s.filterMv,
         minMv: s.minMv,
       }),
-      // v1→v2：丢弃已删除的 rules 模式字段；v2→v3：新增 vcp；v4→v5：新增 board；v5→v6：新增 RSI 过滤字段；v6→v7：新增市值过滤字段（缺省由默认值兜底）
+      // v1→v2：丢弃已删除的 rules 模式字段；v2→v3：新增 vcp；v4→v5：新增 board；v5→v6：新增 RSI 过滤字段；v6→v7：新增市值过滤字段（缺省由默认值兜底）；v7→v8：删除 VCP 筛选；v8→v9：rpsPeriod/gcDays 单值改数组多选
       migrate: (persisted: unknown) => {
         const p = persisted as Record<string, unknown> | undefined;
         if (!p) return p as any;
@@ -154,6 +150,12 @@ export const useScannerStore = create<ScannerState>()(
         delete (p as any).scanResults;
         delete (p as any).scanHistory;
         delete (p as any).scanTime;
+        delete (p as any).vcp;
+        // v8→v9：单值 → 数组
+        if (typeof p.rpsPeriod === 'number' && !Array.isArray(p.rpsPeriods)) p.rpsPeriods = [p.rpsPeriod];
+        delete (p as any).rpsPeriod;
+        if (typeof p.gcDays === 'number' && !Array.isArray(p.gcDaysList)) p.gcDaysList = [p.gcDays];
+        delete (p as any).gcDays;
         return p as any;
       },
     }

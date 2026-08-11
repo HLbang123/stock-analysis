@@ -124,6 +124,39 @@ export async function executeTool(name: string, args: any, origin: string): Prom
         const skyStr = skyrocket.item?.slice(0, 10).map((i: any) => `${i.rank}.${i.name}(${i.ticker}) 飙升${i.rank_change > 0 ? '+' : ''}${i.rank_change}名`).join('; ');
         return `热股Top10: ${hotStr}\n飙升Top10: ${skyStr}`;
       }
+      case "get_dragon_tiger": {
+        const qs = new URLSearchParams();
+        qs.set("board", args.board || "all");
+        if (args.code) qs.set("code", args.code);
+        if (args.date) qs.set("date", args.date);
+        const r = await fetch(`${origin}/api/fuyao/dragon-tiger?${qs}`);
+        const d = await r.json();
+        if (d.error) return `龙虎榜查询失败: ${d.error}`;
+        const fmtYi = (v?: number) => v == null ? "--" : `${v > 0 ? "+" : ""}${(v / 1e8).toFixed(2)}亿`;
+        if (args.code) {
+          const items = d.stock_items || [];
+          const hm = (d.hot_money_items || []).filter((h: any) => h.rows?.length);
+          if (!items.length && !hm.length) return `${args.code} 在 ${d.trade_date} 未上龙虎榜`;
+          const lines = items.map((s: any) =>
+            `${s.name}(${s.ticker}) [${s.range_days === 3 ? "3日榜" : "当日榜"}] 净买入${fmtYi(s.net_value)} 机构净买${fmtYi(s.org_net_value)}(买${s.org_buy_num ?? 0}家/卖${s.org_sell_num ?? 0}家) 游资净买${fmtYi(s.hot_money_net_value)} 人气${s.hot_rank ?? "--"}${s.limit_reason ? ` 原因:${s.limit_reason}` : ""}`
+          );
+          const hmLines = hm.map((h: any) => `游资 ${h.name}: ${h.rows.map((r: any) => `净买${fmtYi(r.hot_money_item_net_value)}`).join("")}`);
+          return `龙虎榜 ${d.trade_date}:\n${[...lines, ...hmLines].join("\n")}`;
+        }
+        if (d.board_type === "hot_money") {
+          const rows = (d.hot_money_items || []).slice(0, 15);
+          if (!rows.length) return `${d.trade_date} 游资榜无数据`;
+          return `游资榜 ${d.trade_date} Top${rows.length}:\n` + rows.map((h: any) =>
+            `${h.name} 净买${fmtYi(h.buying)} → ${(h.rows || []).slice(0, 3).map((r: any) => `${r.name}(${fmtYi(r.hot_money_item_net_value)})`).join("、")}`
+          ).join("\n");
+        }
+        const items = (d.stock_items || []).slice(0, 20);
+        if (!items.length) return `${d.trade_date} 龙虎榜无数据`;
+        const boardLabel = d.board_type === "org" ? "机构榜" : "龙虎榜";
+        return `${boardLabel} ${d.trade_date} 共${d.stock_count}只,按净买入Top${items.length}:\n` + items.map((s: any) =>
+          `${s.name}(${s.ticker}) 净买${fmtYi(s.net_value)} 机构${fmtYi(s.org_net_value)}(买${s.org_buy_num ?? 0}/卖${s.org_sell_num ?? 0}家) 人气${s.hot_rank ?? "--"}`
+        ).join("\n");
+      }
       case "get_fund_holdings": {
         const { fuyaoGet } = await import("@/lib/fuyao");
         const fundType = args.code.endsWith(".OF") ? "otc" : "exchange";

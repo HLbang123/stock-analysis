@@ -1,5 +1,5 @@
 import { RealtimeQuote } from '@/types';
-import { buildQuoteResponse, normalizeMarketCode } from '@/lib/api-helpers';
+import { buildQuoteResponse, normalizeMarketCode, formatQuoteTime } from '@/lib/api-helpers';
 
 /** 东方财富 secid 前缀：沪 1、深/北 0 */
 function symbolToSecid(symbol: string): string | null {
@@ -14,7 +14,7 @@ export async function fetchEastmoneyQuote(symbol: string, signal: AbortSignal): 
   const secid = symbolToSecid(symbol);
   if (!secid) return null;
   try {
-    const url = `https://push2.eastmoney.com/api/qt/stock/get?secid=${secid}&fields=f43,f44,f45,f46,f47,f48,f57,f58,f60&fltt=2&invt=2`;
+    const url = `https://push2.eastmoney.com/api/qt/stock/get?secid=${secid}&fields=f43,f44,f45,f46,f47,f48,f57,f58,f60,f86&fltt=2&invt=2`;
     const res = await fetch(url, {
       headers: { Referer: 'https://quote.eastmoney.com' },
       signal,
@@ -29,6 +29,10 @@ export async function fetchEastmoneyQuote(symbol: string, signal: AbortSignal): 
     const preClose = Number(d.f60);
     if (!isFinite(price) || price === 0) return null;
 
+    // f86 为行情自带 unix 秒时间戳；缺字段时回退服务器时间
+    const ts = Number(d.f86);
+    const updateTime = isFinite(ts) && ts > 0 ? formatQuoteTime(new Date(ts * 1000)) : undefined;
+
     return buildQuoteResponse({
       symbol,
       name: d.f58 ?? '',
@@ -39,6 +43,7 @@ export async function fetchEastmoneyQuote(symbol: string, signal: AbortSignal): 
       low: Number(d.f45),
       volume: Number(d.f47) || 0,
       amount: Number(d.f48) || 0,
+      updateTime,
     });
   } catch {
     return null;

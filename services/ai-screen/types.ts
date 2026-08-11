@@ -10,6 +10,7 @@
 export interface HardFilterConfig {
   excludeSt?: boolean;
   rpsMin?: number; // RPS 下限
+  rpsMax?: number; // RPS 上限（排除过热区，2026-08-10 因子回测加：RPS 分位越高 T+5 越差）
   rpsPeriod?: 20 | 60 | 120 | 250;
   amountMin?: number; // 成交额下限（元，daily_bars.amount 单位千元 → SQL 内换算）
   priceMin?: number;
@@ -19,6 +20,7 @@ export interface HardFilterConfig {
   change60dMin?: number; // 60 日涨幅下限（%）
   change60dMax?: number;
   requireMaBullish?: boolean; // MA5>MA13>MA55 多头排列
+  volumeRatioMax?: number; // 量比上限（排除刚爆量，量比 IC 池内 -0.11 显著负）
   volatility20dPctMax?: number; // 20 日波动率上限
   maxDrawdown20dPctMin?: number; // 20 日最大回撤下限（负值，如 -12 表示不得低于 -12%）
 }

@@ -18,17 +18,18 @@ import { prisma } from "../lib/db";
 
 const PERIODS = [20, 60, 120, 250] as const;
 
-/** 按交易日取收盘价 Map（缓存，避免重复查询） */
+/** 按交易日取收盘价 Map（缓存，避免重复查询）。
+ *  复权口径：存 close×adj_factor（后复权），跨除权日的 N 日收益不失真；因子缺失退化为原始价 */
 const closeCache = new Map<string, Map<string, number>>();
 async function getCloses(date: string): Promise<Map<string, number> | undefined> {
   let m = closeCache.get(date);
   if (m) return m;
   const rows = await prisma.dailyBar.findMany({
     where: { tradeDate: date },
-    select: { tsCode: true, close: true },
+    select: { tsCode: true, close: true, adjFactor: true },
   });
   m = new Map();
-  for (const r of rows) if (r.close != null) m.set(r.tsCode, r.close);
+  for (const r of rows) if (r.close != null) m.set(r.tsCode, r.close * (r.adjFactor ?? 1));
   closeCache.set(date, m);
   return m;
 }
@@ -77,7 +78,7 @@ async function upsertDate(rows: RpsRow[]) {
 
 async function main() {
   const daysArg = process.argv.find((a) => a.startsWith("--days="))?.split("=")[1];
-  const days = Math.min(parseInt(daysArg || "80") || 80, 300);
+  const days = Math.min(parseInt(daysArg || "80") || 80, 2400);
 
   // 1. 取最近 (days + 250) 个交易日，保证最老一天的 RPS(250) 有前收盘
   const dateRows = await prisma.dailyBar.findMany({

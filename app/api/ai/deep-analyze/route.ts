@@ -68,7 +68,8 @@ export async function POST(request: NextRequest) {
         async function runStage(stageKey: string, systemPrompt: string, userPrompt: string, maxTokens = 4096, attempt = 1): Promise<{ text: string; reasoning: string }> {
           let fullOutput = '';
           let fullReasoning = '';
-          const { signal, clear } = createTimeoutSignal(120000);
+          // 240s：思考型模型 + 12288 预算下复杂裁决可思考 8-10k token（约 100-200s），120s 必然撞线（ranker 以 300s 配 12288）
+          const { signal, clear } = createTimeoutSignal(240000);
 
           try {
             const llmResponse = await fetch(url, {
@@ -87,17 +88,26 @@ export async function POST(request: NextRequest) {
               signal,
             });
 
-            clear();
-
+            // 注意：此处不再 clear() —— 定时器需存活到流式读取结束，全程超时才算数
             if (!llmResponse.ok) {
               const errorText = await llmResponse.text().catch(() => '');
               console.error(`[Deep AI Proxy] ${stageKey} HTTP ${llmResponse.status}: ${errorText}`);
               // 限流 / 服务端错误：退避重试
               if (attempt < 3 && (llmResponse.status === 429 || llmResponse.status >= 500)) {
+                clear();
                 const backoff = 2000 * attempt;
                 console.warn(`[Deep AI Proxy] ${stageKey} HTTP ${llmResponse.status}，${backoff}ms 后重试 ${attempt}/2`);
                 await new Promise(r => setTimeout(r, backoff));
                 return runStage(stageKey, systemPrompt, userPrompt, maxTokens, attempt + 1);
+              }
+              // max_tokens 400 兜底（镜像 ranker）：厂商/中转把 max_tokens 卡得更小时报 400，降档 4096 重试避免整档失败
+              if (attempt < 3 && llmResponse.status === 400
+                && /max[_ -]?tokens?|max completion/i.test(errorText) && maxTokens > 4096) {
+                clear();
+                const backoff = 2000 * attempt;
+                console.warn(`[Deep AI Proxy] ${stageKey} max_tokens 超上限 400，${backoff}ms 后降档 4096 重试 ${attempt}/2`);
+                await new Promise(r => setTimeout(r, backoff));
+                return runStage(stageKey, systemPrompt, userPrompt, 4096, attempt + 1);
               }
               throw new Error(`[${stageKey}] ${formatAiError(llmResponse.status, errorText)}`);
             }
@@ -105,6 +115,7 @@ export async function POST(request: NextRequest) {
             let lastDelta = '';
             let repeatCount = 0;
             let stuckWarning = false;
+            let finishReason = '';
 
             await readLlmDeltas(llmResponse, (d) => {
               // reasoning 累积（不进 fullOutput，避免污染下游辩论/裁决 prompt），单独通道发给前端折叠展示
@@ -129,7 +140,7 @@ export async function POST(request: NextRequest) {
                 fullOutput += d.content;
                 encodeSSE(encoder, controller, { stage: stageKey, text: d.content });
               }
-            });
+            }, (r) => { finishReason = r; });
 
             // 空输出：模型异常，重试；仍空则抛出
             if (!fullOutput.trim()) {
@@ -138,6 +149,11 @@ export async function POST(request: NextRequest) {
                 return runStage(stageKey, systemPrompt, userPrompt, maxTokens, attempt + 1);
               }
               throw new Error(`[${stageKey}] 输出为空`);
+            }
+            // finish_reason='length'：思考型模型思考烧光预算、正文被截断。同样输入重试会同样截断，
+            // 直接抛给外层降级链（裁决三档递减/规则兜底），而不是把残次输出静默当成功
+            if (finishReason === 'length') {
+              throw new Error(`[${stageKey}] 输出被截断（达到 token 上限 ${maxTokens}）`);
             }
           } catch (e: any) {
             clear();
@@ -148,7 +164,7 @@ export async function POST(request: NextRequest) {
               || /abort/i.test(e.message || '');
             if (isAbort) {
               // 超时重试无意义（模型卡住/端点 stalled），直接 fail-fast
-              throw new Error(`[${stageKey}] 阶段超时（120s），模型未在限定时间内响应`);
+              throw new Error(`[${stageKey}] 阶段超时（240s），模型未在限定时间内响应`);
             }
             if (attempt < 3 && (e.message?.includes('fetch failed') || e.name === 'TypeError')) {
               const backoff = 2000 * attempt;
@@ -162,6 +178,7 @@ export async function POST(request: NextRequest) {
               : new Error(`[${stageKey}] ${formatNetworkError(e)}`);
           }
 
+          clear(); // 成功：流式已读完，释放超时定时器
           encodeSSE(encoder, controller, { stage: stageKey, done: true, full: fullOutput });
           return { text: fullOutput, reasoning: fullReasoning };
         }
@@ -214,27 +231,32 @@ export async function POST(request: NextRequest) {
           };
 
           console.log('[Deep AI Proxy] Wave 1: analyst + 3 R1 debaters (parallel, tolerant)');
-          const wave1 = await Promise.allSettled([
-            safeRunOrReplay('analyst', stage1.systemPrompt, stage1.userPrompt, 4096),
-            safeRunOrReplay('tech', buildTechR1SystemPrompt(), debateData, 2048, true),
-            safeRunOrReplay('risk', buildRiskR1SystemPrompt(), debateData, 2048, true),
-            safeRunOrReplay('xinjie', buildXinJieR1DebatePrompt(), debateData, 2048, true),
+          // max_tokens 分级：分析师/裁决 12288（重思考，同 ranker 实测值），辩论 4096（思考量小，2倍余量防截断）
+          // 分析师在后台跑，R2 反驳链不依赖分析师报告 → R1 完成后立即启动 R2，让 R2 串行耗时与分析师生成重叠（提速，质量不变）
+          const analystPromise = safeRunOrReplay('analyst', stage1.systemPrompt, stage1.userPrompt, 12288);
+          analystPromise.catch(() => {}); // 后台 promise 仅在用户取消时 reject，统一由后续 await 处理
+          const r1Settled = await Promise.allSettled([
+            safeRunOrReplay('tech', buildTechR1SystemPrompt(), debateData, 4096, true),
+            safeRunOrReplay('risk', buildRiskR1SystemPrompt(), debateData, 4096, true),
+            safeRunOrReplay('xinjie', buildXinJieR1DebatePrompt(), debateData, 4096, true),
           ]);
-          const stage1Output = (wave1[0] as PromiseFulfilledResult<string>).value;
-          const t1 = (wave1[1] as PromiseFulfilledResult<string>).value;
-          const r1 = (wave1[2] as PromiseFulfilledResult<string>).value;
-          const x1 = (wave1[3] as PromiseFulfilledResult<string>).value;
+          const t1 = (r1Settled[0] as PromiseFulfilledResult<string>).value;
+          const r1 = (r1Settled[1] as PromiseFulfilledResult<string>).value;
+          const x1 = (r1Settled[2] as PromiseFulfilledResult<string>).value;
 
           // ===== R2：串行反驳链（宽容；前一步失败用空串占位）=====
           console.log('[Deep AI Proxy] Wave 2: R2 rebuttal chain (tolerant)');
           const techR2Ctx = `前面两人的第一轮发言：\n${r1}\n${x1}\n\n请回应以上两人的观点。`;
-          const techR2 = await safeRunOrReplay('tech_r2', buildTechR2RebuttalPrompt(), techR2Ctx, 2048, true);
+          const techR2 = await safeRunOrReplay('tech_r2', buildTechR2RebuttalPrompt(), techR2Ctx, 4096, true);
 
           const riskR2Ctx = `第一轮发言回顾：\n${t1}\n${x1}\n\n技术分析师的回应：\n${techR2}\n\n请回应以上内容。`;
-          const riskR2 = await safeRunOrReplay('risk_r2', buildRiskR2RebuttalPrompt(), riskR2Ctx, 2048, true);
+          const riskR2 = await safeRunOrReplay('risk_r2', buildRiskR2RebuttalPrompt(), riskR2Ctx, 4096, true);
 
           const xinjieR2Ctx = `第一轮：\n${t1}\n${r1}\n\n第二轮回应：\n技术分析师："${techR2.slice(0, 200)}"\n风控专家："${riskR2.slice(0, 200)}"\n\n请给出你的最终判断。`;
-          const xinjieR2 = await safeRunOrReplay('xinjie_r2', buildXinJieR2RebuttalPrompt(), xinjieR2Ctx, 2048, true);
+          const xinjieR2 = await safeRunOrReplay('xinjie_r2', buildXinJieR2RebuttalPrompt(), xinjieR2Ctx, 4096, true);
+
+          // 裁决需要分析师报告：R2 链完成后收口等分析师结束（若分析师更快，这里已 resolve）
+          const stage1Output = await analystPromise;
 
           const r1Text = [t1, r1, x1].filter(Boolean).join('\n\n');
           const r2Text = [techR2, riskR2, xinjieR2].filter(Boolean).join('\n\n');
@@ -289,7 +311,7 @@ export async function POST(request: NextRequest) {
             }
             try {
               const usr = buildS3User(withAnalyst, withDebate, withCalibration);
-              await runOrReplay('verdict', s3System, usr, 4096);
+              await runOrReplay('verdict', s3System, usr, 12288);
               verdictOk = true;
               break;
             } catch (e: any) {

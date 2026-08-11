@@ -46,6 +46,7 @@ export default function StockDetailPage() {
   const [fundData, setFundData] = useState<any>(null);
   const [fundLoading, setFundLoading] = useState(false);
   const [anomaly, setAnomaly] = useState<AnomalyItem | null>(null);
+  const [thsTags, setThsTags] = useState<{ industries: string[]; concepts: string[] } | null>(null);
   const [fundInfo, setFundInfo] = useState<FuyaoFundResp | null>(null);
   const [fundBars, setFundBars] = useState<{ tradeDate: string; close: number; changePct: number | null }[]>([]);
   const [srData, setSrData] = useState<SupportResistance | null>(null);
@@ -116,6 +117,9 @@ export default function StockDetailPage() {
       const thscode = `${m[2]}.${m[1].toUpperCase()}`;
       getJSONOr<FuyaoAnomalyResp | null>(`/api/fuyao/anomaly?code=${thscode}`, null)
         .then(d => { if (d?.item && d.item.length > 0) setAnomaly(d.item[0] as AnomalyItem); });
+      // 同花顺概念/行业标签（成分快照反查）
+      getJSONOr<{ industries: string[]; concepts: string[] } | null>(`/api/ths/concepts?code=${thscode}`, null)
+        .then(d => { if (d && (d.industries?.length || d.concepts?.length)) setThsTags({ industries: d.industries ?? [], concepts: d.concepts ?? [] }); });
       // ETF 时拉基金持仓 + 净值走势
       if (isETF(code)) {
         getJSONOr<FuyaoFundResp | null>(`/api/fuyao/fund?code=${thscode}`, null)
@@ -326,6 +330,21 @@ export default function StockDetailPage() {
               </>
             )}
           </div>
+
+          {/* 同花顺行业/概念标签（成分快照，每日盘后刷新；行业含一级+二级） */}
+          {thsTags && (
+            <div className="flex flex-wrap items-center gap-1.5 mb-4">
+              {thsTags.industries.slice(0, 3).map(n => (
+                <span key={`i-${n}`} className="text-xs px-2 py-0.5 rounded-[var(--radius-sm)] bg-[var(--color-accent-soft)] text-[var(--color-accent)] font-medium">{n}</span>
+              ))}
+              {thsTags.concepts.slice(0, 8).map(n => (
+                <span key={`c-${n}`} className="text-xs px-2 py-0.5 rounded-[var(--radius-sm)] bg-gray-100 dark:bg-gray-800 text-gray-500 dark:text-gray-400">{n}</span>
+              ))}
+              {thsTags.concepts.length > 8 && (
+                <span className="text-xs text-gray-400 cursor-default" title={thsTags.concepts.slice(8).join('、')}>+{thsTags.concepts.length - 8}</span>
+              )}
+            </div>
+          )}
 
           {/* 异动原因（当天有异动才显示） */}
           {anomaly && (

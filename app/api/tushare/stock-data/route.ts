@@ -152,6 +152,37 @@ export async function GET(request: NextRequest) {
   }
   const indexData = Array.from(idxMap.values());
 
+  // 龙虎榜席位增强（同花顺 fuyao：机构净买入/机构家数/游资净买入，tushare top_list 只有汇总额）。
+  // 个股上龙虎榜才有数据，未上榜返回空对象（dragonTiger=null）。
+  // 注意：这是可选增强，失败只 console.warn，**不 push errors**——errors 会置 success=false，
+  // 而详情页以 `if (d?.success)` 决定是否展示整个基本面段，增强失败不应拖垮主数据。
+  let dragonTiger: any = null;
+  try {
+    const { getDragonTigerList } = await import("@/lib/fuyao");
+    const dt = await getDragonTigerList("all");
+    const hit = (dt.stock_items || []).filter((s) => s.thscode === tsCode);
+    if (hit.length > 0) {
+      // 同一只票可能同时有当日榜(range_days=1)和3日榜(range_days=3)，都保留
+      dragonTiger = {
+        tradeDate: dt.trade_date,
+        items: hit.map((s) => ({
+          rangeDays: s.range_days,
+          netValue: s.net_value,
+          netRate: s.net_rate,
+          hotRank: s.hot_rank,
+          limitReason: s.limit_reason,
+          orgNetValue: s.org_net_value,
+          orgBuyNum: s.org_buy_num,
+          orgSellNum: s.org_sell_num,
+          hotMoneyNetValue: s.hot_money_net_value,
+          concepts: (s.concept_list || []).map((c) => c.name),
+        })),
+      };
+    }
+  } catch (e: any) {
+    console.warn("[stock-data] dragonTiger(fuyao) 增强失败（不影响主数据）:", e.message);
+  }
+
   return NextResponse.json({
     success: errors.length === 0,
     data: {
@@ -164,6 +195,7 @@ export async function GET(request: NextRequest) {
       forecast,
       topList,
       indexData,
+      dragonTiger,
     },
     errors: errors.length > 0 ? errors : undefined,
   });

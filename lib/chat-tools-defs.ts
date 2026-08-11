@@ -145,6 +145,21 @@ export const CHAT_TOOLS = [
   {
     type: "function",
     function: {
+      name: "get_dragon_tiger",
+      description: "查询龙虎榜（同花顺口径）：机构净买入与买卖家数、知名游资名单及个股净买入、人气排名、涨停原因。可查整个榜单或单只股票",
+      parameters: {
+        type: "object",
+        properties: {
+          board: { type: "string", description: "榜单类型：all 全部 / org 机构榜 / hot_money 游资榜，默认 all", default: "all" },
+          code: { type: "string", description: "按股票过滤，6位代码或同花顺代码如 002407.SZ，不传=整榜" },
+          date: { type: "string", description: "交易日 yyyy-MM-dd，默认最近交易日（只支持一年内）" },
+        },
+      },
+    },
+  },
+  {
+    type: "function",
+    function: {
       name: "get_fund_holdings",
       description: "查询ETF或基金的前十大重仓股及持仓占比，用于分析ETF成分",
       parameters: {

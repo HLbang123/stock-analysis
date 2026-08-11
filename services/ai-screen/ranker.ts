@@ -23,10 +23,11 @@ const LLM_TIMEOUT_MS = 300_000;
 // 12288 = 2k 正文 + 10k 思考余量：保住思考深度不撞线，真实花费仍随输入/输出瘦身降 ~40%。
 // 中转若把 max_tokens 卡得更小会 400，callLlm 内自动降级重试 4096。
 const LLM_MAX_TOKENS = 12288;
-// LLM 重排候选数上限。08-05 曾降到 15（瘦身），审计发现 15→20 单次仅多 ¥0.003~0.006
-// （DeepSeek V4 Flash 官方价），却让展示列表 16-20 名失去 LLM 介入（final=纯规则分），
-// 捞不上低分强催化票——恢复 20，与 maxOutput 对齐。省钱的正确方向是思考预算，不是候选数。
-const LLM_TOPK_CAP = 20;
+// 单批送 LLM 的候选数上限：prompt 长度与 max_tokens 的甜点（08-05 审计后定 20，08-11 提到 30）。
+// 全池重排由 rankAllCandidates 分批调用（批间 sleep 防限流），本上限只管单批。
+const LLM_TOPK_CAP = 30;
+// 批量间隔：每日调度时间换空间，防 DeepSeek 限流
+const BATCH_DELAY_MS = 3000;
 
 export interface RankResult {
   picks: AiPick[];
@@ -358,8 +359,8 @@ export async function rankCandidates(
     return emptyFallback(picks, preset, degradation);
   }
 
-  // 送 LLM 的候选数 = min(maxOutput, 20)。与 maxOutput 对齐（08-05 审计后从 15 恢复）：池尾不再有"展示但无 LLM 介入"的断层
-  const topK = Math.min(LLM_TOPK_CAP, Math.max(preset.maxOutput, 10), picks.length);
+  // 送 LLM 的候选数 = min(maxOutput, TOPK)。与 maxOutput 对齐（08-05 审计后从 15 恢复）：池尾不再有"展示但无 LLM 介入"的断层
+  const topK = Math.min(LLM_TOPK_CAP, picks.length);
   const sortedByScreen = [...picks].sort((a, b) => b.screenScore - a.screenScore);
   const candidates = sortedByScreen.slice(0, topK);
   const candidateMap = new Map(candidates.map((k) => [normalizeCode(k.tsCode), k]));
@@ -509,6 +510,73 @@ function emptyFallback(picks: AiPick[], _preset: StrategyPreset, degradation: st
     selectionLogic: '',
     portfolioRisk: '',
     coverage: null,
+    degradation,
+  };
+}
+
+/**
+ * 全池重排（每日调度用，时间换空间）：
+ * 按 screenScore 降序分批送 LLM（每批 ≤ LLM_TOPK_CAP，批间 sleep 防限流）。
+ * 第一批的 marketView/selectionLogic/portfolioRisk 作为整体观点沿用。
+ * 任何一批失败/解析失败 → 该批保留规则分，后续批次继续（不熔断——每日任务不赶时间）。
+ */
+export async function rankAllCandidates(
+  picks: AiPick[],
+  preset: StrategyPreset,
+  cfg: LlmConfig,
+  preScored?: Map<string, AiPick>, // 跨 run 断点续打：旧 run 已有 LLM 分的候选，作标尺 + 免重打
+): Promise<RankResult> {
+  // 回填旧 run 已有分（新 run 候选未打分的才补；已打分的候选 rankCandidates 会当标尺参照）
+  if (preScored) {
+    for (const k of picks) {
+      const s = preScored.get(k.tsCode);
+      if (s && k.llmScore == null) {
+        k.llmScore = s.llmScore; k.llmConfidence = s.llmConfidence;
+        k.llmSector = s.llmSector; k.llmTheme = s.llmTheme; k.llmThesis = s.llmThesis;
+        k.rankingReason = s.rankingReason; k.riskSummary = s.riskSummary;
+        k.llmCatalysts = s.llmCatalysts; k.llmRisks = s.llmRisks; k.llmTags = s.llmTags;
+        k.llmStyleFit = s.llmStyleFit; k.llmWatchItems = s.llmWatchItems; k.llmInvalidators = s.llmInvalidators;
+      }
+    }
+  }
+  if (picks.length <= LLM_TOPK_CAP) return rankCandidates(picks, preset, cfg);
+
+  const sorted = [...picks].sort((a, b) => b.screenScore - a.screenScore);
+  const batches: AiPick[][] = [];
+  for (let i = 0; i < sorted.length; i += LLM_TOPK_CAP) batches.push(sorted.slice(i, i + LLM_TOPK_CAP));
+
+  let marketView = '', selectionLogic = '', portfolioRisk = '';
+  let anyRanked = false;
+  const degradation: string[] = [];
+  let totalMatched = 0;
+
+  for (let bi = 0; bi < batches.length; bi++) {
+    const r = await rankCandidates(batches[bi], preset, cfg);
+    totalMatched += r.matched;
+    if (r.llmRanked) anyRanked = true;
+    if (bi === 0) {
+      marketView = r.marketView;
+      selectionLogic = r.selectionLogic;
+      portfolioRisk = r.portfolioRisk;
+    }
+    degradation.push(...r.degradation.map((d) => `batch${bi + 1}:${d}`));
+    if (bi < batches.length - 1) await new Promise((res) => setTimeout(res, BATCH_DELAY_MS));
+  }
+
+  // 合并后按 finalScore 整体排序（各批次的 finalScore 已各自算好，标尺是全局 screenScore 混入，跨批可比）
+  const merged = batches.flat().sort((a, b) => b.finalScore - a.finalScore);
+  merged.forEach((k, i) => (k.rank = i + 1));
+  const withScore = merged.filter((k) => k.llmScore != null).length;
+
+  return {
+    picks: merged,
+    llmRanked: anyRanked,
+    completed: withScore === merged.length,
+    matched: totalMatched,
+    marketView,
+    selectionLogic,
+    portfolioRisk,
+    coverage: merged.length ? withScore / merged.length : null,
     degradation,
   };
 }

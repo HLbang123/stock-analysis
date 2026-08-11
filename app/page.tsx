@@ -4,7 +4,7 @@ import { useEffect, useMemo, useState } from 'react';
 import { useRouter } from 'next/navigation';
 import { useStockStore } from '@/store';
 import { getRealtimeQuote, getKLineSina, getChipData } from '@/services/stockApi';
-import { ALERT_RULES, checkAllRules, isBuyRule, REFERENCE_RULE_IDS, buyRuleWeight } from '@/services/alertRules';
+import { ALERT_RULES, checkAllRules, isBuyRule, REFERENCE_RULE_IDS, buyRuleWeight, isStrongSellAlert, severityAlertLevel } from '@/services/alertRules';
 import { AlertRecord } from '@/types';
 import { formatTime, cn } from '@/lib/utils';
 import { buildUpdatedKLines } from '@/lib/stock-helpers';
@@ -34,17 +34,19 @@ const hasVolumeConfirmed = (a: AlertRecord): boolean => {
 /** 严重度排序权重：CRITICAL 最前 */
 const LEVEL_RANK: Record<string, number> = { CRITICAL: 0, WARNING: 1, INFO: 2 };
 
-/** 整卡按信号方向着色（用户约定：买=红、卖=绿；同组买卖都有时卖出优先，风控先行） */
+/** 整卡按信号方向着色（用户约定：买=红、卖=绿）。仅强卖出（isStrongSellAlert，阶梯主信号 sev≥3
+ *  或 R03 等单信号规则）染绿整卡；弱卖出提醒（巨量异动/涨停封板/跌破5日线等）不染卡——
+ *  行内绿条已足以提示，弱提醒不应压过买入共振 */
 const groupTone = (group: { alerts: AlertRecord[] }): string => {
   const active = group.alerts.filter(a => !a.isExpired);
   if (active.length === 0) {
     return 'bg-gray-50 dark:bg-gray-800/40 border-gray-200 dark:border-gray-700 opacity-50';
   }
-  const hasSell = active.some(a => !isBuyRule(a.ruleId) && !REFERENCE_RULE_IDS.has(a.ruleId));
-  if (hasSell) return 'bg-[var(--color-down-soft)] border-[var(--color-down-border)]';
+  const hasStrongSell = active.some(a => isStrongSellAlert(a.ruleId, a.extraData));
+  if (hasStrongSell) return 'bg-[var(--color-down-soft)] border-[var(--color-down-border)]';
   const hasBuy = active.some(a => isBuyRule(a.ruleId) && !REFERENCE_RULE_IDS.has(a.ruleId));
   if (hasBuy) return 'bg-[var(--color-up-soft)] border-[var(--color-up-border)]';
-  // 仅参考级弱提醒（R13/R14 筹码峰）
+  // 仅弱卖出提醒 / 参考级弱提醒（R13/R14 筹码峰）
   return 'bg-white dark:bg-gray-900 border-gray-200 dark:border-gray-700';
 };
 
@@ -107,20 +109,23 @@ export default function HomePage() {
     return Array.from(groups.entries()).map(([stockCode, stockAlerts]) => {
       const activeAlerts = stockAlerts.filter(a => !a.isExpired);
       const effectiveAlerts = activeAlerts.length > 0 ? activeAlerts : stockAlerts;
-      const worstLevel = effectiveAlerts.some(a => a.alertLevel === 'CRITICAL')
+      // 有效级别：R01/R02 阶梯按主信号 severity 分级（巨量异动等弱提醒不再以 CRITICAL 排顶）
+      const effLevel = (a: AlertRecord) => severityAlertLevel(a.ruleId, a.extraData, a.alertLevel);
+      const worstLevel = effectiveAlerts.some(a => effLevel(a) === 'CRITICAL')
         ? 'CRITICAL'
-        : effectiveAlerts.some(a => a.alertLevel === 'WARNING')
+        : effectiveAlerts.some(a => effLevel(a) === 'WARNING')
           ? 'WARNING'
           : 'INFO';
-      const buyAlerts = stockAlerts.filter(a => isBuyRule(a.ruleId) && !REFERENCE_RULE_IDS.has(a.ruleId));
+      const buyAlerts = stockAlerts.filter(a => !a.isExpired && isBuyRule(a.ruleId) && !REFERENCE_RULE_IDS.has(a.ruleId));
       const sellAlerts = stockAlerts.filter(a => !isBuyRule(a.ruleId) && !REFERENCE_RULE_IDS.has(a.ruleId));
       const referenceAlerts = stockAlerts.filter(a => REFERENCE_RULE_IDS.has(a.ruleId));
       const buyScore = buyAlerts.reduce((s, a) => s + buyRuleWeight(a.ruleId), 0);
       // 量能维度：至少一条买入信号为"放量确认" → 档位 +1
       const buyVolumeBoost = buyAlerts.some(hasVolumeConfirmed) ? 1 : 0;
       const tierScore = buyScore + buyVolumeBoost;
-      // 卡面结论方向：有有效卖出信号时卖出优先（与 groupTone 同口径），此时头部不再挂红色看多徽章，避免红绿打架
-      const hasActiveSell = activeAlerts.some(a => !isBuyRule(a.ruleId) && !REFERENCE_RULE_IDS.has(a.ruleId));
+      // 卡面结论方向：有强卖出信号时卖出优先（与 groupTone 同口径），此时头部不挂看多徽章，避免红绿打架；
+      // 弱卖出提醒（巨量异动/涨停封板等）不摘徽章——不应对买入共振有一票否决权
+      const hasStrongSell = activeAlerts.some(a => isStrongSellAlert(a.ruleId, a.extraData));
       return {
         stockCode,
         stockName: stockAlerts[0].stockName,
@@ -132,7 +137,7 @@ export default function HomePage() {
         buyScore,
         buyVolumeBoost,
         tierScore,
-        buyTier: tierScore > 0 && !hasActiveSell ? buyTier(tierScore) : null,
+        buyTier: tierScore > 0 && !hasStrongSell ? buyTier(tierScore) : null,
         worstLevel,
         latestTime: Math.max(...stockAlerts.map(a => a.triggeredAt))
       };
@@ -206,6 +211,9 @@ export default function HomePage() {
       // 先将所有现有预警标记为"可能已过期"
       const currentAlerts = useStockStore.getState().alerts;
       const revivedIds = new Set<string>();
+      // 复活记录的分级元数据（extraData.sev / alertLevel）随最新触发刷新——否则改动前无 sev 的旧记录
+      // 会被 isStrongSellAlert 保守按强卖出处理，弱提醒一直染绿整卡；消息内容仍保留首次触发快照
+      const revivedMeta = new Map<string, { extraData?: string; alertLevel: AlertRecord['alertLevel'] }>();
       const updatedAlerts = currentAlerts.map(a => ({ ...a, isExpired: true }));
       useStockStore.setState({ alerts: updatedAlerts });
 
@@ -239,12 +247,27 @@ export default function HomePage() {
             for (const s of (subs.length ? subs : [rule.name])) {
               triggerRows.push({ tsCode: stock.code, stockName: stock.name || quote.name, ruleId: result.ruleId!, subLabel: s, barDate: todayStr });
             }
-            // 检查是否已有相同预警（同一股票+同一规则）
-            const existingKey = `${stock.code}-${result.ruleId}`;
-            const existing = currentAlerts.find(a => `${a.stockCode}-${a.ruleId}` === existingKey);
+            // 复活键 = 股票+规则+主信号。R01/R02 是多子信号规则(涨停封板/巨量见顶/...共用一个 ruleId)，
+            // 若只匹配规则级，今日任意子信号触发都会复活昨日不同子信号的旧预警——内容仍显示昨日数据
+            // (有研新材 2026-08-10「涨停封板(48.17)」误报根因：今日巨量见顶复活了昨日真涨停的旧记录)。
+            const mainSub = (subs.length ? subs : [rule.name])[0];
+            const existing = currentAlerts.find((a) => {
+              if (a.stockCode !== stock.code || a.ruleId !== result.ruleId) return false;
+              // 单信号规则（R04-R12 买入等，无子信号）：规则级匹配即可复活——否则永不复活、每次检查都新建
+              // 造成同信号"有效+划痕线"并存（2026-08-10 修复：复活键细化到子信号级只该作用于 R01/R02 阶梯）
+              if (subs.length === 0) return true;
+              let oldSub = '';
+              try { const ex = JSON.parse(a.extraData ?? '{}'); oldSub = (ex.triggered ?? [])[0] ?? ''; } catch { /* ignore */ }
+              // 旧数据无 extraData：回落规则名，与任何子信号不相等 → 视为新预警
+              return oldSub === mainSub;
+            });
             if (existing) {
-              // 复活：这个预警仍然触发
+              // 复活：这个预警仍然触发（分级元数据随最新结果刷新）
               revivedIds.add(existing.id);
+              revivedMeta.set(existing.id, {
+                extraData: result.extraData,
+                alertLevel: severityAlertLevel(result.ruleId, result.extraData, rule.level),
+              });
             } else {
               allNewAlerts.push({
                 id: `${Date.now()}-${stock.code}-${result.ruleId}`,
@@ -252,7 +275,7 @@ export default function HomePage() {
                 stockName: stock.name || quote.name,
                 ruleId: result.ruleId!,
                 ruleName: rule.name,
-                alertLevel: rule.level,
+                alertLevel: severityAlertLevel(result.ruleId, result.extraData, rule.level),
                 alertMessage: result.message!,
                 suggestion: rule.suggestion,
                 triggeredAt: Date.now(),
@@ -266,19 +289,40 @@ export default function HomePage() {
 
       // 更新现有预警：复活仍在触发的，保持已过期的
       const finalAlerts = useStockStore.getState().alerts.map(a => {
-        if (revivedIds.has(a.id)) return { ...a, isExpired: false };
+        const meta = revivedMeta.get(a.id);
+        if (revivedIds.has(a.id)) {
+          return {
+            ...a,
+            isExpired: false,
+            extraData: meta?.extraData ?? a.extraData,
+            alertLevel: meta?.alertLevel ?? a.alertLevel,
+          };
+        }
         return a; // 保持 isExpired: true
       });
 
+      // 清理被有效预警遮蔽的过期重复（同股票+规则+主信号只留一份）：复活键细化到子信号级曾导致
+      // 单信号规则永不复活、每次检查都新建，累积"有效+划痕线"并存（2026-08-10 修复，含清存量）。
+      // R01/R02 按主信号区分，不同子信号互不遮蔽、保留过期历史。
+      const subOf = (x: Pick<AlertRecord, 'stockCode' | 'ruleId' | 'ruleName' | 'extraData'>) => {
+        try { const ex = JSON.parse(x.extraData ?? '{}'); const t = ex.triggered; if (Array.isArray(t) && t[0]) return String(t[0]); } catch { /* ignore */ }
+        return x.ruleName;
+      };
+      const keyOf = (x: AlertRecord) => `${x.stockCode}|${x.ruleId}|${subOf(x)}`;
+      const activeKeys = new Set<string>();
+      for (const a of finalAlerts) if (!a.isExpired) activeKeys.add(keyOf(a));
+      for (const a of allNewAlerts) activeKeys.add(keyOf(a));
+      const cleanedAlerts = finalAlerts.filter(a => !a.isExpired || !activeKeys.has(keyOf(a)));
+
       if (allNewAlerts.length > 0) {
         // 新预警插入前面
-        useStockStore.setState({ alerts: [...allNewAlerts, ...finalAlerts] });
-        const expiredCount = finalAlerts.filter(a => a.isExpired).length;
+        useStockStore.setState({ alerts: [...allNewAlerts, ...cleanedAlerts] });
+        const expiredCount = cleanedAlerts.filter(a => a.isExpired).length;
         const msg = `发现 ${allNewAlerts.length} 条新预警`;
         setResultMessage(expiredCount > 0 ? `${msg}，${expiredCount} 条已消失` : msg);
       } else {
-        const expiredCount = finalAlerts.filter(a => a.isExpired).length;
-        useStockStore.setState({ alerts: finalAlerts });
+        const expiredCount = cleanedAlerts.filter(a => a.isExpired).length;
+        useStockStore.setState({ alerts: cleanedAlerts });
         setResultMessage(expiredCount > 0 ? `无新预警，${expiredCount} 条信号已消失` : '暂无新预警');
       }
     } catch (error) {

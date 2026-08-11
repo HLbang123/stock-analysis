@@ -133,8 +133,10 @@ export function computeKeyLevels(params: {
   rps250?: number | null;
   positionPercent?: number;
   marketRegime?: MarketRegime;
+  /** 市场宽度数据基准日（YYYYMMDD）——宽度表盘后计算，盘中恒为 T-1，rationale 需标注防误读 */
+  breadthDate?: string;
 }): TradeLevels {
-  const { kLines, indicators, chip, engineResults, quote, rps250, positionPercent, marketRegime = 'neutral' } = params;
+  const { kLines, indicators, chip, engineResults, quote, rps250, positionPercent, marketRegime = 'neutral', breadthDate } = params;
   const price = quote.price || indicators.lastClose || kLines.at(-1)?.close || 0;
   const recent = kLines.slice(-60);
 
@@ -207,9 +209,12 @@ export function computeKeyLevels(params: {
   const positionRange = { low: Math.round(posLow), high: Math.round(posHigh) };
 
   const regimeLabel = marketRegime === 'strong' ? '强势' : marketRegime === 'weak' ? '弱势' : '震荡';
+  const regimeDateStr = breadthDate && breadthDate.length === 8
+    ? `${breadthDate.slice(4, 6)}-${breadthDate.slice(6, 8)}`
+    : '最近交易日';
   const rationale = [
     `当前价 ${round2(price)}，ATR(14) ${round2(atr)}（${(atrPct * 100).toFixed(1)}% 波动率）`,
-    `市场状态：${regimeLabel}（仓位基准 ×${regimeFactor.toFixed(1)}）`,
+    `市场状态：${regimeLabel}（基于 ${regimeDateStr} 收盘宽度，仓位基准 ×${regimeFactor.toFixed(1)}）`,
     `止损区间 [${stopLossRange.low}, ${stopLossRange.high}] —— 依据：${supports.map(s => s.label).join(' / ') || '纯 ATR 推算'}`,
     `目标区间 [${targetRange.low}, ${targetRange.high}] —— 依据：${resistances.map(r => r.label).join(' / ') || '纯 ATR 推算'}`,
     `仓位区间 [${positionRange.low}%, ${positionRange.high}%] —— 买入类信号 ${buyCount} 条，RPS250 ${rps250 ?? '--'}，基准 ${Math.round(base)}%`,

@@ -49,6 +49,8 @@ interface BaseChatOptions {
   toolChoice?: string;
   signal?: AbortSignal;
   timeoutMs?: number;
+  /** 可选：流结束时回调 finish_reason（"stop" 正常 / "length" 被 max_tokens 截断），调用方据此判断是否截断 */
+  onFinish?: (reason: string) => void;
 }
 
 /** 合并外部取消信号与内部超时；返回 { signal, clear, timedOut } */
@@ -128,6 +130,7 @@ export async function chatCompletionDirect(opts: BaseChatOptions): Promise<{
 export async function streamChatDirect(opts: BaseChatOptions & { onDelta: (d: LlmDelta) => void }): Promise<void> {
   const url = buildChatUrl(opts.baseUrl);
   const { signal, clear, timedOut } = mergeSignals(opts.signal, opts.timeoutMs ?? 120000);
+  const timeoutSecs = Math.round((opts.timeoutMs ?? 120000) / 1000);
   let res: Response;
   try {
     res = await fetch(url, {
@@ -138,17 +141,27 @@ export async function streamChatDirect(opts: BaseChatOptions & { onDelta: (d: Ll
     });
   } catch (e) {
     clear();
-    if (timedOut()) throw new Error('AI 请求超时（120秒），模型未在限定时间内响应');
+    if (timedOut()) throw new Error(`AI 请求超时（${timeoutSecs}秒），模型未在限定时间内响应`);
     if (opts.signal?.aborted) throw e as Error; // 用户取消，原样抛
     throw new Error(formatNetworkError(e as Error), { cause: e });
   }
-  clear();
-
   if (!res.ok) {
+    clear();
     const text = await res.text().catch(() => '');
     throw new LlmHttpError(formatAiError(res.status, text), res.status);
   }
-  await readLlmDeltas(res, opts.onDelta);
+
+  // 超时覆盖到流式读取全程（定时器在 fetch 头返回后仍存活）：流式中途 abort 在此转成超时错误，
+  // 而不是以 AbortError 冒泡被上层误判为"用户取消"而静默丢弃整个分析。
+  try {
+    await readLlmDeltas(res, opts.onDelta, opts.onFinish);
+  } catch (e) {
+    if (timedOut()) throw new Error(`AI 请求超时（${timeoutSecs}秒），模型未在限定时间内响应`);
+    if (opts.signal?.aborted) throw e as Error;
+    throw e;
+  } finally {
+    clear();
+  }
 }
 
 /**
@@ -161,6 +174,7 @@ export async function streamChatDirectWithTools(
 ): Promise<{ content: string; toolCalls: AccumulatedToolCall[] }> {
   const url = buildChatUrl(opts.baseUrl);
   const { signal, clear, timedOut } = mergeSignals(opts.signal, opts.timeoutMs ?? 120000);
+  const timeoutSecs = Math.round((opts.timeoutMs ?? 120000) / 1000);
   let res: Response;
   try {
     res = await fetch(url, {
@@ -171,13 +185,12 @@ export async function streamChatDirectWithTools(
     });
   } catch (e) {
     clear();
-    if (timedOut()) throw new Error('AI 请求超时，模型未在限定时间内响应');
+    if (timedOut()) throw new Error(`AI 请求超时（${timeoutSecs}秒），模型未在限定时间内响应`);
     if (opts.signal?.aborted) throw e as Error; // 用户取消，原样抛
     throw new Error(formatNetworkError(e as Error), { cause: e });
   }
-  clear();
-
   if (!res.ok) {
+    clear();
     const text = await res.text().catch(() => '');
     throw new LlmHttpError(formatAiError(res.status, text), res.status);
   }
@@ -185,6 +198,10 @@ export async function streamChatDirectWithTools(
   const toolCalls = await readLlmDeltasWithTools(res, (d) => {
     if (d.content) content += d.content;
     opts.onDelta(d);
-  });
+  }).catch((e) => {
+    if (timedOut()) throw new Error(`AI 请求超时（${timeoutSecs}秒），模型未在限定时间内响应`);
+    if (opts.signal?.aborted) throw e as Error;
+    throw e;
+  }).finally(() => clear());
   return { content, toolCalls };
 }
