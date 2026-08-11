@@ -172,9 +172,9 @@ export default function MarketPage() {
             <h3 className="font-medium mb-1">板块资金流向（近5日主力净流入）</h3>
             <p className="text-xs text-gray-500 mb-2">红色=净流入，绿色=净流出（亿元）</p>
             {sectorFlow.length > 0 ? (() => {
-              // 流入前15 + 流出前15（sectorFlow 已按净额降序，净流出在尾部）
+              // 流入前15（大→小）+ 流出前15（少→多：sectorFlow 按净额降序，净流出在尾部，slice 尾部即从少到多，不 reverse）
               const inflow = sectorFlow.filter(s => (s.totalNet ?? 0) > 0).slice(0, 15);
-              const outflow = sectorFlow.filter(s => (s.totalNet ?? 0) < 0).slice(-15).reverse();
+              const outflow = sectorFlow.filter(s => (s.totalNet ?? 0) < 0).slice(-15);
               const rows = [...inflow, ...outflow];
               // 比例尺按显示集合最大值自适应：最长条=半槽宽，各行可比
               const maxAbs = Math.max(...rows.map(s => Math.abs(Number(s.totalNet ?? 0))), 1);

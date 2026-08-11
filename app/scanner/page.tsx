@@ -56,7 +56,7 @@ export default function ScannerPage() {
 
 function ManualScan() {
   const router = useRouter();
-  const { addToWatchlist, isInWatchlist } = useStockStore();
+  const { addToWatchlist, isInWatchlist, groups, addGroup } = useStockStore();
   const {
     selectedSectors, setSelectedSectors,
     rpsPeriods, setRpsPeriods,
@@ -82,6 +82,11 @@ function ManualScan() {
   // 仅本组件内的瞬态 UI 状态（板块面板默认折叠，头部常驻显示当前选中行业）
   const [showSectors, setShowSectors] = useState(false);
   const [sectorQuery, setSectorQuery] = useState('');
+  // 一键加自选弹层锚点 + 新建分组名；结果排序（null=按接口 RPS 序）
+  const [batchMenu, setBatchMenu] = useState<{ x: number; y: number } | null>(null);
+  const [newGroupName, setNewGroupName] = useState('');
+  const [sortKey, setSortKey] = useState<'rps' | 'close' | 'change' | null>(null);
+  const [sortDir, setSortDir] = useState<-1 | 1>(-1);
   const [expandedL1, setExpandedL1] = useState<string | null>(null);
   const [loading, setLoading] = useState(false);
   const [hasQueried, setHasQueried] = useState(false);
@@ -116,7 +121,7 @@ function ManualScan() {
     setHasQueried(true);
     try {
       const st = useScannerStore.getState();
-      const params = new URLSearchParams({ periods: st.rpsPeriods.join(','), limit: '50' });
+      const params = new URLSearchParams({ periods: st.rpsPeriods.join(','), limit: '200' });
       params.set('filterRps', String(st.filterRps));
       if (st.filterRps) params.set('minRps', String(st.rpsMin));
       if (st.rpsIndustry) { params.set('industry', st.rpsIndustry); params.set('industryLevel', st.industryLevel); }
@@ -150,15 +155,60 @@ function ManualScan() {
     return m[2].toLowerCase() + m[1];
   };
 
-  const addWatch = (code: string, name: string) => {
-    const tsCode = code.replace(/\.(SH|SZ|BJ)$/, '');
+  // ts_code → 自选 Stock 对象
+  const toStock = (tsCodeFull: string, name: string) => {
+    const tsCode = tsCodeFull.replace(/\.(SH|SZ|BJ)$/, '');
     const isSH = tsCode.startsWith('6') || tsCode.startsWith('68');
     const isBJ = tsCode.startsWith('4') || tsCode.startsWith('8') || tsCode.startsWith('9');
     const market = isSH ? 'sh' : isBJ ? 'bj' : 'sz';
     const pureCode = tsCode.replace(/^(sh|sz|bj)/i, '');
-    addToWatchlist({ code: `${market}${pureCode}`, name, market, pureCode });
+    return { code: `${market}${pureCode}`, name, market, pureCode };
+  };
+
+  const addWatch = (code: string, name: string) => {
+    addToWatchlist(toStock(code, name));
     toast.success(`已添加 ${name}`);
   };
+
+  // 一键加自选：把当前筛选结果（未在自选的）批量加入指定分组
+  const batchAdd = (groupId?: string) => {
+    const toAdd = rpsResults.filter((it: any) => !isInWatchlist(toAppCode(it.tsCode)));
+    for (const it of toAdd) addToWatchlist(toStock(it.tsCode, it.name), groupId);
+    const gName = groupId ? groups.find(g => g.id === groupId)?.name ?? '' : '未分组';
+    toast.success(toAdd.length > 0 ? `已添加 ${toAdd.length} 只到「${gName}」` : '全部已在自选中');
+    setBatchMenu(null);
+  };
+
+  // 临时新建分组并批量加入
+  const createGroupAndAdd = () => {
+    const name = newGroupName.trim();
+    if (!name) return;
+    if (!addGroup(name)) { toast.error('分组已存在'); return; }
+    const g = useStockStore.getState().groups.find(g => g.name === name);
+    setNewGroupName('');
+    batchAdd(g?.id);
+  };
+
+  // 结果排序：null 保持接口序（RPS 降序）；点击表头切换 key/方向
+  const toggleSort = (k: 'rps' | 'close' | 'change') => {
+    if (sortKey === k) setSortDir(d => (d === -1 ? 1 : -1));
+    else { setSortKey(k); setSortDir(-1); }
+  };
+  const sortedResults = useMemo(() => {
+    if (!sortKey) return rpsResults;
+    const val = (it: any): number | null =>
+      sortKey === 'rps' ? (it.rpsList?.[0]?.rps ?? it.rps ?? null)
+        : sortKey === 'close' ? it.latestClose
+        : it.latestChange;
+    return [...rpsResults].sort((a, b) => {
+      const va = val(a), vb = val(b);
+      if (va == null && vb == null) return 0;
+      if (va == null) return 1;
+      if (vb == null) return -1;
+      return (va - vb) * sortDir;
+    });
+  }, [rpsResults, sortKey, sortDir]);
+  const sortMark = (k: string) => (sortKey === k ? (sortDir === -1 ? ' ↓' : ' ↑') : '');
 
   // 当前查询条件描述
   const condParts: string[] = [];
@@ -512,23 +562,32 @@ function ManualScan() {
             <table className="w-full text-sm">
               <thead>
                 <tr className="border-b border-gray-100 dark:border-gray-800 text-left text-xs text-gray-400 uppercase">
-                  <th className="px-3 py-2 w-10">#</th>
                   <th className="px-3 py-2">标的</th>
-                  <th className="px-3 py-2 text-right">RPS</th>
+                  <th className="px-3 py-2 text-right cursor-pointer select-none hover:text-gray-600 dark:hover:text-gray-200" onClick={() => toggleSort('rps')}>RPS{sortMark('rps')}</th>
                   {filterRsi && <th className="px-3 py-2 text-right">RSI</th>}
-                  <th className="px-3 py-2 text-right">最新价</th>
-                  <th className="px-3 py-2 text-right">日涨跌</th>
+                  <th className="px-3 py-2 text-right cursor-pointer select-none hover:text-gray-600 dark:hover:text-gray-200" onClick={() => toggleSort('close')}>最新价{sortMark('close')}</th>
+                  <th className="px-3 py-2 text-right cursor-pointer select-none hover:text-gray-600 dark:hover:text-gray-200" onClick={() => toggleSort('change')}>日涨跌{sortMark('change')}</th>
                   <th className="px-3 py-2 text-center">信号</th>
-                  <th className="px-3 py-2 text-center">操作</th>
+                  <th className="px-3 py-2 text-center normal-case whitespace-nowrap">
+                    <button
+                      onClick={(e) => {
+                        e.stopPropagation();
+                        const r = e.currentTarget.getBoundingClientRect();
+                        setBatchMenu(m => (m ? null : { x: r.right, y: r.bottom }));
+                      }}
+                      className="inline-flex items-center gap-0.5 px-2 py-1 text-xs bg-blue-600 text-white rounded-md hover:bg-blue-700 transition whitespace-nowrap"
+                    >
+                      全 <Plus className="w-3 h-3" />
+                    </button>
+                  </th>
                 </tr>
               </thead>
               <tbody>
-                {rpsResults.map((item, i) => (
+                {sortedResults.map((item) => (
                   <tr key={item.tsCode}
                     onClick={() => router.push(`/stock/${toAppCode(item.tsCode)}`)}
                     className={cn("border-b border-gray-50 dark:border-gray-800/50 hover:bg-gray-50 dark:hover:bg-gray-800/30 transition cursor-pointer",
                       (item.rps ?? 0) >= 95 ? "bg-amber-50/30 dark:bg-amber-950/10" : "")}>
-                    <td className="px-3 py-2.5 text-gray-400">{i + 1}</td>
                     <td className="px-3 py-2.5">
                       <div className="font-medium">{item.name}</div>
                       <div className="text-gray-400 text-xs">{item.tsCode.replace(/\.(SH|SZ|BJ)$/, '')} · {item.industry || '--'}</div>
@@ -572,14 +631,15 @@ function ManualScan() {
                       </div>
                     </td>
                     <td className="px-3 py-2.5 text-center" onClick={e => e.stopPropagation()}>
-                      {isInWatchlist(item.tsCode.replace(/\.(SH|SZ|BJ)$/, '')) ? (
-                        <span className="inline-flex items-center gap-1 px-2 py-1 text-xs text-green-600" title="已在自选中">
-                          <Check className="w-3 h-3" /> 已加自选
+                      {isInWatchlist(toAppCode(item.tsCode)) ? (
+                        <span className="inline-flex p-1.5 text-[var(--color-down)]" title="已在自选中">
+                          <Check className="w-4 h-4" />
                         </span>
                       ) : (
                         <button onClick={() => addWatch(item.tsCode, item.name)}
-                          className="px-2 py-1 text-xs bg-gray-100 text-gray-500 rounded hover:bg-gray-200 transition">
-                          <Plus className="w-3 h-3 inline" /> 加自选
+                          className="inline-flex p-1.5 bg-[var(--color-accent-soft)] text-[var(--color-accent)] rounded-[var(--radius-md)] hover:opacity-80 transition"
+                          title="加自选">
+                          <Plus className="w-4 h-4" />
                         </button>
                       )}
                     </td>
@@ -596,6 +656,39 @@ function ManualScan() {
           <Loader2 className="w-8 h-8 mx-auto mb-3 animate-spin" />
           <p className="text-sm">正在扫描全市场，请稍候…</p>
         </div>
+      )}
+
+      {/* 一键加自选：分组选择弹层（fixed 定位，锚在表头按钮下方） */}
+      {batchMenu && (
+        <>
+          <div className="fixed inset-0 z-40" onClick={() => setBatchMenu(null)} />
+          <div
+            className="fixed z-50 w-48 rounded-lg border border-gray-200 dark:border-gray-700 bg-white dark:bg-gray-900 shadow-lg p-1.5 text-sm"
+            style={{ left: Math.max(8, batchMenu.x - 192), top: batchMenu.y + 4 }}
+          >
+            <div className="px-2 py-1 text-xs text-gray-400">全部添加到分组</div>
+            <button onClick={() => batchAdd(undefined)} className="w-full text-left px-2 py-1.5 rounded hover:bg-gray-100 dark:hover:bg-gray-800 transition">
+              未分组
+            </button>
+            {groups.map(g => (
+              <button key={g.id} onClick={() => batchAdd(g.id)} className="w-full text-left px-2 py-1.5 rounded hover:bg-gray-100 dark:hover:bg-gray-800 transition">
+                {g.name}
+              </button>
+            ))}
+            <div className="mt-1 pt-1.5 border-t border-gray-100 dark:border-gray-800 flex gap-1">
+              <input
+                value={newGroupName}
+                onChange={e => setNewGroupName(e.target.value)}
+                onKeyDown={e => e.key === 'Enter' && createGroupAndAdd()}
+                placeholder="新建分组"
+                className="flex-1 min-w-0 px-2 py-1 text-xs border border-gray-200 dark:border-gray-700 rounded bg-transparent"
+              />
+              <button onClick={createGroupAndAdd} className="px-2 py-1 text-xs bg-blue-600 text-white rounded hover:bg-blue-700 transition">
+                确定
+              </button>
+            </div>
+          </div>
+        </>
       )}
 
       {!loading && rpsResults.length === 0 && (

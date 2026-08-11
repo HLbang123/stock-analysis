@@ -19,7 +19,7 @@ import { MoveToGroupMenu } from '@/components/MoveToGroupMenu';
 
 export default function WatchlistPage() {
   const router = useRouter();
-  const { watchlist, groups, addToWatchlist, removeFromWatchlist, isInWatchlist } = useStockStore();
+  const { watchlist, groups, addToWatchlist, removeFromWatchlist, isInWatchlist, addGroup } = useStockStore();
   const [searchQuery, setSearchQuery] = useState('');
   const [searchResults, setSearchResults] = useState<RealtimeQuote[]>([]);
   const [isSearching, setIsSearching] = useState(false);
@@ -55,13 +55,18 @@ export default function WatchlistPage() {
     try {
       const Tesseract = (await import('tesseract.js')).default;
       setOcrStatus('正在识别文字...');
-      const worker = await Tesseract.createWorker('chi_sim');
+      // 只识别 6 位数字代码，用 eng 引擎（语言包 ~4MB，chi_sim ~30MB）——加载更快、数字更准；
+      // 名称不靠 OCR，后续用行情接口按代码查名
+      const worker = await Tesseract.createWorker('eng');
       const { data } = await worker.recognize(ocrImageFile);
       await worker.terminate();
 
+      // OCR 常把同一代码拆进空格/换行（如 "60 0000"）：原始文本与"数字间空白合并"文本各匹配一遍取并集。
+      // 合并可能造出假 6 位串，交给 validateStockCode（前辍校验）+ 行情查名过滤
       const codeRegex = /(?<!\d)(\d{6})(?!\d)/g;
-      const matches = data.text.match(codeRegex) || [];
-      const extractedCodes = [...new Set(matches)];
+      const rawMatches = data.text.match(codeRegex) || [];
+      const mergedMatches = data.text.replace(/(\d)\s+(?=\d)/g, '$1').match(codeRegex) || [];
+      const extractedCodes = [...new Set([...rawMatches, ...mergedMatches])];
 
       if (extractedCodes.length === 0) {
         setOcrStatus('未识别到有效标的代码，请确认截图清晰');
@@ -69,20 +74,23 @@ export default function WatchlistPage() {
         return;
       }
 
-      const validResults: { code: string; name: string; added: boolean }[] = [];
-      for (const codeStr of extractedCodes.slice(0, 20)) {
-        const valid = validateStockCode(codeStr);
-        if (!valid) continue;
-        const fullCode = `${valid.market}${valid.pureCode}`;
-        try {
-          const quote = await getRealtimeQuote(fullCode);
-          if (quote?.name) {
-            validResults.push({ code: fullCode, name: quote.name, added: isInWatchlist(fullCode) });
+      setOcrStatus(`识别到 ${extractedCodes.length} 个代码，正在验证...`);
+      // 并行验证 + 查名（原串行循环，代码一多就很慢）
+      const checked = await Promise.all(
+        extractedCodes.slice(0, 50).map(async (codeStr) => {
+          const valid = validateStockCode(codeStr);
+          if (!valid) return null;
+          const fullCode = `${valid.market}${valid.pureCode}`;
+          try {
+            const quote = await getRealtimeQuote(fullCode);
+            if (quote?.name) return { code: fullCode, name: quote.name, added: isInWatchlist(fullCode) };
+            return null;
+          } catch {
+            return { code: fullCode, name: fullCode, added: isInWatchlist(fullCode) };
           }
-        } catch {
-          validResults.push({ code: fullCode, name: fullCode, added: isInWatchlist(fullCode) });
-        }
-      }
+        })
+      );
+      const validResults = checked.filter((r): r is NonNullable<typeof r> => r !== null);
 
       if (validResults.length > 0) {
         setOcrResults(validResults);
@@ -102,6 +110,30 @@ export default function WatchlistPage() {
     addToWatchlist({ code, name, market: parsed.market, pureCode: parsed.pureCode }, currentGroupId);
     setOcrResults(prev => prev.map(r => r.code === code ? { ...r, added: true } : r));
     toast.success(`已添加 ${name}`);
+  };
+
+  // 一键加自选：识别结果中未添加的全部加入指定分组（弹层选择，可临时新建）
+  const [ocrAddMenu, setOcrAddMenu] = useState<{ x: number; y: number } | null>(null);
+  const [ocrNewGroup, setOcrNewGroup] = useState('');
+  const handleOcrAddAll = (groupId?: string) => {
+    const pending = ocrResults.filter(r => !r.added);
+    for (const r of pending) {
+      const parsed = parseStockCode(r.code);
+      addToWatchlist({ code: r.code, name: r.name, market: parsed.market, pureCode: parsed.pureCode }, groupId);
+    }
+    setOcrResults(prev => prev.map(r => ({ ...r, added: true })));
+    const gName = groupId ? groups.find(g => g.id === groupId)?.name ?? '' : '未分组';
+    toast.success(`已添加 ${pending.length} 只到「${gName}」`);
+    setOcrAddMenu(null);
+  };
+  // 临时新建分组并全部加入
+  const createGroupAndAddAll = () => {
+    const name = ocrNewGroup.trim();
+    if (!name) return;
+    if (!addGroup(name)) { toast.error('分组已存在'); return; }
+    const g = useStockStore.getState().groups.find(g => g.name === name);
+    setOcrNewGroup('');
+    handleOcrAddAll(g?.id);
   };
 
   // 刷新自选股行情（并发拉取，替代原串行循环）；顺带算 MA5/13 交叉徽标（日K+实时价）
@@ -315,6 +347,20 @@ export default function WatchlistPage() {
 
             {ocrResults.length > 0 && (
               <div className="mt-3 space-y-1.5">
+                <div className="flex items-center justify-between">
+                  <span className="text-xs text-gray-400">已识别 {ocrResults.length} 只</span>
+                  {ocrResults.some(r => !r.added) && (
+                    <Button
+                      onClick={(e) => {
+                        const r = e.currentTarget.getBoundingClientRect();
+                        setOcrAddMenu(m => (m ? null : { x: r.right, y: r.bottom }));
+                      }}
+                      size="sm"
+                    >
+                      全部加入自选
+                    </Button>
+                  )}
+                </div>
                 {ocrResults.map(r => (
                   <div key={r.code} className="flex items-center justify-between p-2 bg-gray-50 dark:bg-gray-800 rounded-lg">
                     <div>
@@ -332,6 +378,39 @@ export default function WatchlistPage() {
                   </div>
                 ))}
               </div>
+            )}
+
+            {/* 全部加入自选：分组选择弹层（fixed 定位，锚在按钮下方） */}
+            {ocrAddMenu && (
+              <>
+                <div className="fixed inset-0 z-40" onClick={() => setOcrAddMenu(null)} />
+                <div
+                  className="fixed z-50 w-48 rounded-lg border border-gray-200 dark:border-gray-700 bg-white dark:bg-gray-900 shadow-lg p-1.5 text-sm"
+                  style={{ left: Math.max(8, ocrAddMenu.x - 192), top: ocrAddMenu.y + 4 }}
+                >
+                  <div className="px-2 py-1 text-xs text-gray-400">全部添加到分组</div>
+                  <button onClick={() => handleOcrAddAll(undefined)} className="w-full text-left px-2 py-1.5 rounded hover:bg-gray-100 dark:hover:bg-gray-800 transition">
+                    未分组
+                  </button>
+                  {groups.map(g => (
+                    <button key={g.id} onClick={() => handleOcrAddAll(g.id)} className="w-full text-left px-2 py-1.5 rounded hover:bg-gray-100 dark:hover:bg-gray-800 transition">
+                      {g.name}
+                    </button>
+                  ))}
+                  <div className="mt-1 pt-1.5 border-t border-gray-100 dark:border-gray-800 flex gap-1">
+                    <input
+                      value={ocrNewGroup}
+                      onChange={e => setOcrNewGroup(e.target.value)}
+                      onKeyDown={e => e.key === 'Enter' && createGroupAndAddAll()}
+                      placeholder="新建分组"
+                      className="flex-1 min-w-0 px-2 py-1 text-xs border border-gray-200 dark:border-gray-700 rounded bg-transparent"
+                    />
+                    <button onClick={createGroupAndAddAll} className="px-2 py-1 text-xs bg-blue-600 text-white rounded hover:bg-blue-700 transition">
+                      确定
+                    </button>
+                  </div>
+                </div>
+              </>
             )}
           </div>
         )}

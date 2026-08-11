@@ -47,6 +47,26 @@ export function AiScreenTab() {
   const [showLlm, setShowLlm] = useState(false);
   const [showRules, setShowRules] = useState(false);
   const [expanded, setExpanded] = useState<number | null>(null);
+  // 表头排序：null=按 AI 排名（rank）展示
+  const [sortKey, setSortKey] = useState<'final' | 'screen' | 'change' | null>(null);
+  const [sortDir, setSortDir] = useState<-1 | 1>(-1);
+  const toggleSort = (k: 'final' | 'screen' | 'change') => {
+    if (sortKey === k) setSortDir(d => (d === -1 ? 1 : -1));
+    else { setSortKey(k); setSortDir(-1); }
+  };
+  const sortMark = (k: string) => (sortKey === k ? (sortDir === -1 ? ' ↓' : ' ↑') : '');
+  const sortedPicks = (picks: AiPick[]) => {
+    if (!sortKey) return picks;
+    const val = (k: AiPick): number | null =>
+      sortKey === 'final' ? k.finalScore : sortKey === 'screen' ? k.screenScore : k.latestChange;
+    return [...picks].sort((a, b) => {
+      const va = val(a), vb = val(b);
+      if (va == null && vb == null) return 0;
+      if (va == null) return 1;
+      if (vb == null) return -1;
+      return (va - vb) * sortDir;
+    });
+  };
 
   // 拉策略定义 + 历史运行列表
   useEffect(() => {
@@ -172,16 +192,15 @@ export function AiScreenTab() {
             <table className="w-full text-sm">
               <thead>
                 <tr className="border-b border-gray-100 dark:border-gray-800 text-left text-xs text-gray-400 uppercase">
-                  <th className="px-3 py-2 w-10 whitespace-nowrap">#</th>
                   <th className="px-3 py-2 whitespace-nowrap">标的</th>
-                  <th className="px-3 py-2 text-right whitespace-nowrap">综合分</th>
-                  <th className="px-3 py-2 text-right whitespace-nowrap">规则/LLM</th>
-                  <th className="px-3 py-2 text-right whitespace-nowrap">涨跌</th>
+                  <th className="px-3 py-2 text-right whitespace-nowrap cursor-pointer select-none hover:text-gray-600 dark:hover:text-gray-200" onClick={() => toggleSort('final')}>综合分{sortMark('final')}</th>
+                  <th className="px-3 py-2 text-right whitespace-nowrap cursor-pointer select-none hover:text-gray-600 dark:hover:text-gray-200" onClick={() => toggleSort('screen')}>规则/LLM{sortMark('screen')}</th>
+                  <th className="px-3 py-2 text-right whitespace-nowrap cursor-pointer select-none hover:text-gray-600 dark:hover:text-gray-200" onClick={() => toggleSort('change')}>涨跌{sortMark('change')}</th>
                   <th className="px-3 py-2 min-w-[220px] whitespace-nowrap">理由 / 风险</th>
                 </tr>
               </thead>
               <tbody>
-                {current.picks.map((k, i) => (
+                {sortedPicks(current.picks).map((k, i) => (
                   <Fragment key={k.tsCode}>
                     <tr
                       onClick={() => setExpanded(expanded === i ? null : i)}
@@ -190,7 +209,6 @@ export function AiScreenTab() {
                         k.riskLevel === 'high' ? 'bg-red-50/30 dark:bg-red-950/10' : '',
                       )}
                     >
-                      <td className="px-3 py-2.5 text-gray-400">{k.rank}</td>
                       <td className="px-3 py-2.5" onClick={(e) => { e.stopPropagation(); router.push(`/stock/${toAppCode(k.tsCode)}`); }}>
                         <div className="font-medium text-blue-600 hover:underline">{k.name}</div>
                         <div className="text-gray-400 text-xs">{k.tsCode.replace(/\.(SH|SZ|BJ)$/, '')} · {k.industry || '--'}</div>
@@ -214,7 +232,7 @@ export function AiScreenTab() {
                     </tr>
                     {expanded === i && (
                       <tr className="bg-gray-50/50 dark:bg-gray-800/20">
-                        <td colSpan={6} className="px-4 py-3 text-xs space-y-2">
+                        <td colSpan={5} className="px-4 py-3 text-xs space-y-2">
                           {k.llmThesis && <p><strong>核心假设：</strong>{k.llmThesis}</p>}
                           {k.riskSummary && <p><strong>主要风险：</strong>{k.riskSummary}</p>}
                           {k.llmCatalysts.length > 0 && <p className="text-green-600">催化：{k.llmCatalysts.join('、')}</p>}

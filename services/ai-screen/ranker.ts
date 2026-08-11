@@ -6,12 +6,19 @@
  * 不用 response_format（兼容各家中转模型），靠 prompt 约束 + 容错解析兜底。
  * 思考型模型（deepseek-v4-flash）会吐 reasoning_content：content 与 reasoning 分开取，
  * content 优先做 JSON 源，reasoning 只作最后兜底（08-03 18 候选曾因 8192 token 被思考烧光而全降级纯规则）。
+ *
+ * 08-11 分片化（实验驱动，scripts/test-rerank-arms*.ts 三轮对比）：
+ * - 思考长度不随候选数缩减，50 一次喂必烧光 12288 预算（0/2 成功）；reasoning_effort:"low"
+ *   是建议非硬约束（1/3 成功）；唯「10/片 + 低思考」3/3 次 15/15 片 100% 覆盖
+ * - topK 切 10/片并行打，片间靠静态分数带标尺（buildShardPoolContext）对齐尺度，
+ *   已打分候选（增量续打）仍作标尺参照附在 prompt，双锚互补
+ * - 单片失败只丢 10 只（保留规则分兜底），不再整批全灭
  */
 
 import { buildChatUrl, buildLLMHeaders, createTimeoutSignal } from '@/lib/llm-client';
 import { formatAiError, formatNetworkError } from '@/lib/ai-error';
 import type { AiPick, LlmConfig, StrategyPreset } from './types';
-import { buildRankingPrompt } from './prompt';
+import { buildRankingPrompt, buildShardPoolContext } from './prompt';
 
 const RANK_WEIGHT = 0.4;
 const MIN_COVERAGE = 0.6;
@@ -25,6 +32,9 @@ const LLM_TIMEOUT_MS = 300_000;
 const LLM_MAX_TOKENS = 12288;
 // 送 LLM 的候选数上限：规则分 top 50（比 maxOutput=30 多 20 条，让 LLM 有机会把规则分 31-50 的遗珠捞进 top 30）
 const LLM_TOPK_CAP = 50;
+// 分片大小（08-11 实验定稿）：10/片并行 + reasoning_effort:"low" 是唯一 100% 可靠组合；
+// 片太大思考烧光预算，片太小浪费调用且跨股比较视野变窄
+const SHARD_SIZE = 10;
 
 export interface RankResult {
   picks: AiPick[];
@@ -238,13 +248,15 @@ function extractReasoning(msg?: LlmResponseMessage): string {
  * 改回非流式（07-30 生产数据验证能拿到内容），单层 300s 超时覆盖慢中转整段生成。
  * content 与 reasoning_content 分开返回：reasoning 只是思考过程，不直接作为 JSON 源；
  * 个别思考型中转把答案放思考通道时，由 rankCandidates 把 reasoning 当最后兜底去解析。
- * 中转把 max_tokens 卡得比 LLM_MAX_TOKENS 小时会 400，自动降级用 8192 重试一次。
+ * 中转把 max_tokens 卡得比 LLM_MAX_TOKENS 小时会 400，自动降级用 4096 重试一次。
+ * reasoning_effort:"low"（08-11）：压低思考占用给正文留预算；严格中转不认此参数会 400，
+ * 降级重试时一并去掉，避免「可降级」变「调用失败」。
  */
 async function callLlm(prompt: string, cfg: LlmConfig): Promise<LlmTextResult> {
   const url = buildChatUrl(cfg.baseUrl);
   const headers = buildLLMHeaders(cfg.apiKey);
   const { signal, clear } = createTimeoutSignal(LLM_TIMEOUT_MS);
-  const post = async (maxTokens: number) => {
+  const post = async (maxTokens: number, lowEffort: boolean) => {
     const res = await fetch(url, {
       method: 'POST',
       headers,
@@ -254,6 +266,7 @@ async function callLlm(prompt: string, cfg: LlmConfig): Promise<LlmTextResult> {
         temperature: 0.2,
         max_tokens: maxTokens,
         stream: false,
+        ...(lowEffort ? { reasoning_effort: 'low' } : {}),
       }),
       signal,
     });
@@ -266,12 +279,12 @@ async function callLlm(prompt: string, cfg: LlmConfig): Promise<LlmTextResult> {
   try {
     let data: ChatCompletionResponse | null = null;
     try {
-      data = (await post(LLM_MAX_TOKENS)) as ChatCompletionResponse;
+      data = (await post(LLM_MAX_TOKENS, true)) as ChatCompletionResponse;
     } catch (e: unknown) {
       const msg = e instanceof Error ? e.message : String(e);
-      // 400 且错误含 max_tokens 字样（厂商卡上限）→ 用 4096 重试，避免把「可降级」变成「调用失败」
+      // 400（厂商卡 max_tokens 上限 / 不认 reasoning_effort）→ 4096 且去掉低思考参数重试
       if (/400|max[_ -]?tokens?|max completion/i.test(msg)) {
-        data = (await post(4096)) as ChatCompletionResponse;
+        data = (await post(4096, false)) as ChatCompletionResponse;
       } else {
         throw e;
       }
@@ -393,49 +406,62 @@ export async function rankCandidates(
     };
   }
 
-  let prompt = buildRankingPrompt(toScore, preset, '', alreadyScored);
-  let payload: RankPayload | null = null;
-  let coverage = 0;
-  let matched = 0;
+  // 分片并行打分（08-11 实验定稿）：toScore 切 10/片，各片独立调用+重试，单片失败只丢 10 只
+  const poolContext = buildShardPoolContext(candidates);
+  const shards: AiPick[][] = [];
+  for (let i = 0; i < toScore.length; i += SHARD_SIZE) shards.push(toScore.slice(i, i + SHARD_SIZE));
 
-  for (let attempt = 0; attempt <= MAX_RETRIES; attempt++) {
-    if (attempt > 0) {
-      prompt += `\n\n上一次输出不是合法 JSON 或 ranked 数组缺少候选。本次必须只返回严格 JSON：ranked 数组长度必须等于 ${toScore.length}，每个 code 必须与下方候选列表完全一致，不得遗漏任何一个，不得编造候选池外的代码。`;
+  /** 单片打分（含 1 次重试）：applyRanking 直接把分数写进 pick；返回首个成功 payload 供全局字段取用 */
+  const scoreShard = async (shard: AiPick[], idx: number): Promise<RankPayload | null> => {
+    let prompt = buildRankingPrompt(shard, preset, poolContext, alreadyScored);
+    let view: RankPayload | null = null;
+    for (let attempt = 0; attempt <= MAX_RETRIES; attempt++) {
+      if (attempt > 0) {
+        prompt += `\n\n上一次输出不是合法 JSON 或 ranked 数组缺少候选。本次必须只返回严格 JSON：ranked 数组长度必须等于 ${shard.length}，每个 code 必须与下方候选列表完全一致，不得遗漏任何一个，不得编造候选池外的代码。`;
+      }
+      let result: LlmTextResult;
+      try {
+        result = await callLlm(prompt, cfg);
+      } catch (e: unknown) {
+        const msg = e instanceof Error ? e.message : String(e);
+        degradation.push(`shard${idx}:llm_call_failed:${msg}`);
+        break; // 调用层失败（超时/网络/限流）原地重试意义不大，缺分候选交给后续增量续打
+      }
+      // content 优先；个别中转把答案放思考通道时，reasoning 作最后兜底（但那是散文，多半解析失败，靠 max_tokens 余量治本）
+      const raw = result.content.trim() || result.reasoning.trim();
+      if (!raw) {
+        degradation.push(`shard${idx}:empty_response`);
+        continue;
+      }
+      if (!result.content.trim()) {
+        degradation.push(`shard${idx}:reasoning_content_fallback`);
+      }
+      const payload = parseJsonLenient(raw);
+      if (!payload) {
+        // 记录原始输出前 300 字，下次再失败时能定位 LLM 实际吐了什么
+        console.error(`[ai-screen/ranker] shard${idx} json_parse_failed attempt${attempt + 1}/${MAX_RETRIES + 1} candidates=${shard.length}:`, JSON.stringify(raw.slice(0, 300)));
+        degradation.push(`shard${idx}:json_parse_failed`);
+        continue;
+      }
+      // 总是回填已匹配部分（部分保留核心：失败也不丢分）
+      const { matched: m, degradation: dg } = applyRanking(shard, payload);
+      degradation.push(...dg.map((d) => `shard${idx}:${d}`));
+      view = view ?? payload;
+      const shardCoverage = m / Math.max(shard.length, 1);
+      if (shardCoverage >= MIN_COVERAGE) break;
+      degradation.push(`shard${idx}:low_coverage:${shardCoverage.toFixed(2)}@attempt${attempt + 1}`);
     }
-    let result: LlmTextResult;
-    try {
-      result = await callLlm(prompt, cfg);
-    } catch (e: unknown) {
-      const msg = e instanceof Error ? e.message : String(e);
-      degradation.push(`llm_call_failed:${msg}`);
-      return partialResult(candidates, rest, degradation, `LLM 调用失败：${msg}`);
-    }
-    // content 优先；个别中转把答案放思考通道时，reasoning 作最后兜底（但那是散文，多半解析失败，靠 max_tokens 余量治本）
-    const raw = result.content.trim() || result.reasoning.trim();
-    if (!raw) {
-      degradation.push('empty_response');
-      continue;
-    }
-    if (!result.content.trim()) {
-      degradation.push('reasoning_content_fallback');
-    }
-    payload = parseJsonLenient(raw);
-    if (!payload) {
-      // 记录原始输出前 300 字，下次再失败时能定位 LLM 实际吐了什么
-      console.error(`[ai-screen/ranker] json_parse_failed attempt${attempt + 1}/${MAX_RETRIES + 1} candidates=${toScore.length}:`, JSON.stringify(raw.slice(0, 300)));
-      degradation.push('json_parse_failed');
-      continue;
-    }
-    // 总是回填已匹配部分（部分保留核心：失败也不丢分）
-    const { matched: m, degradation: dg } = applyRanking(toScore, payload);
-    degradation.push(...dg);
-    matched = m;
-    coverage = matched / Math.max(toScore.length, 1);
-    if (coverage >= MIN_COVERAGE) break;
-    degradation.push(`low_coverage:${coverage.toFixed(2)}@attempt${attempt + 1}`);
-  }
+    return view;
+  };
 
-  if (!payload || coverage < MIN_COVERAGE) {
+  const views = await Promise.all(shards.map((shard, idx) => scoreShard(shard, idx)));
+
+  // 全局覆盖率以 pick 实际状态为准（分数已写进 pick，含历史分 + 本次各片新分）
+  const matched = toScore.filter((k) => k.llmScore != null).length;
+  const coverage = matched / Math.max(toScore.length, 1);
+  const payload = views.find((v) => v != null) ?? null;
+
+  if (coverage < MIN_COVERAGE) {
     // 失败但已保留部分匹配（或历史分）→ 按当前分数排序返回，llmRanked=false，后续可续打
     degradation.push(`coverage_below_threshold:${coverage.toFixed(2)}`);
     return partialResult(candidates, rest, degradation, 'LLM 覆盖率不足');

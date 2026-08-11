@@ -39,6 +39,25 @@ export interface AlreadyScoredRef {
 }
 
 /**
+ * 分片打分的共享上下文（08-11 起，ranker 把 topK 切成 10/片并行打分）：
+ * - 静态分数带标尺：跨片分数同尺度的锚（替代旧版串行传 alreadyScored 的单一依赖，两者并存互补）
+ * - 全池 identity 列表：本片只看到 10 只详情，identity 行保留跨股相对比较能力
+ * 实验依据：思考型模型思考长度不随候选数缩减，50 一次喂必烧光预算；10/片+低思考 3/3 全绿
+ */
+export function buildShardPoolContext(pool: AiPick[]): string {
+  const rubric = [
+    '评分标尺（全池共用同一尺度，严格遵守）：',
+    '90-100 = 多因子共振且板块催化明确；',
+    '75-89 = 因子强、有催化但有个别瑕疵；',
+    '60-74 = 中性偏上，缺乏突出亮点；',
+    '40-59 = 有明显风险项或因子平庸；',
+    '0-39 = 应当规避。',
+  ].join('\n');
+  const poolLines = pool.map(candidateIdentity).join('\n');
+  return `${rubric}\n\n候选池总览（共 ${pool.length} 只，仅供相对比较参照，不要给它们打分；你只需给下方候选列表中的候选打分）：\n${poolLines}`;
+}
+
+/**
  * 构建完整 prompt，超预算时按 identity→截断 优先级裁剪。
  * alreadyScored 为增量续打模式：附已打分候选的分数分布，让 LLM 校准本次打分标尺
  * （历史请求与本次请求的分数保持同一尺度，避免标尺漂移扭曲最终排序）。

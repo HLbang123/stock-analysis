@@ -19,7 +19,7 @@ export const STRATEGY_PRESETS: StrategyPreset[] = [
   {
     id: 'balanced',
     name: '稳健优选',
-    description: '趋势+回踩，基本面加持\n控制波动，稳稳的幸福',
+    description: '趋势+回踩，基本面加持\n控制波动，相对稳健',
     category: 'balanced',
     hardFilters: {
       excludeSt: true,
