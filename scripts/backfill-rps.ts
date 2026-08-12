@@ -80,13 +80,14 @@ async function main() {
   const daysArg = process.argv.find((a) => a.startsWith("--days="))?.split("=")[1];
   const days = Math.min(parseInt(daysArg || "80") || 80, 2400);
 
-  // 1. 取最近 (days + 250) 个交易日，保证最老一天的 RPS(250) 有前收盘
-  const dateRows = await prisma.dailyBar.findMany({
-    select: { tradeDate: true },
-    distinct: ["tradeDate"],
-    orderBy: { tradeDate: "desc" },
-    take: days + 250,
-  });
+  // 1. 取最近 (days + 250) 个交易日，保证最老一天的 RPS(250) 有前收盘。
+  //    必须用 raw SQL DISTINCT：prisma findMany distinct 会生成"全表排序后取 N 行"，
+  //    在 1080 万行 daily_bars 上 planner 选 seq scan 卡死（08-12 实测 12 分钟未完成）；
+  //    raw SQL 走 tradeDate 索引，秒级返回。
+  const dateRows: { tradeDate: string }[] = await prisma.$queryRawUnsafe(
+    `SELECT DISTINCT "tradeDate" FROM daily_bars ORDER BY "tradeDate" DESC LIMIT $1`,
+    days + 250
+  );
   const dates = dateRows.map((r) => r.tradeDate); // 新→旧
   if (dates.length <= 250) {
     console.error(`[backfill-rps] 历史交易日不足 ${dates.length}（需 > 250），无法回补`);
