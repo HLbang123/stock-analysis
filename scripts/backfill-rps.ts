@@ -139,6 +139,9 @@ async function main() {
       await upsertDate(Array.from(rowByCode.values()));
       total += rowByCode.size;
     }
+    // 滑动窗口释放：当前日只被自身引用（prevDate 永远是更旧的日期），算完即删。
+    // 否则 10 年回补会缓存 2600+ 个全市场收盘 Map（≈2-5GB）直接 OOM（08-12 实证崩在链条第 2 步）
+    closeCache.delete(calcDate);
     if ((i + 1) % 10 === 0 || i === days - 1) {
       console.log(`[backfill-rps] ${i + 1}/${days} ${calcDate} 写入 ${rowByCode.size} 条`);
     }
