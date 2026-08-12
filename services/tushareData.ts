@@ -44,9 +44,11 @@ interface MoneyflowItem {
   // 同花顺 THS 口径（stock_moneyflow_ths 表，prisma camelCase 字段）
   // 历史：2026-08 前为东财 snake_case 字段，迁移后本结构未同步导致全盘读出 0（"资金数据缺失"误判根因）
   tradeDate?: string;      // YYYYMMDD
-  netAmount?: number;      // 主力净流入（万元）
-  netD5Amount?: number;    // 5日主力净额（万元）
-  buyLgAmount?: number;    // 大单净流入（万元）
+  netAmount?: number;      // 资金净流入(万元,全量=超+大+中+小)
+  netD5Amount?: number;    // 5日净额(万元,全量口径)
+  buyElgAmount?: number;   // 超大单净流入(万元)
+  buyElgRate?: number;     // 超大单净流入占比(%)
+  buyLgAmount?: number;    // 大单净流入(万元)
   buyLgRate?: number;      // 大单净流入占比(%)
   buyMdRate?: number;      // 中单净流入占比(%)
   buySmRate?: number;      // 小单净流入占比(%)
@@ -286,6 +288,7 @@ function fmtYuan(yuan: number | undefined): string {
 export function formatTushareForPrompt(
   data: TushareData | null,
   indexQuotes?: { name: string; price: number; changePercent: number; updateTime: string }[] | null,
+  quote?: { turnover?: number; updateTime?: string } | null,
 ): string {
   if (!data) return '';
 
@@ -308,7 +311,13 @@ export function formatTushareForPrompt(
     if (latestBasic.ps_ttm != null) valuationLines.push(`- 市销率(PS-TTM)：${latestBasic.ps_ttm.toFixed(2)}`);
     valuationLines.push(`- 总市值：${fmtMv(latestBasic.total_mv)}`);
     valuationLines.push(`- 流通市值：${fmtMv(latestBasic.circ_mv)}`);
-    if (latestBasic.turnover_rate != null) valuationLines.push(`- 换手率：${latestBasic.turnover_rate.toFixed(2)}%`);
+    if (latestBasic.turnover_rate != null) valuationLines.push(`- 换手率（${dateStr.slice(5)} 收盘）：${latestBasic.turnover_rate.toFixed(2)}%`);
+    // 盘中实时换手率（行情源自带：腾讯/东财有，新浪无）：tushare 日线族盘中恒 T-1，
+    // 不加这条 LLM 会把昨日换手率写成"今日"（有研新材 08-12 实证：昨日17.1%被写成今日，实际6.55%）
+    if (quote?.turnover != null && quote.turnover > 0) {
+      const qTime = quote.updateTime ? quote.updateTime.slice(11, 16) : '';
+      valuationLines.push(`- 今日实时换手率：${quote.turnover.toFixed(2)}%${qTime ? `（截至 ${qTime}，盘中实时）` : '（盘中实时）'}`);
+    }
     if (latestBasic.volume_ratio != null) valuationLines.push(`- 量比：${latestBasic.volume_ratio.toFixed(2)}`);
 
     sections.push(`### 估值与市值\n${valuationLines.join('\n')}`);
@@ -429,12 +438,24 @@ export function formatTushareForPrompt(
   if (mfData && mfData.length > 0) {
     const flowLines: string[] = [];
 
+    // 主力 = 超大单+大单（与同花顺 App 口径一致；08-12 前用全量净额冒充主力，与 App 对不上）
+    // elg 字段缺（历史数据/回补前）时回退全量净额并明示
+    const mainOf = (mf: MoneyflowItem): number | null => {
+      if (mf.buyElgAmount != null && mf.buyLgAmount != null) return mf.buyElgAmount + mf.buyLgAmount;
+      return mf.netAmount ?? null;
+    };
+
     for (const mf of mfData.slice(0, 5)) {
       const td = mf.tradeDate;
       const dateStr = td ? `${td.slice(4, 6)}-${td.slice(6, 8)}` : '';
-      const net = mf.netAmount ?? 0;
-      const direction = net > 0 ? '净流入' : net < 0 ? '净流出' : '持平';
-      const parts = [`主力${direction} ${fmtFlow(Math.abs(net))}`];
+      const main = mainOf(mf);
+      const hasElg = mf.buyElgAmount != null && mf.buyLgAmount != null;
+      const parts: string[] = [];
+      if (main != null) {
+        const direction = main > 0 ? '净流入' : main < 0 ? '净流出' : '持平';
+        parts.push(`主力${direction} ${fmtFlow(Math.abs(main))}${hasElg ? '' : '（全量口径）'}`);
+      }
+      if (mf.buyElgAmount != null) parts.push(`超大单${mf.buyElgAmount > 0 ? '+' : ''}${fmtFlow(mf.buyElgAmount)}`);
       if (mf.buyLgAmount != null) parts.push(`大单${mf.buyLgAmount > 0 ? '+' : ''}${fmtFlow(mf.buyLgAmount)}`);
       if (mf.buyLgRate != null) parts.push(`大单占比${mf.buyLgRate.toFixed(1)}%`);
       if (mf.buyMdRate != null) parts.push(`中单占比${mf.buyMdRate.toFixed(1)}%`);
@@ -442,10 +463,14 @@ export function formatTushareForPrompt(
       flowLines.push(`- ${dateStr}：${parts.join('，')}`);
     }
 
-    // 5日汇总用官方 netD5Amount（最近一行的滚动5日净额），比逐日自加更准
-    const d5 = mfData[0]?.netD5Amount;
+    // 5日主力净额：逐日主力(超大单+大单)自加；缺 elg 的历史数据回退官方 netD5（全量口径）
+    const recent5 = mfData.slice(0, 5);
+    const hasElg5 = recent5.some((mf) => mf.buyElgAmount != null && mf.buyLgAmount != null);
+    const d5 = hasElg5
+      ? recent5.reduce((s, mf) => s + ((mf.buyElgAmount ?? 0) + (mf.buyLgAmount ?? 0)), 0)
+      : mfData[0]?.netD5Amount;
     if (d5 != null) {
-      flowLines.push(`\n近5日主力净额：${d5 > 0 ? '+' : ''}${fmtFlow(d5)}`);
+      flowLines.push(`\n近5日主力净额：${d5 > 0 ? '+' : ''}${fmtFlow(d5)}${hasElg5 ? '' : '（全量口径）'}`);
     }
     flowLines.push(`（注：资金流向为盘后数据，最新仅至上述最近交易日，非当日实时）`);
 

@@ -5,13 +5,14 @@ export interface Stock {
   market: string;    // 市场: sh/sz/bj
   pureCode: string;  // 纯数字代码: 600519
   positionPercent?: number; // 可选: 持仓占比 0-100
-  groupId?: string;  // 可选: 所属自选分组 id，缺省为未分组
 }
 
-// 自选分组
+// 自选分组（多组映射：分组持有标的代码，一个标的可同时属于多个组；
+// 标的本身无组概念，「全部」= watchlist 全量去重）
 export interface WatchlistGroup {
   id: string;
   name: string;
+  stockCodes: string[];
 }
 
 // 实时行情
@@ -27,6 +28,7 @@ export interface RealtimeQuote {
   open: number;          // 开盘
   volume: number;        // 成交量
   amount: number;        // 成交额
+  turnover?: number;     // 换手率(%)，行情源自带（腾讯/东财有，新浪无）
   updateTime: string;
 }
 

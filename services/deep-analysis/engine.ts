@@ -218,7 +218,7 @@ export async function prepareDeepContext(
   }
 
   const tushareIssues = [...(tushareData?.errors || []), ...(tushareData?.warnings || [])];
-  const tushareBlock = formatTushareForPrompt(tushareData, indexQuotes);
+  const tushareBlock = formatTushareForPrompt(tushareData, indexQuotes, quote);
 
   const updatedKLines = kLines.length >= 5 ? buildUpdatedKLines(quote, kLines) : kLines;
   const chip: ChipDistribution | null = await getChipData(selectedCode).catch(() => null);

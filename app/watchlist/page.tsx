@@ -19,7 +19,7 @@ import { MoveToGroupMenu } from '@/components/MoveToGroupMenu';
 
 export default function WatchlistPage() {
   const router = useRouter();
-  const { watchlist, groups, addToWatchlist, removeFromWatchlist, isInWatchlist, addGroup } = useStockStore();
+  const { watchlist, groups, addToWatchlist, removeFromWatchlist, isInWatchlist, addGroup, removeStocks } = useStockStore();
   const [searchQuery, setSearchQuery] = useState('');
   const [searchResults, setSearchResults] = useState<RealtimeQuote[]>([]);
   const [isSearching, setIsSearching] = useState(false);
@@ -37,36 +37,91 @@ export default function WatchlistPage() {
   const [showGroupManage, setShowGroupManage] = useState(false);
   const [moveMenuFor, setMoveMenuFor] = useState<string | null>(null);
 
-  // OCR 状态
+  // 多选删除状态
+  const [multiSelect, setMultiSelect] = useState(false);
+  const [selectedCodes, setSelectedCodes] = useState<Set<string>>(new Set());
+
+  // OCR 状态（支持多张截图：持仓超一屏时连选，逐张识别结果合并）
   const [showOcr, setShowOcr] = useState(false);
-  const [ocrImage, setOcrImage] = useState<string | null>(null);
-  const [ocrImageFile, setOcrImageFile] = useState<File | null>(null);
+  const [ocrImages, setOcrImages] = useState<string[]>([]);
+  const [ocrImageFiles, setOcrImageFiles] = useState<File[]>([]);
   const [isOcrProcessing, setIsOcrProcessing] = useState(false);
   const [ocrStatus, setOcrStatus] = useState<string | null>(null);
   const [ocrResults, setOcrResults] = useState<{ code: string; name: string; added: boolean }[]>([]);
 
-  // OCR 识别
+  // 图像预处理（08-12）：canvas 缩放 + 深色模式反色。
+  // tesseract 在字符高度 ~30px 以上才准（手机截图字太小要放大），且对白字黑底的深色截图识别率暴跌。
+  const preprocessImage = async (file: File): Promise<Blob> => {
+    const bitmap = await createImageBitmap(file);
+    const scale = bitmap.width < 1200 ? 2 : Math.min(1, 2000 / bitmap.width);
+    const canvas = document.createElement('canvas');
+    canvas.width = Math.round(bitmap.width * scale);
+    canvas.height = Math.round(bitmap.height * scale);
+    const ctx = canvas.getContext('2d')!;
+    ctx.drawImage(bitmap, 0, 0, canvas.width, canvas.height);
+    bitmap.close();
+    // 抽样平均亮度，偏暗判定为深色模式 → 反色
+    const imgData = ctx.getImageData(0, 0, canvas.width, canvas.height);
+    const d = imgData.data;
+    let sum = 0, n = 0;
+    for (let i = 0; i < d.length; i += 400) { sum += d[i] + d[i + 1] + d[i + 2]; n++; }
+    if (sum / n / 3 < 128) {
+      for (let i = 0; i < d.length; i += 4) { d[i] = 255 - d[i]; d[i + 1] = 255 - d[i + 1]; d[i + 2] = 255 - d[i + 2]; }
+      ctx.putImageData(imgData, 0, 0);
+    }
+    return new Promise((resolve, reject) => canvas.toBlob((b) => (b ? resolve(b) : reject(new Error('图像预处理失败'))), 'image/png'));
+  };
+
+  // OCR 识别（多张顺序跑，worker 复用）
   const handleOcrScan = async () => {
-    if (!ocrImageFile) { toast.error('请先选择图片'); return; }
+    if (ocrImageFiles.length === 0) { toast.error('请先选择图片'); return; }
     setIsOcrProcessing(true);
     setOcrStatus('正在准备识别引擎...');
     setOcrResults([]);
 
     try {
       const Tesseract = (await import('tesseract.js')).default;
-      setOcrStatus('正在识别文字...');
-      // 只识别 6 位数字代码，用 eng 引擎（语言包 ~4MB，chi_sim ~30MB）——加载更快、数字更准；
-      // 名称不靠 OCR，后续用行情接口按代码查名
-      const worker = await Tesseract.createWorker('eng');
-      const { data } = await worker.recognize(ocrImageFile);
+      // 只识别 6 位数字代码，用 eng 引擎（语言包 ~3MB，chi_sim ~30MB）——加载更快、数字更准；
+      // 名称不靠 OCR，后续用行情接口按代码查名。
+      // 引擎/语言包全部自托管在 public/（08-12：默认走 jsdelivr CDN，国内时有不稳会卡死"正在识别"）
+      const total = ocrImageFiles.length;
+      let currentIdx = 0;
+      const worker = await Tesseract.createWorker('eng', Tesseract.OEM.LSTM_ONLY, {
+        workerPath: '/tesseract/worker.min.js',
+        corePath: '/tesseract',
+        langPath: '/tessdata',
+        logger: (m: { status: string; progress: number }) => {
+          if (m.status === 'recognizing text') {
+            setOcrStatus(`正在识别第 ${currentIdx + 1}/${total} 张… ${Math.round(m.progress * 100)}%`);
+          }
+        },
+      });
+      // 表格截图按"整块文本"理解，减少名称列与代码列黏连
+      await worker.setParameters({ tessedit_pageseg_mode: Tesseract.PSM.SINGLE_BLOCK });
+
+      const texts: string[] = [];
+      for (; currentIdx < total; currentIdx++) {
+        const blob = await preprocessImage(ocrImageFiles[currentIdx]);
+        const { data } = await worker.recognize(blob);
+        texts.push(data.text);
+      }
       await worker.terminate();
+      console.log('[ocr] 原始识别文本:', texts.join('\n----\n')); // 识别漏代码时排查用
 
       // OCR 常把同一代码拆进空格/换行（如 "60 0000"）：原始文本与"数字间空白合并"文本各匹配一遍取并集。
-      // 合并可能造出假 6 位串，交给 validateStockCode（前辍校验）+ 行情查名过滤
+      // eng 引擎还会把数字认成字母（0→O、1→l、5→S 等）或把中文认成字母黏在代码上：
+      // 再做一份"混淆字母→数字、其余字母→空格"的归一化副本匹配（08-12 修"识别变少"）。
+      // 归一化可能造出假 6 位串，交给 validateStockCode（前辍校验）+ 行情查名过滤
       const codeRegex = /(?<!\d)(\d{6})(?!\d)/g;
-      const rawMatches = data.text.match(codeRegex) || [];
-      const mergedMatches = data.text.replace(/(\d)\s+(?=\d)/g, '$1').match(codeRegex) || [];
-      const extractedCodes = [...new Set([...rawMatches, ...mergedMatches])];
+      const mergeSpaces = (t: string) => t.replace(/(\d)\s+(?=\d)/g, '$1');
+      const CONFUSE: Record<string, string> = {
+        o: '0', O: '0', Q: '0', D: '0', l: '1', I: '1', i: '1', '|': '1', '!': '1',
+        Z: '2', z: '2', A: '4', S: '5', s: '5', G: '6', b: '6', T: '7', B: '8', g: '9', q: '9',
+      };
+      const extractedCodes = [...new Set(texts.flatMap((t) => {
+        const normalized = mergeSpaces(t.replace(/[A-Za-z|!]/g, (ch) => CONFUSE[ch] ?? ' '));
+        return [t, mergeSpaces(t), normalized].flatMap((v) => v.match(codeRegex) || []);
+      }))];
 
       if (extractedCodes.length === 0) {
         setOcrStatus('未识别到有效标的代码，请确认截图清晰');
@@ -187,20 +242,46 @@ export default function WatchlistPage() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [watchlistCodesKey]);
 
-  // 分组派生：切换组只过滤展示，不重拉行情
+  // 分组派生：切换组只过滤展示，不重拉行情（多组映射：组内标的 = group.stockCodes）
   const activeGroupName = selectedGroupId === ALL_GROUP_ID
     ? '全部'
     : groups.find(g => g.id === selectedGroupId)?.name ?? '全部';
+  const selectedGroupCodes = selectedGroupId === ALL_GROUP_ID
+    ? null
+    : groups.find(g => g.id === selectedGroupId)?.stockCodes;
   const visibleWatchlist = selectedGroupId === ALL_GROUP_ID
     ? watchlist
-    : watchlist.filter(s => s.groupId === selectedGroupId);
+    : watchlist.filter(s => selectedGroupCodes?.includes(s.code));
 
-  // 选中组被删除时自动回退「全部」
+  // 选中组被删除时自动回退「全部」；切组时退出多选态
   useEffect(() => {
     if (selectedGroupId !== ALL_GROUP_ID && !groups.some(g => g.id === selectedGroupId)) {
       setSelectedGroupId(ALL_GROUP_ID);
     }
   }, [groups, selectedGroupId]);
+  useEffect(() => {
+    setSelectedCodes(new Set());
+    setMultiSelect(false);
+  }, [selectedGroupId]);
+
+  // 多选删除
+  const toggleSelect = (code: string) => {
+    setSelectedCodes(prev => {
+      const next = new Set(prev);
+      if (next.has(code)) next.delete(code); else next.add(code);
+      return next;
+    });
+  };
+  const exitMultiSelect = () => {
+    setMultiSelect(false);
+    setSelectedCodes(new Set());
+  };
+  const handleBatchDelete = () => {
+    if (selectedCodes.size === 0) return;
+    removeStocks([...selectedCodes]);
+    toast.success(`已删除 ${selectedCodes.size} 只标的`);
+    exitMultiSelect();
+  };
 
   // 页内添加(搜索/OCR)归当前选中组；「全部」时不归组（未分组）
   const currentGroupId = selectedGroupId === ALL_GROUP_ID ? undefined : selectedGroupId;
@@ -284,41 +365,50 @@ export default function WatchlistPage() {
               ref={ocrFileRef}
               type="file"
               accept="image/*"
+              multiple
               onChange={(e) => {
-                const file = e.target.files?.[0];
-                if (!file) return;
-                setOcrImageFile(file);
-                const reader = new FileReader();
-                reader.onload = () => setOcrImage(reader.result as string);
-                reader.readAsDataURL(file);
+                const files = Array.from(e.target.files || []);
+                if (files.length === 0) return;
+                // 追加模式：持仓超一屏的截图可分次选入，一次性识别合并
+                setOcrImageFiles(prev => [...prev, ...files]);
+                for (const f of files) {
+                  const reader = new FileReader();
+                  reader.onload = () => setOcrImages(prev => [...prev, reader.result as string]);
+                  reader.readAsDataURL(f);
+                }
                 setOcrResults([]);
                 setOcrStatus(null);
+                e.target.value = ''; // 允许重复选同一文件
               }}
               className="hidden"
             />
 
-            {ocrImage ? (
+            {ocrImages.length > 0 ? (
               <div>
-                <div className="relative mb-3">
-                  <img src={ocrImage} alt="截图" className="w-full h-48 object-contain bg-gray-100 dark:bg-gray-800 rounded-lg" />
-                  <button
-                    onClick={() => { setOcrImage(null); setOcrImageFile(null); setOcrResults([]); setOcrStatus(null); }}
-                    className="absolute top-2 right-2 p-1 bg-white/80 rounded-full hover:bg-white transition"
-                  >
-                    <X className="w-4 h-4" />
-                  </button>
+                <div className="flex gap-2 overflow-x-auto mb-3 pb-1">
+                  {ocrImages.map((src, i) => (
+                    <div key={i} className="relative shrink-0">
+                      <img src={src} alt={`截图${i + 1}`} className="h-36 w-auto object-contain bg-gray-100 dark:bg-gray-800 rounded-lg" />
+                      <button
+                        onClick={() => { setOcrImages(prev => prev.filter((_, j) => j !== i)); setOcrImageFiles(prev => prev.filter((_, j) => j !== i)); }}
+                        className="absolute top-1 right-1 p-0.5 bg-white/80 rounded-full hover:bg-white transition"
+                      >
+                        <X className="w-3.5 h-3.5" />
+                      </button>
+                    </div>
+                  ))}
                 </div>
                 <div className="flex gap-2">
                   <button onClick={() => ocrFileRef.current?.click()} className="flex-1 py-2 border border-gray-200 dark:border-gray-700 rounded-lg text-sm">
-                    重新选择
+                    再加一张
                   </button>
-                    <Button
+                  <Button
                       onClick={handleOcrScan}
                       loading={isOcrProcessing}
                       className="flex-1"
                     >
                       <Upload className="w-3.5 h-3.5" />
-                      {isOcrProcessing ? '识别中...' : '开始识别'}
+                      {isOcrProcessing ? '识别中...' : `开始识别（${ocrImages.length} 张）`}
                     </Button>
                 </div>
               </div>
@@ -328,7 +418,7 @@ export default function WatchlistPage() {
                 className="w-full h-32 flex flex-col items-center justify-center border-2 border-dashed border-gray-300 dark:border-gray-600 rounded-[var(--radius-lg)] hover:border-[var(--color-accent)] transition mt-2"
               >
                 <Camera className="w-8 h-8 text-gray-300 mb-1" />
-                <p className="text-sm text-gray-500">点击上传持仓截图</p>
+                <p className="text-sm text-gray-500">点击上传持仓截图（可多选）</p>
               </button>
             )}
 
@@ -367,14 +457,24 @@ export default function WatchlistPage() {
                       <span className="text-sm font-medium">{r.name}</span>
                       <span className="text-xs text-gray-500 ml-2">{r.code}</span>
                     </div>
-                    <Button
-                      onClick={() => handleOcrAdd(r.code, r.name)}
-                      variant={r.added ? "secondary" : "primary"}
-                      size="sm"
-                      disabled={r.added}
-                    >
-                      {r.added ? '已添加' : '加入自选'}
-                    </Button>
+                    <div className="flex items-center gap-1">
+                      <Button
+                        onClick={() => handleOcrAdd(r.code, r.name)}
+                        variant={r.added ? "secondary" : "primary"}
+                        size="sm"
+                        disabled={r.added}
+                      >
+                        {r.added ? '已添加' : '加入自选'}
+                      </Button>
+                      {/* 误识别行剔除（归一化副本可能造出查名能查到的幻影代码） */}
+                      <button
+                        onClick={() => setOcrResults(prev => prev.filter(x => x.code !== r.code))}
+                        className="p-1.5 text-gray-400 hover:text-red-500 rounded transition"
+                        title="移除"
+                      >
+                        <X className="w-3.5 h-3.5" />
+                      </button>
+                    </div>
                   </div>
                 ))}
               </div>
@@ -472,13 +572,26 @@ export default function WatchlistPage() {
         <>
           <div className="flex items-center justify-between mb-4">
             <span className="text-sm text-gray-500">{activeGroupName} · {visibleWatchlist.length} 只</span>
-            <button
-              onClick={refreshQuotes}
-              className="text-sm text-[var(--color-accent)] hover:opacity-80 flex items-center gap-1"
-            >
-              <TrendingUp className="w-4 h-4" />
-              刷新行情
-            </button>
+            <div className="flex items-center gap-3">
+              {multiSelect ? (
+                <button onClick={exitMultiSelect} className="text-sm text-gray-500 hover:text-gray-700 dark:hover:text-gray-300">
+                  完成
+                </button>
+              ) : (
+                <>
+                  <button
+                    onClick={refreshQuotes}
+                    className="text-sm text-[var(--color-accent)] hover:opacity-80 flex items-center gap-1"
+                  >
+                    <TrendingUp className="w-4 h-4" />
+                    刷新行情
+                  </button>
+                  <button onClick={() => setMultiSelect(true)} className="text-sm text-[var(--color-accent)] hover:opacity-80">
+                    多选
+                  </button>
+                </>
+              )}
+            </div>
           </div>
 
           <div className="space-y-2">
@@ -490,10 +603,23 @@ export default function WatchlistPage() {
                 <Card
                   key={stock.code}
                   clickable
-                  onClick={() => router.push(`/stock/${stock.code}`)}
+                  onClick={() => (multiSelect ? toggleSelect(stock.code) : router.push(`/stock/${stock.code}`))}
                 >
                   <div className="flex items-center justify-between">
-                    <div>
+                    <div className="flex items-center gap-2 min-w-0">
+                      {multiSelect && (
+                        <span
+                          className={cn(
+                            'w-5 h-5 rounded border shrink-0 flex items-center justify-center transition',
+                            selectedCodes.has(stock.code)
+                              ? 'bg-[var(--color-accent)] border-[var(--color-accent)]'
+                              : 'border-gray-300 dark:border-gray-600'
+                          )}
+                        >
+                          {selectedCodes.has(stock.code) && <Check className="w-3.5 h-3.5 text-white" />}
+                        </span>
+                      )}
+                      <div className="min-w-0">
                       <h3 className="font-semibold">
                         {stock.name}
                         {rps60 != null && (rps60 >= 87 || rps60 <= 20) && (
@@ -527,6 +653,7 @@ export default function WatchlistPage() {
                         )}
                       </h3>
                       <p className="text-sm text-gray-500">{stock.code}</p>
+                      </div>
                     </div>
                     {quote ? (
                       <div className="flex items-center gap-4">
@@ -538,35 +665,39 @@ export default function WatchlistPage() {
                             {formatChange(quote.changePercent)}
                           </p>
                         </div>
-                        <div className="relative">
-                          <button
-                            onClick={(e) => { e.stopPropagation(); setMoveMenuFor(moveMenuFor === stock.code ? null : stock.code); }}
-                            className="p-2 text-gray-400 hover:text-[var(--color-accent)] hover:bg-[var(--color-accent-soft)] rounded-[var(--radius-md)] transition"
-                            title="移动到分组"
-                          >
-                            <FolderInput className="w-4 h-4" />
-                          </button>
-                          {moveMenuFor === stock.code && (
-                            <MoveToGroupMenu
-                              code={stock.code}
-                              onClose={() => setMoveMenuFor(null)}
-                              onCreateGroup={() => setShowGroupManage(true)}
-                            />
-                          )}
-                        </div>
-                        <button
-                          onClick={(e) => { e.stopPropagation(); removeFromWatchlist(stock.code); }}
-                          className="p-2 text-[var(--color-danger)] hover:bg-[var(--color-danger-soft)] rounded-[var(--radius-md)] transition"
-                        >
-                          <Trash2 className="w-4 h-4" />
-                        </button>
+                        {!multiSelect && (
+                          <>
+                            <div className="relative">
+                              <button
+                                onClick={(e) => { e.stopPropagation(); setMoveMenuFor(moveMenuFor === stock.code ? null : stock.code); }}
+                                className="p-2 text-gray-400 hover:text-[var(--color-accent)] hover:bg-[var(--color-accent-soft)] rounded-[var(--radius-md)] transition"
+                                title="分组"
+                              >
+                                <FolderInput className="w-4 h-4" />
+                              </button>
+                              {moveMenuFor === stock.code && (
+                                <MoveToGroupMenu
+                                  code={stock.code}
+                                  onClose={() => setMoveMenuFor(null)}
+                                  onCreateGroup={() => setShowGroupManage(true)}
+                                />
+                              )}
+                            </div>
+                            <button
+                              onClick={(e) => { e.stopPropagation(); removeFromWatchlist(stock.code); }}
+                              className="p-2 text-[var(--color-danger)] hover:bg-[var(--color-danger-soft)] rounded-[var(--radius-md)] transition"
+                            >
+                              <Trash2 className="w-4 h-4" />
+                            </button>
+                          </>
+                        )}
                       </div>
                     ) : (
                       <div className="text-gray-400 text-sm">加载中...</div>
                     )}
                   </div>
 
-                  {quote && (
+                  {quote && !multiSelect && (
                     <div className="mt-2 flex items-center text-sm">
                       {/* 持仓占比输入 */}
                       <div className="flex items-center gap-1.5" onClick={(e) => e.stopPropagation()}>
@@ -593,6 +724,21 @@ export default function WatchlistPage() {
             })}
           </div>
         </>
+      )}
+
+      {/* 多选删除操作栏 */}
+      {multiSelect && (
+        <div className="fixed bottom-20 left-1/2 -translate-x-1/2 z-40 flex items-center gap-3 px-4 py-2.5 rounded-full bg-gray-900 dark:bg-white text-white dark:text-gray-900 shadow-lg">
+          <span className="text-sm whitespace-nowrap">已选 {selectedCodes.size} 只</span>
+          <button
+            onClick={handleBatchDelete}
+            disabled={selectedCodes.size === 0}
+            className="px-3.5 py-1 rounded-full bg-[var(--color-danger)] text-white text-sm font-medium disabled:opacity-40"
+          >
+            删除
+          </button>
+          <button onClick={exitMultiSelect} className="text-sm opacity-70">取消</button>
+        </div>
       )}
 
       {showGroupManage && <GroupManageModal onClose={() => setShowGroupManage(false)} />}

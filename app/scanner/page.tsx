@@ -8,7 +8,7 @@ import { cn } from '@/lib/utils';
 import { Card } from '@/components/ui/card';
 import { PageHeader } from '@/components/ui/page-header';
 import { AiScreenTab } from '@/components/AiScreenTab';
-import { Filter, Loader2, ChevronDown, ChevronUp, Plus, Check, BarChart3, Search } from 'lucide-react';
+import { Filter, Loader2, ChevronDown, ChevronUp, Plus, Minus, BarChart3, Search } from 'lucide-react';
 import { toast } from 'sonner';
 
 const RPS_PERIODS = [
@@ -56,7 +56,7 @@ export default function ScannerPage() {
 
 function ManualScan() {
   const router = useRouter();
-  const { addToWatchlist, isInWatchlist, groups, addGroup } = useStockStore();
+  const { addToWatchlist, removeFromWatchlist, isInWatchlist, groups, addGroup } = useStockStore();
   const {
     selectedSectors, setSelectedSectors,
     rpsPeriods, setRpsPeriods,
@@ -168,6 +168,11 @@ function ManualScan() {
   const addWatch = (code: string, name: string) => {
     addToWatchlist(toStock(code, name));
     toast.success(`已添加 ${name}`);
+  };
+
+  const removeWatch = (tsCodeFull: string, name: string) => {
+    removeFromWatchlist(toAppCode(tsCodeFull));
+    toast.success(`已删除 ${name}`);
   };
 
   // 一键加自选：把当前筛选结果（未在自选的）批量加入指定分组
@@ -632,9 +637,11 @@ function ManualScan() {
                     </td>
                     <td className="px-3 py-2.5 text-center" onClick={e => e.stopPropagation()}>
                       {isInWatchlist(toAppCode(item.tsCode)) ? (
-                        <span className="inline-flex p-1.5 text-[var(--color-down)]" title="已在自选中">
-                          <Check className="w-4 h-4" />
-                        </span>
+                        <button onClick={() => removeWatch(item.tsCode, item.name)}
+                          className="inline-flex p-1.5 text-gray-400 hover:text-[var(--color-danger)] hover:bg-[var(--color-danger-soft)] rounded-[var(--radius-md)] transition"
+                          title="删除自选">
+                          <Minus className="w-4 h-4" />
+                        </button>
                       ) : (
                         <button onClick={() => addWatch(item.tsCode, item.name)}
                           className="inline-flex p-1.5 bg-[var(--color-accent-soft)] text-[var(--color-accent)] rounded-[var(--radius-md)] hover:opacity-80 transition"

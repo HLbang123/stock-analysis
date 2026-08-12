@@ -19,6 +19,8 @@ interface MfThsItem {
   latest?: number;
   net_amount?: number;
   net_d5_amount?: number;
+  buy_elg_amount?: number;
+  buy_elg_amount_rate?: number;
   buy_lg_amount?: number;
   buy_lg_amount_rate?: number;
   buy_md_amount?: number;
@@ -44,7 +46,7 @@ async function syncStockThs(tradeDate: string): Promise<number> {
   const res = await callTushare<MfThsItem>(
     "moneyflow_ths",
     { trade_date: tradeDate },
-    "ts_code,trade_date,name,pct_change,latest,net_amount,net_d5_amount,buy_lg_amount,buy_lg_amount_rate,buy_md_amount,buy_md_amount_rate,buy_sm_amount,buy_sm_amount_rate"
+    "ts_code,trade_date,name,pct_change,latest,net_amount,net_d5_amount,buy_elg_amount,buy_elg_amount_rate,buy_lg_amount,buy_lg_amount_rate,buy_md_amount,buy_md_amount_rate,buy_sm_amount,buy_sm_amount_rate"
   );
   const rows = toRecords<MfThsItem>(res);
   if (rows.length === 0) return 0;
@@ -54,21 +56,23 @@ async function syncStockThs(tradeDate: string): Promise<number> {
     const params: any[] = [];
     for (const r of batch) {
       const idx = params.length;
-      values.push(`($${idx + 1},$${idx + 2},$${idx + 3},$${idx + 4},$${idx + 5},$${idx + 6},$${idx + 7},$${idx + 8},$${idx + 9},$${idx + 10},$${idx + 11},$${idx + 12},$${idx + 13})`);
+      values.push(`($${idx + 1},$${idx + 2},$${idx + 3},$${idx + 4},$${idx + 5},$${idx + 6},$${idx + 7},$${idx + 8},$${idx + 9},$${idx + 10},$${idx + 11},$${idx + 12},$${idx + 13},$${idx + 14},$${idx + 15})`);
       params.push(
         r.ts_code, r.trade_date, r.name ?? null, r.pct_change ?? null, r.latest ?? null,
         r.net_amount ?? null, r.net_d5_amount ?? null,
+        r.buy_elg_amount ?? null, r.buy_elg_amount_rate ?? null,
         r.buy_lg_amount ?? null, r.buy_lg_amount_rate ?? null,
         r.buy_md_amount ?? null, r.buy_md_amount_rate ?? null,
         r.buy_sm_amount ?? null, r.buy_sm_amount_rate ?? null,
       );
     }
     await prisma.$executeRawUnsafe(
-      `INSERT INTO stock_moneyflow_ths (ts_code, trade_date, name, pct_change, latest, net_amount, net_d5_amount, buy_lg_amount, buy_lg_amount_rate, buy_md_amount, buy_md_amount_rate, buy_sm_amount, buy_sm_amount_rate)
+      `INSERT INTO stock_moneyflow_ths (ts_code, trade_date, name, pct_change, latest, net_amount, net_d5_amount, buy_elg_amount, buy_elg_amount_rate, buy_lg_amount, buy_lg_amount_rate, buy_md_amount, buy_md_amount_rate, buy_sm_amount, buy_sm_amount_rate)
        VALUES ${values.join(", ")}
        ON CONFLICT (ts_code, trade_date) DO UPDATE SET
          name=EXCLUDED.name, pct_change=EXCLUDED.pct_change, latest=EXCLUDED.latest,
          net_amount=EXCLUDED.net_amount, net_d5_amount=EXCLUDED.net_d5_amount,
+         buy_elg_amount=EXCLUDED.buy_elg_amount, buy_elg_amount_rate=EXCLUDED.buy_elg_amount_rate,
          buy_lg_amount=EXCLUDED.buy_lg_amount, buy_lg_amount_rate=EXCLUDED.buy_lg_amount_rate,
          buy_md_amount=EXCLUDED.buy_md_amount, buy_md_amount_rate=EXCLUDED.buy_md_amount_rate,
          buy_sm_amount=EXCLUDED.buy_sm_amount, buy_sm_amount_rate=EXCLUDED.buy_sm_amount_rate`,

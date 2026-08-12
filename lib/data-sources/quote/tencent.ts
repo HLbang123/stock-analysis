@@ -37,6 +37,8 @@ export async function fetchTencentQuote(symbol: string, signal: AbortSignal): Pr
       low: parseFloat(data[34]),
       volume: parseInt(data[36]) || 0,
       amount: parseFloat(data[37]) || 0,
+      // 字段38 = 换手率(%)（腾讯 qt 自带，盘中实时）
+      turnover: parseFloat(data[38]) || undefined,
       updateTime,
     });
   } catch {

@@ -158,15 +158,16 @@ export function AiChat({ currentProfile, selectedCode, watchlist, result, deepSt
       const db = tushare.dailyBasic?.[0];
       const fi = tushare.finaIndicator?.[0];
       const hk = tushare.hkHold?.[0];
-      if (db?.pe_ttm !== undefined) parts.push(`PE ${db.pe_ttm.toFixed(1)}`);
-      if (db?.pb !== undefined) parts.push(`PB ${db.pb.toFixed(2)}`);
-      if (fi?.roe !== undefined) parts.push(`ROE ${fi.roe.toFixed(1)}%`);
-      if (fi?.or_yoy !== undefined) parts.push(`营收${fi.or_yoy > 0 ? '+' : ''}${fi.or_yoy.toFixed(1)}%`);
-      if (db?.total_mv !== undefined) {
+      // 注意：tushare 缺失字段返回 null 而非 undefined，必须用 != null 兜住（否则 null.toFixed 崩溃）
+      if (db?.pe_ttm != null) parts.push(`PE ${db.pe_ttm.toFixed(1)}`);
+      if (db?.pb != null) parts.push(`PB ${db.pb.toFixed(2)}`);
+      if (fi?.roe != null) parts.push(`ROE ${fi.roe.toFixed(1)}%`);
+      if (fi?.or_yoy != null) parts.push(`营收${fi.or_yoy > 0 ? '+' : ''}${fi.or_yoy.toFixed(1)}%`);
+      if (db?.total_mv != null) {
         const yi = db.total_mv / 10000;
         parts.push(`市值${yi >= 1 ? yi.toFixed(1) + '亿' : db.total_mv.toFixed(0) + '万'}`);
       }
-      if (hk?.hold_ratio !== undefined) parts.push(`北向${hk.hold_ratio.toFixed(2)}%`);
+      if (hk?.hold_ratio != null) parts.push(`北向${hk.hold_ratio.toFixed(2)}%`);
       if (parts.length > 0) block += `\n基本面：${parts.join(' | ')}`;
       const tlLine = formatTopListForChat(tushare);
       if (tlLine) block += `\n${tlLine}`;

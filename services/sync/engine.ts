@@ -12,7 +12,7 @@
 
 import { useStockStore } from '@/store';
 import { useAiStore, type AiProfile, type AiAnalysisRecord } from '@/store/ai-store';
-import { useSyncStore } from '@/store/sync-store';
+import { useSyncStore, defaultDeviceName, type SyncDeviceEntry } from '@/store/sync-store';
 import type { Stock, WatchlistGroup } from '@/types';
 import { toast } from 'sonner';
 import {
@@ -20,9 +20,9 @@ import {
   isValidPairCode, sha256Hex, unwrapKeyWithCode, wrapKeyWithCode,
 } from '@/lib/sync-crypto';
 
-/** 快照信封（blob schema v1；加同步内容 → v2 + applyRemoteBlob 按 v 适配） */
-interface SyncBlobV1 {
-  v: 1;
+/** 快照信封（blob v3：多组映射，groups 带 stockCodes、标的无 groupId；v1/v2 兼容读取迁移）。加同步内容 → v4 + applyRemoteBlob 按 v 适配 */
+interface SyncBlobV3 {
+  v: 1 | 2 | 3;
   packedAt: number;
   data: {
     watchlist: Stock[];
@@ -30,6 +30,7 @@ interface SyncBlobV1 {
     profiles: AiProfile[];
     currentProfileId: string;
     history: AiAnalysisRecord[];
+    devices?: SyncDeviceEntry[];
   };
 }
 
@@ -49,46 +50,111 @@ function getKeyBytes(): Uint8Array | null {
   return b64 ? b64decode(b64) : null;
 }
 
-/** 打包当前数据为 JSON（hash 变更检测用） */
+/** 本机在共享清单里的当前条目（含最新同步时间） */
+function selfEntry(): SyncDeviceEntry {
+  const st = useSyncStore.getState();
+  if (!st.deviceId) st.ensureDevice();
+  const s = useSyncStore.getState();
+  return { id: s.deviceId, name: s.deviceName || defaultDeviceName(), lastSyncedAt: Date.now() };
+}
+
+/** 把本机条目 upsert 进清单（存在则更新时间，不存在则追加） */
+function upsertSelf(list: SyncDeviceEntry[], self: SyncDeviceEntry): SyncDeviceEntry[] {
+  const i = list.findIndex((d) => d.id === self.id);
+  if (i >= 0) {
+    const next = [...list];
+    next[i] = self;
+    return next;
+  }
+  return [...list, self];
+}
+
+/** 打包当前数据为 JSON（hash 变更检测用；设备 lastSyncedAt 属易变字段，不算进 hash，防扰动空传） */
 export function packSnapshot(): string | null {
   const s = useStockStore.getState();
   const a = useAiStore.getState();
-  const blob: SyncBlobV1 = {
-    v: 1,
-    packedAt: Date.now(),
+  const now = Date.now();
+  const self = selfEntry();
+  const devices = upsertSelf(useSyncStore.getState().devices, self);
+  // 回写本机条目，弹窗"最近同步"即时刷新（sync-store 不在自动上传订阅里，不会引发回声）
+  useSyncStore.setState({ devices });
+  const blob: SyncBlobV3 = {
+    v: 3,
+    packedAt: now,
     data: {
       watchlist: s.watchlist,
       groups: s.groups,
       profiles: a.profiles,
       currentProfileId: a.currentProfileId,
       history: a.history,
+      devices,
     },
   };
   return JSON.stringify(blob);
 }
 
-/** 应用远端快照（响应式 setState + persist 自动落盘；回声抑制见模块头注释） */
-function applyRemoteBlob(plain: string) {
-  let blob: SyncBlobV1;
+/** hash 用净化副本：packedAt 与设备 lastSyncedAt 都属易变字段，不算进 hash，防扰动空传 */
+function sanitizeForHash(plain: string): string {
   try {
-    blob = JSON.parse(plain) as SyncBlobV1;
+    const o = JSON.parse(plain);
+    o.packedAt = 0;
+    if (Array.isArray(o?.data?.devices)) {
+      o.data.devices = o.data.devices.map((d: SyncDeviceEntry) => ({ ...d, lastSyncedAt: 0 }));
+    }
+    return JSON.stringify(o);
+  } catch {
+    return plain;
+  }
+}
+
+/** 应用远端快照（响应式 setState + persist 自动落盘；回声抑制见模块头注释；v1/v2/v3 兼容，v1/v2 的标的 groupId 迁移进 groups.stockCodes） */
+function applyRemoteBlob(plain: string) {
+  let blob: SyncBlobV3;
+  try {
+    blob = JSON.parse(plain) as SyncBlobV3;
   } catch { return; }
-  if (blob.v !== 1 || !blob.data) return;
+  if ((blob.v !== 1 && blob.v !== 2 && blob.v !== 3) || !blob.data) return;
   const d = blob.data;
   applyingRemote = true;
   try {
-    // 字段规整对齐现有迁移口径（default 组已废弃 → 归位未分组），persist 侧不再重复迁移
+    // 多组映射规整：default 组已废弃 → 删除；v1/v2 标的的 groupId 收集进对应组 stockCodes（与本地 persist 迁移同口径）
+    const groups: WatchlistGroup[] = (Array.isArray(d.groups) ? d.groups : [])
+      .filter((g: any) => g.id !== 'default')
+      .map((g: any) => {
+        const codes: string[] = Array.isArray(g.stockCodes) ? g.stockCodes : [];
+        for (const s of Array.isArray(d.watchlist) ? d.watchlist : []) {
+          // v1/v2 快照的标的带 groupId（v3 已无此字段），按 any 读取做迁移
+          const legacy = s as any;
+          if (legacy.groupId === g.id && s.code && !codes.includes(s.code)) codes.push(s.code);
+        }
+        return { ...g, stockCodes: codes };
+      });
+    const watchlist: Stock[] = (Array.isArray(d.watchlist) ? d.watchlist : []).map((s: any) => {
+      const { groupId, ...rest } = s;
+      return rest;
+    });
     useStockStore.setState({
-      watchlist: (Array.isArray(d.watchlist) ? d.watchlist : []).map((s) => ({
-        ...s, groupId: s.groupId === 'default' ? undefined : s.groupId,
-      })),
-      groups: (Array.isArray(d.groups) ? d.groups : []).filter((g) => g.id !== 'default'),
+      watchlist,
+      groups,
     });
     useAiStore.setState({
       profiles: Array.isArray(d.profiles) ? d.profiles : [],
       currentProfileId: typeof d.currentProfileId === 'string' ? d.currentProfileId : '',
       history: Array.isArray(d.history) ? d.history : [],
     });
+    // 设备清单：远端为主，但本机永远可见；共享清单为名字事实源（被它端改名后本地跟随）
+    if (Array.isArray(d.devices)) {
+      const st = useSyncStore.getState();
+      const remote = d.devices as SyncDeviceEntry[];
+      const self = st.deviceId ? remote.find((x) => x.id === st.deviceId) : undefined;
+      const devices = st.deviceId && !self
+        ? upsertSelf(remote, { id: st.deviceId, name: st.deviceName || defaultDeviceName(), lastSyncedAt: 0 })
+        : remote;
+      useSyncStore.setState({
+        devices,
+        ...(self?.name ? { deviceName: self.name } : {}),
+      });
+    }
   } finally {
     applyingRemote = false;
   }
@@ -136,7 +202,7 @@ export async function upload(force = false): Promise<'ok' | 'conflict' | 'error'
   if (!key) return 'error';
   const plain = packSnapshot();
   if (!plain) return 'error';
-  const hash = await sha256Hex(plain);
+  const hash = await sha256Hex(sanitizeForHash(plain));
   if (!force && hash === lastUploadedHash) return 'ok'; // 内容没变跳过（不同步字段扰动不产生空传）
   if (plain.length > BLOB_VERSION_CAP) {
     useSyncStore.getState().setLastError('数据量超过上限，同步失败');
@@ -196,6 +262,8 @@ export async function redeemPairCode(code: string): Promise<{ ok: boolean; error
     useSyncStore.getState().setIdentity(data.syncId, keyB64, keyHash);
     lastUploadedHash = '';
     await pull();
+    // 拉完立即上传注册本机，原设备才能看到新设备
+    await upload(true);
     return { ok: true };
   } catch {
     return { ok: false, error: '配对码无效或已过期，请在原设备重新生成' };
@@ -240,10 +308,34 @@ export async function disableCloud(): Promise<void> {
   lastUploadedHash = '';
 }
 
+/** 重命名设备（本机或共享清单里任意一台），改名随下次上传同步到所有端 */
+export async function renameDevice(targetId: string, name: string): Promise<void> {
+  const st = useSyncStore.getState();
+  const trimmed = name.trim();
+  if (!trimmed || !st.devices.some((d) => d.id === targetId)) return;
+  const devices = st.devices.map((d) => (d.id === targetId ? { ...d, name: trimmed } : d));
+  useSyncStore.setState(targetId === st.deviceId ? { devices, deviceName: trimmed } : { devices });
+  await upload(true);
+}
+
+/** 从共享清单移除一台设备（本机不可移除）。
+ *  清单是共享数据且所有设备同一把钥匙（零知识，服务器无法区分设备），无法强制踢出同步组：
+ *  被移除设备若仍活跃，下次上传会自行重新注册出现（对清理"不再使用的旧设备"场景正确）。 */
+export async function removeDevice(targetId: string): Promise<void> {
+  const st = useSyncStore.getState();
+  if (!st.enabled || !st.syncId || targetId === st.deviceId) return;
+  const devices = st.devices.filter((d) => d.id !== targetId);
+  useSyncStore.setState({ devices });
+  await upload(true);
+}
+
 /** 引擎初始化（幂等，SyncEngine 组件挂载时调用） */
 export function initSyncEngine() {
   if (initialized) return;
   initialized = true;
+
+  // 首启生成本机设备身份（不依赖是否开启云同步）
+  useSyncStore.getState().ensureDevice();
 
   const scheduleUpload = () => {
     const st = useSyncStore.getState();

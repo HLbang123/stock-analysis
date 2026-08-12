@@ -43,6 +43,8 @@ export async function fetchEastmoneyQuote(symbol: string, signal: AbortSignal): 
       low: Number(d.f45),
       volume: Number(d.f47) || 0,
       amount: Number(d.f48) || 0,
+      // f168 = 换手率(%)（东财自带，盘中实时）
+      turnover: Number(d.f168) || undefined,
       updateTime,
     });
   } catch {

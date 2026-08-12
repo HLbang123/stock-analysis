@@ -22,7 +22,7 @@ export function GroupBar({ selectedId, onSelect, onManage }: Props) {
   const countOf = (id: string) =>
     id === ALL_GROUP_ID
       ? watchlist.length
-      : watchlist.filter(s => s.groupId === id).length;
+      : groups.find(g => g.id === id)?.stockCodes.length ?? 0;
 
   return (
     <div className="bg-white dark:bg-gray-900 rounded-xl p-2 shadow-sm mb-4 flex items-center gap-1.5 overflow-x-auto">

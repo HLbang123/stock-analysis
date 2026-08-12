@@ -1,7 +1,7 @@
 'use client';
 
 /**
- * 自选卡片内「移动到分组」浮层菜单。
+ * 自选卡片内「分组」浮层菜单（多组勾选，复制语义：一个标的可在多个组）。
  * 所有点击 stopPropagation 防卡片跳转；再点一次按钮或选中后关闭。
  */
 
@@ -16,38 +16,33 @@ interface Props {
 }
 
 export function MoveToGroupMenu({ code, onClose, onCreateGroup }: Props) {
-  const { groups, watchlist, moveStockToGroup } = useStockStore();
-  const currentId = watchlist.find(s => s.code === code)?.groupId; // undefined = 未分组
+  const { groups, watchlist, toggleStockGroup } = useStockStore();
+  const inGroups = new Set(
+    groups.filter(g => g.stockCodes.includes(code)).map(g => g.id)
+  );
 
   return (
     <div
       className="absolute right-0 top-9 z-20 w-44 bg-white dark:bg-gray-900 rounded-lg shadow-lg border border-gray-100 dark:border-gray-800 py-1"
       onClick={e => e.stopPropagation()}
     >
-      <p className="px-3 pt-1 pb-1 text-xs text-gray-400">移动到分组</p>
-      <button
-        onClick={() => { moveStockToGroup(code, undefined); onClose(); }}
-        className={cn(
-          'w-full flex items-center justify-between px-3 py-1.5 text-sm hover:bg-gray-50 dark:hover:bg-gray-800 transition',
-          currentId == null ? 'text-blue-600' : 'text-gray-700 dark:text-gray-300',
-        )}
-      >
-        未分组
-        {currentId == null && <Check className="w-4 h-4" />}
-      </button>
+      <p className="px-3 pt-1 pb-1 text-xs text-gray-400">分组（可多选）</p>
       {groups.map(g => (
         <button
           key={g.id}
-          onClick={() => { moveStockToGroup(code, g.id); onClose(); }}
+          onClick={() => { toggleStockGroup(code, g.id); }}
           className={cn(
             'w-full flex items-center justify-between px-3 py-1.5 text-sm hover:bg-gray-50 dark:hover:bg-gray-800 transition',
-            currentId === g.id ? 'text-blue-600' : 'text-gray-700 dark:text-gray-300',
+            inGroups.has(g.id) ? 'text-blue-600' : 'text-gray-700 dark:text-gray-300',
           )}
         >
           {g.name}
-          {currentId === g.id && <Check className="w-4 h-4" />}
+          {inGroups.has(g.id) && <Check className="w-4 h-4" />}
         </button>
       ))}
+      {groups.length === 0 && (
+        <p className="px-3 py-1.5 text-xs text-gray-400">还没有分组</p>
+      )}
       <div className="border-t border-gray-100 dark:border-gray-800 mt-1 pt-1">
         <button
           onClick={() => { onClose(); onCreateGroup(); }}

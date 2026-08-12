@@ -1,7 +1,7 @@
 'use client';
 
 import { useEffect, useState, useMemo } from 'react';
-import { useParams } from 'next/navigation';
+import { useParams, useRouter } from 'next/navigation';
 import { useStockStore } from '@/store';
 import { getRealtimeQuote, getKLineSina, getMinuteData, getChipData } from '@/services/stockApi';
 import { isETF, parseCode } from '@/lib/identify';
@@ -12,8 +12,8 @@ import { formatPrice, formatChange, formatVolume, cn, getAlertLevelColor } from 
 import { buildUpdatedKLines } from '@/lib/stock-helpers';
 import { getJSON, getJSONOr } from '@/services/api';
 import type { StockRpsResp, FuyaoAnomalyResp, FuyaoFundResp, TushareStockDataResp } from '@/types/api';
-import { ArrowLeft, RefreshCw, TrendingUp, Loader2 } from 'lucide-react';
-import Link from 'next/link';
+import { ArrowLeft, RefreshCw, TrendingUp, Loader2, Plus, Minus } from 'lucide-react';
+import { toast } from 'sonner';
 import { KLineChart } from '@/components/KLineChart';
 import { MinuteChart } from '@/components/MinuteChart';
 import { EChart } from '@/components/market/EChart';
@@ -31,6 +31,7 @@ interface AnomalyItem {
 
 export default function StockDetailPage() {
   const params = useParams();
+  const router = useRouter();
   const code = params.code as string;
 
   const { watchlist, addToWatchlist, removeFromWatchlist, alerts } = useStockStore();
@@ -209,9 +210,17 @@ export default function StockDetailPage() {
     <div>
       {/* 顶部导航 */}
       <div className="flex items-center gap-3 mb-4">
-        <Link href="/" className="p-2 hover:bg-gray-100 dark:hover:bg-gray-800 rounded-lg transition">
+        <button
+          onClick={() => {
+            // 有站内历史则返回上一页（扫描/自选/搜索等来源页），直接打开详情（无历史）回首页
+            if (window.history.length > 1) router.back();
+            else router.push('/');
+          }}
+          className="p-2 hover:bg-gray-100 dark:hover:bg-gray-800 rounded-lg transition"
+          title="返回"
+        >
           <ArrowLeft className="w-5 h-5" />
-        </Link>
+        </button>
         <div className="flex-1">
           <h1 className="text-xl font-bold text-gray-900 dark:text-white">{stockName}</h1>
           <p className="text-sm text-gray-500">{code}</p>
@@ -224,12 +233,15 @@ export default function StockDetailPage() {
           <RefreshCw className="w-5 h-5" />
         </button>
         {stock ? (
-          <Button size="sm" variant="secondary" className="text-[var(--color-danger)]" onClick={() => removeFromWatchlist(code)}>
-            移除自选
-          </Button>
+          <button
+            onClick={() => { removeFromWatchlist(code); toast.success(`已删除 ${stockName}`); }}
+            className="p-2 text-gray-400 hover:text-[var(--color-danger)] hover:bg-[var(--color-danger-soft)] rounded-lg transition"
+            title="删除自选"
+          >
+            <Minus className="w-5 h-5" />
+          </button>
         ) : (
-          <Button
-            size="sm"
+          <button
             onClick={() => {
               if (quote) {
                 const parsed = parseCode(code);
@@ -239,11 +251,14 @@ export default function StockDetailPage() {
                   market: parsed?.market || 'sh',
                   pureCode: parsed?.pureCode || code.replace(/^[a-z]+/, ''),
                 });
+                toast.success(`已添加 ${quote.name}`);
               }
             }}
+            className="p-2 text-[var(--color-accent)] hover:bg-[var(--color-accent-soft)] rounded-lg transition"
+            title="添加自选"
           >
-            添加自选
-          </Button>
+            <Plus className="w-5 h-5" />
+          </button>
         )}
       </div>
 

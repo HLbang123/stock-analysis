@@ -11,8 +11,8 @@ import { useEffect, useState } from 'react';
 import { Modal } from '@/components/ui/modal';
 import { cn } from '@/lib/utils';
 import { toast } from 'sonner';
-import { useSyncStore } from '@/store/sync-store';
-import { enableCloud, redeemPairCode, createPairCode, disableCloud, upload } from '@/services/sync/engine';
+import { useSyncStore, type SyncDeviceEntry } from '@/store/sync-store';
+import { enableCloud, redeemPairCode, createPairCode, disableCloud, upload, pull, renameDevice, removeDevice } from '@/services/sync/engine';
 import { isValidPairCode } from '@/lib/sync-crypto';
 
 function fmtTime(ts: number | null): string {
@@ -22,13 +22,27 @@ function fmtTime(ts: number | null): string {
   return `${pad(d.getMonth() + 1)}-${pad(d.getDate())} ${pad(d.getHours())}:${pad(d.getMinutes())}`;
 }
 
+/** 设备最近同步相对时间（弹窗内打开时计算，足够用） */
+function fmtRecent(ts: number): string {
+  if (!ts) return '尚未同步';
+  const diff = Date.now() - ts;
+  if (diff < 60_000) return '刚刚';
+  if (diff < 3600_000) return `${Math.floor(diff / 60_000)} 分钟前`;
+  if (diff < 86_400_000) return `${Math.floor(diff / 3600_000)} 小时前`;
+  return fmtTime(ts);
+}
+
 export function SyncModal({ open, onClose }: { open: boolean; onClose: () => void }) {
-  const { enabled, autoSync, lastSyncAt, lastError } = useSyncStore();
+  const { enabled, autoSync, lastSyncAt, lastError, devices, deviceId, deviceName } = useSyncStore();
   const [busy, setBusy] = useState(false);
   const [redeemInput, setRedeemInput] = useState('');
   // 配对码展示态
   const [pair, setPair] = useState<{ code: string; expiresAt: number } | null>(null);
   const [remainSec, setRemainSec] = useState(0);
+  // 设备行内改名
+  const [editingId, setEditingId] = useState<string | null>(null);
+  const [editName, setEditName] = useState('');
+  const [busyRefresh, setBusyRefresh] = useState(false);
 
   // 配对码倒计时
   useEffect(() => {
@@ -96,6 +110,37 @@ export function SyncModal({ open, onClose }: { open: boolean; onClose: () => voi
     toast.success('已关闭云同步，本地数据保留');
   };
 
+  const doRefresh = async () => {
+    setBusyRefresh(true);
+    await pull();
+    setBusyRefresh(false);
+  };
+
+  const startRename = (d: SyncDeviceEntry) => {
+    setEditingId(d.id);
+    setEditName(d.name);
+  };
+
+  const saveRename = async () => {
+    if (!editingId) return;
+    const id = editingId;
+    setEditingId(null);
+    if (!editName.trim()) return;
+    await renameDevice(id, editName);
+  };
+
+  const doRemove = async (d: SyncDeviceEntry) => {
+    await removeDevice(d.id);
+    toast.success('已移除');
+  };
+
+  // 设备清单兜底：开启后还没上传过（devices 为空）时，至少展示本机
+  const displayDevices: SyncDeviceEntry[] = devices.length
+    ? devices
+    : deviceId
+      ? [{ id: deviceId, name: deviceName || '本机', lastSyncedAt: lastSyncAt || 0 }]
+      : [];
+
   return (
     <Modal title="云同步" onClose={onClose} variant="center" maxWidth="sm:max-w-md">
       <div className="p-5 space-y-4">
@@ -157,6 +202,70 @@ export function SyncModal({ open, onClose }: { open: boolean; onClose: () => voi
               <span className="font-medium text-gray-900 dark:text-white">{fmtTime(lastSyncAt)}</span>
             </div>
             {lastError && <p className="text-xs text-[var(--color-warning)]">{lastError}</p>}
+
+            {/* 已连接设备：共享清单随快照同步，点名字可改名，本机置顶标识 */}
+            <div>
+              <div className="flex items-center justify-between mb-1">
+                <span className="text-sm text-gray-500">已连接设备（{displayDevices.length}）</span>
+                <button
+                  onClick={doRefresh}
+                  disabled={busyRefresh}
+                  className="text-xs text-[var(--color-accent)] hover:underline disabled:opacity-50"
+                >
+                  {busyRefresh ? '刷新中...' : '刷新'}
+                </button>
+              </div>
+              <div className="rounded-lg border border-gray-100 dark:border-gray-800 overflow-hidden">
+                {displayDevices.map((d) => (
+                  <div
+                    key={d.id}
+                    className={cn(
+                      'flex items-center justify-between px-3 py-2',
+                      d.id === deviceId && 'bg-gray-50 dark:bg-gray-800/40'
+                    )}
+                  >
+                    <div className="min-w-0 flex-1">
+                      {editingId === d.id ? (
+                        <input
+                          value={editName}
+                          autoFocus
+                          maxLength={20}
+                          onChange={(e) => setEditName(e.target.value)}
+                          onBlur={saveRename}
+                          onKeyDown={(e) => {
+                            if (e.key === 'Enter') saveRename();
+                            if (e.key === 'Escape') setEditingId(null);
+                          }}
+                          className="w-full px-1.5 py-0.5 rounded border border-gray-200 dark:border-gray-700 bg-transparent text-sm text-gray-800 dark:text-gray-200"
+                        />
+                      ) : (
+                        <button
+                          onClick={() => startRename(d)}
+                          className="flex items-center gap-1.5 text-sm font-medium text-gray-800 dark:text-gray-200 hover:text-[var(--color-accent)]"
+                        >
+                          <span className="truncate">{d.name || '未命名设备'}</span>
+                          {d.id === deviceId && (
+                            <span className="text-[10px] px-1 py-px rounded bg-[var(--color-accent)]/10 text-[var(--color-accent)]">
+                              本机
+                            </span>
+                          )}
+                        </button>
+                      )}
+                      <p className="text-xs text-gray-400 mt-0.5">最近同步 · {fmtRecent(d.lastSyncedAt)}</p>
+                    </div>
+                    {d.id !== deviceId && editingId !== d.id && (
+                      <button
+                        onClick={() => doRemove(d)}
+                        title="移除后若该设备继续使用会重新出现"
+                        className="ml-2 shrink-0 text-xs text-gray-400 hover:text-[var(--color-danger)]"
+                      >
+                        移除
+                      </button>
+                    )}
+                  </div>
+                ))}
+              </div>
+            </div>
 
             <div className="flex items-center justify-between rounded-lg px-3 py-2 bg-gray-50 dark:bg-gray-800/40">
               <div>

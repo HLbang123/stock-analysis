@@ -98,6 +98,7 @@ export async function GET(request: NextRequest) {
       take: 30,
       select: {
         tradeDate: true, netAmount: true, netD5Amount: true,
+        buyElgAmount: true, buyElgRate: true,
         buyLgAmount: true, buyLgRate: true, buyMdRate: true, buySmRate: true,
       },
     });

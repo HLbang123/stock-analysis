@@ -51,11 +51,13 @@ export function buildQuoteResponse(args: {
   low: number;
   volume: number;
   amount: number;
+  /** 换手率(%)，行情源自带（腾讯/东财有，新浪无）；深度分析盘中注入用 */
+  turnover?: number;
   /** 行情自带时间戳（YYYY-MM-DD HH:mm）；缺省回退服务器当前时间。
    *  非交易日跑分析时行情日期 ≠ 今天，prompt 靠它标注数据归属日，防 LLM 误述为"今日"。 */
   updateTime?: string;
 }) {
-  const { symbol, name, price, preClose, open, high, low, volume, amount, updateTime } = args;
+  const { symbol, name, price, preClose, open, high, low, volume, amount, turnover, updateTime } = args;
   const change = price - preClose;
   const round2 = (n: number) => Math.round(n * 100) / 100;
   return {
@@ -70,6 +72,7 @@ export function buildQuoteResponse(args: {
     open,
     volume,
     amount,
+    turnover,
     updateTime: updateTime || beijingDateTimeStr(),
   };
 }

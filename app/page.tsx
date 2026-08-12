@@ -155,19 +155,22 @@ export default function HomePage() {
     });
   }, [alerts]);
 
-  // 自选分组过滤：标的 → 组 id（不在自选里 = 未分组，只在「全部」下出现，与自选页口径一致）
-  const groupOfCode = useMemo(() => {
-    const m = new Map<string, string | undefined>();
-    watchlist.forEach(s => m.set(s.code, s.groupId));
+  // 自选分组过滤：标的 → 所属组集合（多组映射；不在任何组 = 只在「全部」下出现，与自选页口径一致）
+  const groupIdsOfCode = useMemo(() => {
+    const m = new Map<string, Set<string>>();
+    groups.forEach(g => g.stockCodes.forEach(c => {
+      if (!m.has(c)) m.set(c, new Set());
+      m.get(c)!.add(g.id);
+    }));
     return m;
-  }, [watchlist]);
+  }, [groups]);
   const visibleAlerts = selectedGroupId === ALL_GROUP_ID
     ? groupedAlerts
-    : groupedAlerts.filter(g => groupOfCode.get(g.stockCode) === selectedGroupId);
+    : groupedAlerts.filter(g => groupIdsOfCode.get(g.stockCode)?.has(selectedGroupId));
   const alertCountOf = (id: string) =>
     id === ALL_GROUP_ID
       ? groupedAlerts.length
-      : groupedAlerts.filter(g => groupOfCode.get(g.stockCode) === id).length;
+      : groupedAlerts.filter(g => groupIdsOfCode.get(g.stockCode)?.has(id)).length;
 
   // 选中组被删除时自动回退「全部」
   useEffect(() => {

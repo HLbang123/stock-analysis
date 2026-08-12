@@ -449,6 +449,8 @@ model StockMoneyflowThs {
   latest        Float?
   netAmount     Float?  @map("net_amount")          // 资金净流入(万元)
   netD5Amount   Float?  @map("net_d5_amount")       // 5日主力净额(万元)
+  buyElgAmount  Float?  @map("buy_elg_amount")      // 超大单净流入(万元)
+  buyElgRate    Float?  @map("buy_elg_amount_rate") // 超大单净流入占比(%)
   buyLgAmount   Float?  @map("buy_lg_amount")       // 大单净流入(万元)
   buyLgRate     Float?  @map("buy_lg_amount_rate")  // 大单净流入占比(%)
   buyMdAmount   Float?  @map("buy_md_amount")
