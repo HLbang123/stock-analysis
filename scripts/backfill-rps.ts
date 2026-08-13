@@ -81,10 +81,12 @@ async function main() {
   const days = Math.min(parseInt(daysArg || "80") || 80, 2400);
 
   // 1. 取最近 (days + 250) 个交易日，保证最老一天的 RPS(250) 有前收盘。
-  //    必须用"子查询 LIMIT 强制索引 top-N"写法：直接 DISTINCT+ORDER BY+LIMIT 在 1080 万行上
-  //    被 planner 选成全表扫描（实测 266s），子查询 LIMIT 让 PG 走 tradeDate 索引（实测 0.3s）。
+  //    语义必须是 DISTINCT 在外：LIMIT 是行数不是日期数，daily_bars 每交易日 ~5769 行，
+  //    子查询 LIMIT 2600 只覆盖最新一天（实测 DISTINCT 后仅 1 行，08-13 踩坑）。
+  //    直接版在 1080 万行上被 planner 选全表扫描（实测 266s）——这是每次运行的一次性成本
+  //    （占链条总时长 <10%），可接受；不折腾索引提示（PG 无 INDEX hint，REINDEX 需停机窗口）。
   const dateRows: { tradeDate: string }[] = await prisma.$queryRawUnsafe(
-    `SELECT DISTINCT "tradeDate" FROM (SELECT "tradeDate" FROM daily_bars ORDER BY "tradeDate" DESC LIMIT $1) t`,
+    `SELECT DISTINCT "tradeDate" FROM daily_bars ORDER BY "tradeDate" DESC LIMIT $1`,
     days + 250
   );
   const dates = dateRows.map((r) => r.tradeDate); // 新→旧
