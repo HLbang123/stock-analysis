@@ -13,7 +13,7 @@ import { Input, Select } from '@/components/ui/input';
 import { streamChatDirectChat } from '@/services/chat/browser-chat';
 import { isDirectConnectionError } from '@/services/llm/browser-client';
 import type { TScorePanelResult } from '@/components/ai/TScorePanel';
-import type { DeepStructured } from '@/services/deep-analysis/engine';
+import type { DeepStructured } from '@/services/deep-analysis/types';
 
 interface Props {
   currentProfile: AiProfile;
@@ -97,7 +97,14 @@ export function AiChat({ currentProfile, selectedCode, watchlist, result, deepSt
   const [streamingMsg, setStreamingMsg] = useState<{ content: string; reasoning?: string } | null>(null);
   const streamBufRef = useRef<{ content: string; reasoning: string }>({ content: '', reasoning: '' });
 
+  // 仅在有新消息/流式输出时滚到底；挂载恢复历史会话时不滚（store 里留了很多历史时，
+  // 切回页面会被拽到底部，08-13 用户反馈）
+  const scrollMountedRef = useRef(false);
   useEffect(() => {
+    if (!scrollMountedRef.current) {
+      scrollMountedRef.current = true;
+      return;
+    }
     chatEndRef.current?.scrollIntoView({ behavior: 'smooth' });
   }, [chatMessages, streamingMsg]);
 

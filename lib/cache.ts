@@ -68,47 +68,6 @@ export function setCache<T>(dataType: string, data: T, params?: Record<string, a
 }
 
 /**
- * 包裹异步函数，添加 TTL 缓存
- *
- * 行为：
- * 1. 缓存新鲜 → 直接返回
- * 2. 缓存软过期 → 异步获取新数据，成功则更新缓存；同时返回旧数据
- * 3. 无缓存 → 获取并缓存
- * 4. 获取失败 + 有软过期缓存 → 降级返回旧数据
- */
-export function withCache<T>(
-  dataType: string,
-  fn: (...args: any[]) => Promise<T>,
-  keyBuilder?: (...args: any[]) => Record<string, any>
-): (...args: any[]) => Promise<{ data: T; fromCache: boolean }> {
-  return async (...args: any[]): Promise<{ data: T; fromCache: boolean }> => {
-    const params = keyBuilder ? keyBuilder(...args) : {};
-
-    // 1. 检查新鲜缓存
-    const cached = getCached<T>(dataType, params);
-    if (cached && !cached.isStale) {
-      return { data: cached.data, fromCache: true };
-    }
-
-    // 2. 软过期或未命中 → 请求新数据
-    try {
-      const fresh = await fn(...args);
-      if (fresh !== null && fresh !== undefined) {
-        setCache(dataType, fresh, params);
-      }
-      return { data: fresh, fromCache: false };
-    } catch (e) {
-      // 3. 请求失败 → 降级到软过期缓存
-      if (cached) {
-        console.warn(`[Cache] 获取失败，降级使用过期缓存: ${dataType}`, e);
-        return { data: cached.data, fromCache: true };
-      }
-      throw e;
-    }
-  };
-}
-
-/**
  * 清理所有硬过期缓存
  */
 export function cleanupExpired(): void {

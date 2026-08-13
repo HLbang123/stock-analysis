@@ -29,20 +29,3 @@ export function Badge({ children, variant = "default", className }: BadgeProps) 
     </span>
   );
 }
-
-/** 等级标识用色点而非 emoji（跨平台渲染一致，与首页信号行视觉语言统一） */
-const LEVEL_DOT: Record<AlertLevel, string> = {
-  CRITICAL: "bg-[var(--color-danger)]",
-  WARNING: "bg-[var(--color-warning)]",
-  INFO: "bg-[var(--color-accent)]",
-};
-
-export function AlertLevelBadge({ level }: { level: AlertLevel }) {
-  const labels = { CRITICAL: "严重", WARNING: "警告", INFO: "提示" };
-  return (
-    <Badge variant={level}>
-      <span className={cn("w-1.5 h-1.5 rounded-full mr-1.5", LEVEL_DOT[level])} />
-      {labels[level]}
-    </Badge>
-  );
-}

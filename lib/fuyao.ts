@@ -201,24 +201,6 @@ export async function getHistoricalK(
   });
 }
 
-// ===== 估值快照 =====
-
-export interface ValuationItem {
-  thscode: string;
-  ticker: string;
-  name: string | null;
-  pe_ttm: number | null;
-  pe_mrq: number | null;
-  pb_mrq: number | null;
-  ps_ttm: number | null;
-  pcf_ttm: number | null;
-}
-
-/** A 股估值快照（实时，逗号分隔 thscodes，单次≤100只）。与 tushare daily_basic(EOD) 互补：盘中可取实时估值 */
-export async function getValuationSnapshot(thscodes: string): Promise<{ timestamp: number; total: number; item: ValuationItem[] }> {
-  return fuyaoGet("/api/a-share/valuations/snapshot", { thscodes });
-}
-
 // ===== 同花顺指数（概念/行业） =====
 
 export interface ThsIndexItem {

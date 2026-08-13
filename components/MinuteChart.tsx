@@ -30,14 +30,12 @@ interface MinuteChartProps {
   data: MinutePoint[];
   prevClose: number;
   height?: number;
-  alertMarkers?: { index: number; number: number; level: string }[];
 }
 
 export function MinuteChart({
   data,
   prevClose,
   height = 350,
-  alertMarkers = [],
 }: MinuteChartProps) {
   const containerRef = useRef<HTMLDivElement>(null);
   const chartRef = useRef<IChartApi | null>(null);
@@ -134,40 +132,11 @@ export function MinuteChart({
       avgSeries.setData(avgData);
     }
 
-    // 预警标记
-    if (alertMarkers.length > 0) {
-      const seenTimes = new Set<number>();
-      const markerPoints: { time: Time; value: number }[] = [];
-      alertMarkers.forEach(m => {
-        const point = data[m.index];
-        if (!point) return;
-        const t = toTime(point.time) as number;
-        if (seenTimes.has(t)) return; // 去重：同一时刻只保留一个标记
-        seenTimes.add(t);
-        markerPoints.push({
-          time: t as Time,
-          value: point.price * 1.005,
-        });
-      });
-      if (markerPoints.length > 0) {
-        // 按时间升序排列（lightweight-charts 要求）
-        markerPoints.sort((a, b) => (a.time as number) - (b.time as number));
-        const markerSeries = chart.addSeries(LineSeries, {
-          lineVisible: false,
-          lastValueVisible: false,
-          priceLineVisible: false,
-          color: '#ef4444',
-          pointMarkersVisible: true,
-        });
-        markerSeries.setData(markerPoints);
-      }
-    }
-
     chart.timeScale().fitContent();
     chartRef.current = chart;
 
     return chart;
-  }, [data, prevClose, height, resolvedTheme, alertMarkers]);
+  }, [data, prevClose, height, resolvedTheme]);
 
   useEffect(() => {
     const chart = initChart();

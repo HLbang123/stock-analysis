@@ -8,11 +8,12 @@ import { ALERT_RULES, checkAllRules, isBuyRule, REFERENCE_RULE_IDS, buyRuleWeigh
 import { AlertRecord } from '@/types';
 import { formatTime, cn } from '@/lib/utils';
 import { buildUpdatedKLines } from '@/lib/stock-helpers';
-import { AlertTriangle, Trash2, BarChart3, Cloud } from 'lucide-react';
+import { AlertTriangle, Trash2, BarChart3, Cloud, Share2 } from 'lucide-react';
 import { UpdateLog } from '@/components/UpdateLog';
 import { AlertRulesModal } from '@/components/AlertRulesModal';
 import { ReviewModal } from '@/components/ReviewModal';
 import { SyncModal } from '@/components/SyncModal';
+import { ShareModal } from '@/components/ShareModal';
 import { useSyncStore } from '@/store/sync-store';
 import { Button } from '@/components/ui/button';
 import { PageHeader } from '@/components/ui/page-header';
@@ -39,13 +40,9 @@ const LEVEL_RANK: Record<string, number> = { CRITICAL: 0, WARNING: 1, INFO: 2 };
  *  或 R03 等单信号规则）染绿整卡；弱卖出提醒（巨量异动/涨停封板/跌破5日线等）不染卡——
  *  行内绿条已足以提示，弱提醒不应压过买入共振 */
 const groupTone = (group: { alerts: AlertRecord[] }): string => {
-  const active = group.alerts.filter(a => !a.isExpired);
-  if (active.length === 0) {
-    return 'bg-gray-50 dark:bg-gray-800/40 border-gray-200 dark:border-gray-700 opacity-50';
-  }
-  const hasStrongSell = active.some(a => isStrongSellAlert(a.ruleId, a.extraData));
+  const hasStrongSell = group.alerts.some(a => isStrongSellAlert(a.ruleId, a.extraData));
   if (hasStrongSell) return 'bg-[var(--color-down-soft)] border-[var(--color-down-border)]';
-  const hasBuy = active.some(a => isBuyRule(a.ruleId) && !REFERENCE_RULE_IDS.has(a.ruleId));
+  const hasBuy = group.alerts.some(a => isBuyRule(a.ruleId) && !REFERENCE_RULE_IDS.has(a.ruleId));
   if (hasBuy) return 'bg-[var(--color-up-soft)] border-[var(--color-up-border)]';
   // 仅弱卖出提醒 / 参考级弱提醒（R13/R14 筹码峰）
   return 'bg-white dark:bg-gray-900 border-gray-200 dark:border-gray-700';
@@ -61,6 +58,7 @@ export default function HomePage() {
   const [showRules, setShowRules] = useState(false);
   const [showReview, setShowReview] = useState(false);
   const [showSync, setShowSync] = useState(false);
+  const [showShare, setShowShare] = useState(false);
   // 周报未读角标：周五 cron 更新后本地记"上次已读的 generatedAt"，新的周报生成就亮角标，点开即清
   const [weeklyLatestAt, setWeeklyLatestAt] = useState<string>('');
   const [weeklyUnread, setWeeklyUnread] = useState(false);
@@ -97,7 +95,7 @@ export default function HomePage() {
     });
   };
 
-  // 分组预警
+  // 分组预警（首页只展示有效预警；过期预警属历史，去标的详情页「历史预警」查看）
   const groupedAlerts = useMemo(() => {
     const groups = new Map<string, AlertRecord[]>();
     alerts.forEach(alert => {
@@ -108,51 +106,51 @@ export default function HomePage() {
       groups.get(key)!.push(alert);
     });
 
-    return Array.from(groups.entries()).map(([stockCode, stockAlerts]) => {
-      const activeAlerts = stockAlerts.filter(a => !a.isExpired);
-      const effectiveAlerts = activeAlerts.length > 0 ? activeAlerts : stockAlerts;
-      // 有效级别：R01/R02 阶梯按主信号 severity 分级（巨量异动等弱提醒不再以 CRITICAL 排顶）
-      const effLevel = (a: AlertRecord) => severityAlertLevel(a.ruleId, a.extraData, a.alertLevel);
-      const worstLevel = effectiveAlerts.some(a => effLevel(a) === 'CRITICAL')
-        ? 'CRITICAL'
-        : effectiveAlerts.some(a => effLevel(a) === 'WARNING')
-          ? 'WARNING'
-          : 'INFO';
-      const buyAlerts = stockAlerts.filter(a => !a.isExpired && isBuyRule(a.ruleId) && !REFERENCE_RULE_IDS.has(a.ruleId));
-      const sellAlerts = stockAlerts.filter(a => !isBuyRule(a.ruleId) && !REFERENCE_RULE_IDS.has(a.ruleId));
-      const referenceAlerts = stockAlerts.filter(a => REFERENCE_RULE_IDS.has(a.ruleId));
-      const buyScore = buyAlerts.reduce((s, a) => s + buyRuleWeight(a.ruleId), 0);
-      // 量能维度：至少一条买入信号为"放量确认" → 档位 +1
-      const buyVolumeBoost = buyAlerts.some(hasVolumeConfirmed) ? 1 : 0;
-      const tierScore = buyScore + buyVolumeBoost;
-      // 卡面结论方向：有强卖出信号时卖出优先（与 groupTone 同口径），此时头部不挂看多徽章，避免红绿打架；
-      // 弱卖出提醒（巨量异动/涨停封板等）不摘徽章——不应对买入共振有一票否决权
-      const hasStrongSell = activeAlerts.some(a => isStrongSellAlert(a.ruleId, a.extraData));
-      return {
-        stockCode,
-        stockName: stockAlerts[0].stockName,
-        alerts: stockAlerts,
-        buyAlerts,
-        sellAlerts,
-        referenceAlerts,
-        buyResonance: buyAlerts.length >= 2,
-        buyScore,
-        buyVolumeBoost,
-        tierScore,
-        buyTier: tierScore > 0 && !hasStrongSell ? buyTier(tierScore) : null,
-        worstLevel,
-        latestTime: Math.max(...stockAlerts.map(a => a.triggeredAt))
-      };
-    }).sort((a, b) => {
-      // 已消失的信号组沉底；有效组按严重度(CRITICAL>WARNING>INFO) → 买入强度 → 最新时间
-      const aGone = a.alerts.every(x => x.isExpired);
-      const bGone = b.alerts.every(x => x.isExpired);
-      if (aGone !== bGone) return aGone ? 1 : -1;
-      const lr = (LEVEL_RANK[a.worstLevel] ?? 3) - (LEVEL_RANK[b.worstLevel] ?? 3);
-      if (lr !== 0) return lr;
-      if (a.tierScore !== b.tierScore) return b.tierScore - a.tierScore;
-      return b.latestTime - a.latestTime;
-    });
+    return Array.from(groups.entries())
+      .map(([stockCode, stockAlerts]) => {
+        const activeAlerts = stockAlerts.filter(a => !a.isExpired);
+        if (activeAlerts.length === 0) return null;
+        // 有效级别：R01/R02 阶梯按主信号 severity 分级（巨量异动等弱提醒不再以 CRITICAL 排顶）
+        const effLevel = (a: AlertRecord) => severityAlertLevel(a.ruleId, a.extraData, a.alertLevel);
+        const worstLevel = activeAlerts.some(a => effLevel(a) === 'CRITICAL')
+          ? 'CRITICAL'
+          : activeAlerts.some(a => effLevel(a) === 'WARNING')
+            ? 'WARNING'
+            : 'INFO';
+        const buyAlerts = activeAlerts.filter(a => isBuyRule(a.ruleId) && !REFERENCE_RULE_IDS.has(a.ruleId));
+        const sellAlerts = activeAlerts.filter(a => !isBuyRule(a.ruleId) && !REFERENCE_RULE_IDS.has(a.ruleId));
+        const referenceAlerts = activeAlerts.filter(a => REFERENCE_RULE_IDS.has(a.ruleId));
+        const buyScore = buyAlerts.reduce((s, a) => s + buyRuleWeight(a.ruleId), 0);
+        // 量能维度：至少一条买入信号为"放量确认" → 档位 +1
+        const buyVolumeBoost = buyAlerts.some(hasVolumeConfirmed) ? 1 : 0;
+        const tierScore = buyScore + buyVolumeBoost;
+        // 卡面结论方向：有强卖出信号时卖出优先（与 groupTone 同口径），此时头部不挂看多徽章，避免红绿打架；
+        // 弱卖出提醒（巨量异动/涨停封板等）不摘徽章——不应对买入共振有一票否决权
+        const hasStrongSell = activeAlerts.some(a => isStrongSellAlert(a.ruleId, a.extraData));
+        return {
+          stockCode,
+          stockName: stockAlerts[0].stockName,
+          alerts: activeAlerts,
+          buyAlerts,
+          sellAlerts,
+          referenceAlerts,
+          buyResonance: buyAlerts.length >= 2,
+          buyScore,
+          buyVolumeBoost,
+          tierScore,
+          buyTier: tierScore > 0 && !hasStrongSell ? buyTier(tierScore) : null,
+          worstLevel,
+          latestTime: Math.max(...activeAlerts.map(a => a.triggeredAt))
+        };
+      })
+      .filter((g): g is NonNullable<typeof g> => g !== null)
+      .sort((a, b) => {
+        // 有效组按严重度(CRITICAL>WARNING>INFO) → 买入强度 → 最新时间
+        const lr = (LEVEL_RANK[a.worstLevel] ?? 3) - (LEVEL_RANK[b.worstLevel] ?? 3);
+        if (lr !== 0) return lr;
+        if (a.tierScore !== b.tierScore) return b.tierScore - a.tierScore;
+        return b.latestTime - a.latestTime;
+      });
   }, [alerts]);
 
   // 自选分组过滤：标的 → 所属组集合（多组映射；不在任何组 = 只在「全部」下出现，与自选页口径一致）
@@ -184,25 +182,20 @@ export default function HomePage() {
   // 单条预警行渲染：左侧色条按方向着色（买红/卖绿/参考黄），弱化 emoji；
   // 行底用半透明白，叠在整卡着色上保持可读
   const renderAlertRow = (alert: AlertRecord) => {
-    const toneBar = alert.isExpired
-      ? 'bg-gray-300 dark:bg-gray-600'
-      : REFERENCE_RULE_IDS.has(alert.ruleId)
-        ? 'bg-[var(--color-warning)]'
-        : isBuyRule(alert.ruleId)
-          ? 'bg-[var(--color-up)]'
-          : 'bg-[var(--color-down)]';
+    const toneBar = REFERENCE_RULE_IDS.has(alert.ruleId)
+      ? 'bg-[var(--color-warning)]'
+      : isBuyRule(alert.ruleId)
+        ? 'bg-[var(--color-up)]'
+        : 'bg-[var(--color-down)]';
     // 文案里烘焙的方向 emoji（🔴/🟢/🟡/⚠️）与左侧色条、整卡着色重复，渲染时剥掉
     const message = alert.alertMessage.replace(/^(🔴|🟢|🟡|🔵|⚠️)\s*/, '');
     return (
       <div
         key={alert.id}
-        className={cn(
-          "flex items-stretch gap-2.5 text-sm py-2 px-2.5 rounded-[var(--radius-md)]",
-          alert.isExpired ? "bg-white/40 dark:bg-gray-900/30 opacity-60" : "bg-white/70 dark:bg-gray-900/50"
-        )}
+        className="flex items-stretch gap-2.5 text-sm py-2 px-2.5 rounded-[var(--radius-md)] bg-white/70 dark:bg-gray-900/50"
       >
         <span className={cn("w-1 rounded-full shrink-0", toneBar)} />
-        <div className={cn("flex-1 min-w-0", alert.isExpired && "line-through")}>
+        <div className="flex-1 min-w-0">
           <p className="text-gray-800 dark:text-gray-200">{message}</p>
           <p className="text-xs text-gray-500 dark:text-gray-400 mt-0.5">建议：{alert.suggestion}</p>
         </div>
@@ -395,6 +388,14 @@ export default function HomePage() {
               <Cloud className="w-4 h-4" />
               同步
             </button>
+            <button
+              onClick={() => setShowShare(true)}
+              className="flex items-center gap-1 px-3 py-1.5 text-sm text-gray-600 dark:text-gray-300 hover:bg-gray-100 dark:hover:bg-gray-800 rounded-[var(--radius-md)] transition"
+              title="分享自选给群友"
+            >
+              <Share2 className="w-4 h-4" />
+              分享
+            </button>
             {alerts.length > 0 && (
               <button
                 onClick={() => clearAllAlerts()}
@@ -497,11 +498,8 @@ export default function HomePage() {
                   <div className="flex items-center justify-between gap-2">
                     <div className="flex items-center gap-2 min-w-0">
                       <h3 className="font-semibold text-gray-900 dark:text-white truncate">{group.stockName}</h3>
-                      {group.alerts.some(a => !a.isExpired && a.triggeredAt > Date.now() - 5000) && (
+                      {group.alerts.some(a => a.triggeredAt > Date.now() - 5000) && (
                         <span className="text-[10px] bg-[var(--color-up)] text-white px-1.5 py-0.5 rounded font-bold shrink-0">NEW</span>
-                      )}
-                      {group.alerts.every(a => a.isExpired) && (
-                        <span className="text-[10px] bg-gray-200 dark:bg-gray-700 text-gray-500 dark:text-gray-400 px-1.5 py-0.5 rounded shrink-0">已消失</span>
                       )}
                     </div>
                     <div className="flex items-center gap-2 shrink-0">
@@ -572,6 +570,7 @@ export default function HomePage() {
       {showRules && <AlertRulesModal onClose={() => setShowRules(false)} />}
       {showReview && <ReviewModal open={showReview} onClose={() => setShowReview(false)} />}
       {showSync && <SyncModal open={showSync} onClose={() => setShowSync(false)} />}
+      {showShare && <ShareModal open={showShare} onClose={() => setShowShare(false)} />}
     </div>
   );
 }

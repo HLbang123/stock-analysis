@@ -5,10 +5,10 @@ export async function GET(request: Request) {
   // 判断 fund_type：SH/SZ 交易所 → exchange，OF → otc
   const fundType = code.endsWith(".OF") ? "otc" : "exchange";
   try {
-    const { fuyaoGet } = await import("@/lib/fuyao");
+    const { getFundProfile, getFundHoldings } = await import("@/lib/fuyao");
     const [profile, holdings] = await Promise.all([
-      fuyaoGet("/api/fund/profile/detail", { fund_type: fundType, thscode: code }).catch(() => null),
-      fuyaoGet("/api/fund/portfolio/holdings", { fund_type: fundType, thscode: code }).catch(() => null),
+      getFundProfile(fundType, code).catch(() => null),
+      getFundHoldings(fundType, code).catch(() => null),
     ]);
     return Response.json({ profile: profile?.item?.[0] || null, holdings: holdings?.item || [] });
   } catch (e: any) {

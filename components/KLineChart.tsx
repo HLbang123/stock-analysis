@@ -4,22 +4,14 @@ import React, { useEffect, useRef, useCallback } from 'react';
 import {
   createChart,
   IChartApi,
-  ISeriesApi,
   CandlestickSeries,
   HistogramSeries,
-  LineSeries,
   Time,
   ColorType,
   LineStyle,
 } from 'lightweight-charts';
 import { KLineData } from '@/types';
 import { useTheme } from '@/components/providers/theme-provider';
-
-interface AlertMarker {
-  barIndex: number;
-  number: number;
-  level: string;
-}
 
 interface PriceLine {
   price: number;
@@ -31,7 +23,6 @@ interface KLineChartProps {
   data: KLineData[];
   height?: number;
   showVolume?: boolean;
-  alertMarkers?: AlertMarker[];
   levels?: PriceLine[]; // 支撑/压力水平线
   onBarClick?: (index: number) => void;
 }
@@ -40,7 +31,6 @@ export function KLineChart({
   data,
   height = 400,
   showVolume = true,
-  alertMarkers = [],
   levels = [],
   onBarClick,
 }: KLineChartProps) {
@@ -149,52 +139,6 @@ export function KLineChart({
       volumeSeries.setData(volumeData);
     }
 
-    // 预警标记
-    if (alertMarkers.length > 0) {
-      const markerPoints: { time: Time; value: number }[] = [];
-      const markerColors: string[] = [];
-
-      alertMarkers.forEach(m => {
-        const kLine = data[m.barIndex];
-        if (!kLine) return;
-        const raw = (kLine.date || '').replace(/-/g, '');
-        const time = raw.length === 8
-          ? `${raw.slice(0, 4)}-${raw.slice(4, 6)}-${raw.slice(6, 8)}`
-          : raw;
-        const color =
-          m.level === 'CRITICAL' ? '#ef4444' :
-          m.level === 'WARNING' ? '#f59e0b' : '#3b82f6';
-
-        // 每个标记用单独的线序（lineVisible=false，只显示点标记），用不同偏移避免重叠
-        for (let i = 0; i < markerPoints.length; i++) {
-          if (markerPoints[i].time === time && Math.abs(markerPoints[i].value - kLine.high * 1.02) < 0.01) {
-            markerPoints[i].value += (kLine.high - kLine.low) * 0.05; // 偏移避免重叠
-          }
-        }
-
-        markerPoints.push({
-          time: time as Time,
-          value: kLine.high * 1.02 + markerPoints.length * (kLine.high - kLine.low) * 0.03,
-        });
-        markerColors.push(color);
-      });
-
-      // 为每个标记创建一个带颜色的散点series
-      const uniqueColors = [...new Set(markerColors)];
-      uniqueColors.forEach(color => {
-        const colorPoints = markerPoints.filter((_, i) => markerColors[i] === color);
-        if (colorPoints.length === 0) return;
-        const markerSeries = chart.addSeries(LineSeries, {
-          lineVisible: false,
-          lastValueVisible: false,
-          priceLineVisible: false,
-          color: color,
-          pointMarkersVisible: true,
-        });
-        markerSeries.setData(colorPoints);
-      });
-    }
-
     // 点击
     if (onBarClick) {
       chart.subscribeClick(param => {
@@ -209,7 +153,7 @@ export function KLineChart({
     chart.timeScale().fitContent();
     chartRef.current = chart;
     return chart;
-  }, [data, showVolume, height, onBarClick, resolvedTheme, alertMarkers, levels]);
+  }, [data, showVolume, height, onBarClick, resolvedTheme, levels]);
 
   useEffect(() => {
     const chart = initChart();

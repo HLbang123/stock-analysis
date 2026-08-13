@@ -6,6 +6,7 @@
 import type { RealtimeQuote } from '@/types';
 import type { Stock } from '@/types';
 import type { AiAnalysisRecord } from '@/store/ai-store';
+import type { DeepStructured, DeepResult, DeepStage, DeepProgress } from './types';
 import type { TradeLevels, MarketRegime } from '@/services/deep-analysis/levels';
 import type { ChipDistribution } from '@/lib/chip';
 import type { LlmConfig } from '@/services/ai-screen/types';
@@ -28,56 +29,7 @@ import { acquireLlmSlot, noteLlmRateLimited } from './concurrency';
 import type { StockRpsResp, BreadthResp, FuyaoFundResp } from '@/types/api';
 import { isETF } from '@/lib/identify';
 
-// ── 结构化裁决结果（verdict 文本解析）─────────────────────────────────
-export interface DeepStructured {
-  action: string;
-  oneLiner?: string;
-  /** 综合评判（原 manager 职责并入裁决：对比辩论三人论点 + 5级情绪强度 + 是否改变初判） */
-  consensus?: string;
-  riskLevel: string;
-  confidence: number;
-  targetLow: number;
-  targetHigh: number;
-  stopLoss: number;
-  position: number;
-  reasoning: string;
-  plan: string;
-  riskNote: string;
-  confidenceScore?: number;
-  clamped?: string[];
-  keyPoints?: string[];
-}
-
-export interface DeepLevels {
-  current: number;
-  supports: { price: number; label: string }[];
-  resistances: { price: number; label: string }[];
-}
-
-export interface DeepResult {
-  analyst: string;
-  analystReasoning?: string;
-  debate: string;
-  debateReasoning?: string;
-  debateError?: string;
-  verdict: string;
-  verdictReasoning?: string;
-  verdictError?: string;
-  levels?: DeepLevels | null;
-  structured: DeepStructured | null;
-  /** 并行编排后阶段指示不再单调，卡片游标/思考面板据此判断该区是否仍在流式写入 */
-  analystDone?: boolean;
-  debateDone?: boolean;
-  /** 本次分析降级说明（上游角色失败被跳过 / 裁决降级 / 规则兜底）——UI 展示给用户知道分析不完整 */
-  warnings?: string[];
-}
-
-export type DeepStage = 'idle' | 'analyst' | 'debate' | 'verdict';
-
-export interface DeepProgress {
-  stage: DeepStage;
-  result: DeepResult;
-}
+// ── 结构化裁决结果等类型在 ./types（单一事实源，解 engine⇄ai-store 类型环）──
 
 /** 归一化 ACTION 输出：剥离 markdown/括号等杂讯，把常见变体映射到 买入/持有/卖出 三选一
  *  LLM 偶发输出 `** 持有`、`观望`、`（买入）` 等，直接落库会污染方向胜率榜分组 */

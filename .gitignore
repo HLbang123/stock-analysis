@@ -46,3 +46,6 @@ next-env.d.ts
 
 # 回测报告(服务器产物)
 /backtest-report.*
+
+# CodeGraph 索引(本地产物,8MB+,不入库)
+/.codegraph/

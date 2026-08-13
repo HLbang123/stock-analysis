@@ -39,29 +39,6 @@ export function formatVolume(volume: number): string {
 }
 
 /**
- * 格式化金额
- */
-export function formatAmount(amount: number): string {
-  if (amount >= 100000000) {
-    return `${(amount / 100000000).toFixed(2)}亿`;
-  }
-  if (amount >= 10000) {
-    return `${(amount / 10000).toFixed(2)}万`;
-  }
-  return amount.toFixed(2);
-}
-
-/**
- * 获取涨跌颜色类名
- */
-export function getChangeColorClass(change: number, isBg: boolean = false): string {
-  const prefix = isBg ? 'bg' : 'text';
-  if (change > 0) return `${prefix}-red-500`;
-  if (change < 0) return `${prefix}-green-500`;
-  return `${prefix}-gray-500`;
-}
-
-/**
  * 格式化时间
  */
 export function formatTime(timestamp: number): string {

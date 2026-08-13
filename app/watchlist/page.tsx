@@ -4,7 +4,7 @@ import { useEffect, useState, useRef } from 'react';
 import { useRouter } from 'next/navigation';
 import { useStockStore } from '@/store';
 import { getRealtimeQuote, getKLineSina, parseStockCode, searchStocks } from '@/services/stockApi';
-import { isETF, validateStockCode } from '@/lib/identify';
+import { isETF, validateStockCode, extractStockCodes } from '@/lib/identify';
 import { computeMaCross, type MaCrossState } from '@/lib/stock-helpers';
 import { RealtimeQuote } from '@/types';
 import { formatPrice, formatChange, cn } from '@/lib/utils';
@@ -48,6 +48,8 @@ export default function WatchlistPage() {
   const [isOcrProcessing, setIsOcrProcessing] = useState(false);
   const [ocrStatus, setOcrStatus] = useState<string | null>(null);
   const [ocrResults, setOcrResults] = useState<{ code: string; name: string; added: boolean }[]>([]);
+  // 文本提取（与截图识别同一管线）
+  const [ocrText, setOcrText] = useState('');
 
   // 图像预处理（08-12）：canvas 缩放 + 深色模式反色。
   // tesseract 在字符高度 ~30px 以上才准（手机截图字太小要放大），且对白字黑底的深色截图识别率暴跌。
@@ -72,6 +74,71 @@ export default function WatchlistPage() {
     return new Promise((resolve, reject) => canvas.toBlob((b) => (b ? resolve(b) : reject(new Error('图像预处理失败'))), 'image/png'));
   };
 
+  // 提取出的代码 → 本地名录批量校验查名（不打实时行情：外部源限流/抖动曾致整批误判"无有效标的"），
+  // 名录未命中的（新上市/名录周更未覆盖）回落实时行情查名，仍失败才丢弃
+  const resolveStockCodes = async (extractedCodes: string[]): Promise<{ code: string; name: string; added: boolean }[]> => {
+    let validResults: { code: string; name: string; added: boolean }[] = [];
+    try {
+      const vr = await fetch('/api/stock/validate', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ codes: extractedCodes.slice(0, 50) }),
+      });
+      const vdata = vr.ok ? await vr.json() : { items: [] };
+      validResults = (vdata.items ?? []).map((it: { code: string; name: string }) => ({
+        ...it,
+        added: isInWatchlist(it.code),
+      }));
+    } catch { /* 名录服务异常 → 走行情兜底 */ }
+
+    const hitCodes = new Set(validResults.map((r) => r.code));
+    const missCodes = [...new Set(
+      extractedCodes.slice(0, 50)
+        .map((c) => validateStockCode(c))
+        .filter((v): v is NonNullable<typeof v> => v !== null)
+        .map((v) => `${v.market}${v.pureCode}`)
+    )].filter((fc) => !hitCodes.has(fc));
+    if (missCodes.length > 0) {
+      const fallback = await Promise.all(
+        missCodes.map(async (fc) => {
+          const quote = await getRealtimeQuote(fc);
+          return quote?.name ? { code: fc, name: quote.name, added: isInWatchlist(fc) } : null;
+        })
+      );
+      validResults = [...validResults, ...fallback.filter((r): r is NonNullable<typeof r> => r !== null)];
+    }
+    return validResults;
+  };
+
+  // 提取 → 校验 → 写结果（截图 OCR 与文本粘贴共用）
+  const finishExtract = async (extractedCodes: string[], emptyMsg: string) => {
+    if (extractedCodes.length === 0) {
+      setOcrStatus(emptyMsg);
+      return;
+    }
+    setOcrStatus(`识别到 ${extractedCodes.length} 个代码，正在验证...`);
+    const validResults = await resolveStockCodes(extractedCodes);
+    if (validResults.length > 0) {
+      setOcrResults(validResults);
+      setOcrStatus(`识别到 ${validResults.length} 只标的`);
+    } else {
+      setOcrStatus(`识别到 ${extractedCodes.length} 个代码，但均不在标的名录中`);
+    }
+  };
+
+  // 粘贴文本提取（与截图识别同一管线，免引擎秒出）
+  const handleTextExtract = async () => {
+    const t = ocrText.trim();
+    if (!t) { toast.error('请先粘贴文本'); return; }
+    setIsOcrProcessing(true);
+    setOcrResults([]);
+    try {
+      await finishExtract(extractStockCodes(t), '未从文本中提取到标的代码');
+    } finally {
+      setIsOcrProcessing(false);
+    }
+  };
+
   // OCR 识别（多张顺序跑，worker 复用）
   const handleOcrScan = async () => {
     if (ocrImageFiles.length === 0) { toast.error('请先选择图片'); return; }
@@ -82,7 +149,7 @@ export default function WatchlistPage() {
     try {
       const Tesseract = (await import('tesseract.js')).default;
       // 只识别 6 位数字代码，用 eng 引擎（语言包 ~3MB，chi_sim ~30MB）——加载更快、数字更准；
-      // 名称不靠 OCR，后续用行情接口按代码查名。
+      // 名称不靠 OCR，后续用标的名录按代码查名。
       // 引擎/语言包全部自托管在 public/（08-12：默认走 jsdelivr CDN，国内时有不稳会卡死"正在识别"）
       const total = ocrImageFiles.length;
       let currentIdx = 0;
@@ -108,51 +175,7 @@ export default function WatchlistPage() {
       await worker.terminate();
       console.log('[ocr] 原始识别文本:', texts.join('\n----\n')); // 识别漏代码时排查用
 
-      // OCR 常把同一代码拆进空格/换行（如 "60 0000"）：原始文本与"数字间空白合并"文本各匹配一遍取并集。
-      // eng 引擎还会把数字认成字母（0→O、1→l、5→S 等）或把中文认成字母黏在代码上：
-      // 再做一份"混淆字母→数字、其余字母→空格"的归一化副本匹配（08-12 修"识别变少"）。
-      // 归一化可能造出假 6 位串，交给 validateStockCode（前辍校验）+ 行情查名过滤
-      const codeRegex = /(?<!\d)(\d{6})(?!\d)/g;
-      const mergeSpaces = (t: string) => t.replace(/(\d)\s+(?=\d)/g, '$1');
-      const CONFUSE: Record<string, string> = {
-        o: '0', O: '0', Q: '0', D: '0', l: '1', I: '1', i: '1', '|': '1', '!': '1',
-        Z: '2', z: '2', A: '4', S: '5', s: '5', G: '6', b: '6', T: '7', B: '8', g: '9', q: '9',
-      };
-      const extractedCodes = [...new Set(texts.flatMap((t) => {
-        const normalized = mergeSpaces(t.replace(/[A-Za-z|!]/g, (ch) => CONFUSE[ch] ?? ' '));
-        return [t, mergeSpaces(t), normalized].flatMap((v) => v.match(codeRegex) || []);
-      }))];
-
-      if (extractedCodes.length === 0) {
-        setOcrStatus('未识别到有效标的代码，请确认截图清晰');
-        setIsOcrProcessing(false);
-        return;
-      }
-
-      setOcrStatus(`识别到 ${extractedCodes.length} 个代码，正在验证...`);
-      // 并行验证 + 查名（原串行循环，代码一多就很慢）
-      const checked = await Promise.all(
-        extractedCodes.slice(0, 50).map(async (codeStr) => {
-          const valid = validateStockCode(codeStr);
-          if (!valid) return null;
-          const fullCode = `${valid.market}${valid.pureCode}`;
-          try {
-            const quote = await getRealtimeQuote(fullCode);
-            if (quote?.name) return { code: fullCode, name: quote.name, added: isInWatchlist(fullCode) };
-            return null;
-          } catch {
-            return { code: fullCode, name: fullCode, added: isInWatchlist(fullCode) };
-          }
-        })
-      );
-      const validResults = checked.filter((r): r is NonNullable<typeof r> => r !== null);
-
-      if (validResults.length > 0) {
-        setOcrResults(validResults);
-        setOcrStatus(`识别到 ${validResults.length} 只标的`);
-      } else {
-        setOcrStatus('未识别到有效标的代码');
-      }
+      await finishExtract(extractStockCodes(texts.join('\n')), '未识别到标的代码，请确认截图清晰');
     } catch (e: any) {
       setOcrStatus('OCR引擎加载失败，请重试');
     } finally {
@@ -421,6 +444,25 @@ export default function WatchlistPage() {
                 <p className="text-sm text-gray-500">点击上传持仓截图（可多选）</p>
               </button>
             )}
+
+            {/* 文本提取（与截图识别同一管线，免引擎秒出） */}
+            <div className="mt-3 pt-3 border-t border-gray-100 dark:border-gray-800">
+              <textarea
+                value={ocrText}
+                onChange={(e) => setOcrText(e.target.value)}
+                rows={3}
+                placeholder="或直接粘贴持仓/关注列表文本，提取其中的标的代码"
+                className="w-full px-3 py-2 text-sm border border-gray-200 dark:border-gray-700 rounded-[var(--radius-md)] bg-white dark:bg-gray-900 resize-none focus:outline-none focus:ring-1 focus:ring-[var(--color-accent)]"
+              />
+              <Button
+                onClick={handleTextExtract}
+                loading={isOcrProcessing}
+                disabled={!ocrText.trim()}
+                className="w-full mt-2"
+              >
+                提取文本中的标的
+              </Button>
+            </div>
 
             {ocrStatus && (
               <div className={cn(

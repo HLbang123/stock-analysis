@@ -536,3 +536,16 @@ model SyncPairing {
   @@index([syncId])
   @@map("sync_pairings")
 }
+
+/// 自选分享快照（明文；6 位分享码=读凭证，owner_token=写鉴权，读取免鉴权）
+model ShareSnapshot {
+  code        String   @id @db.VarChar(6)
+  ownerToken  String   @map("owner_token") @db.VarChar(64)
+  displayName String   @map("display_name") @db.VarChar(20)
+  snapshot    String   @db.Text // JSON { groups: [{ name, stockCodes }] }
+  createdAt   DateTime @default(now()) @map("created_at")
+  updatedAt   DateTime @updatedAt @map("updated_at")
+  expiresAt   DateTime? @map("expires_at") // null = 长期
+
+  @@map("share_snapshots")
+}

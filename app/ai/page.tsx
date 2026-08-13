@@ -47,8 +47,8 @@ import { generateId } from '@/components/ai/shared';
 import {
   prepareDeepContext, runDeepAnalysisStream, buildDeepSummary, buildDeepSuggestion, saveDeepEval,
   loadDeepResume, clearDeepResume,
-  type DeepResult, type DeepStage,
 } from '@/services/deep-analysis/engine';
+import type { DeepResult, DeepStage } from '@/services/deep-analysis/types';
 
 /** 波段评分结果（客户端算的因子分 + 路由返回的 LLM 微调合并） */
 type TScoreResult = TScorePanelResult;

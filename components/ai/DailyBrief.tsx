@@ -6,13 +6,15 @@
  */
 
 import { useEffect, useState } from 'react';
-import { Calendar, TrendingUp, TrendingDown, Sparkles, AlertTriangle } from 'lucide-react';
+import { Calendar, AlertTriangle } from 'lucide-react';
 import { cn } from '@/lib/utils';
 
 interface BriefPayload {
   briefDate: string;
+  dataDate: string;
   type: 'morning' | 'daily';
   generatedAt: string;
+  dataIssues: string[];
   market: {
     upCount: number;
     downCount: number;
@@ -22,6 +24,10 @@ interface BriefPayload {
     newHigh20: number | null;
     northMoney: number | null;
   };
+  sectorFlow: {
+    inflow: { name: string; net: number }[];
+    outflow: { name: string; net: number }[];
+  } | null;
   dragonTiger: {
     orgNetBuy: { name: string; amount: number }[];
     hotMoneyNetBuy: { name: string; amount: number }[];
@@ -34,11 +40,16 @@ interface BriefPayload {
     best: { name: string; t1: number } | null;
     worst: { name: string; t1: number } | null;
   }[] | null;
+  alertTriggers: {
+    total: number;
+    top: { label: string; n: number }[];
+  } | null;
   focus: {
     strongIndustries: string[];
     watchStocks: { name: string; reason: string }[];
   } | null;
   summary: string;
+  insight: string | null;
 }
 
 const pct = (v: number | null | undefined) => (v == null ? '--' : `${v >= 0 ? '+' : ''}${v.toFixed(1)}%`);
@@ -74,20 +85,33 @@ export function DailyBrief({ type }: { type: 'morning' | 'daily' }) {
 
   return (
     <div className="p-4 space-y-4">
-      {/* 头部：日期 + 类型 + 总结 */}
+      {/* 头部：日期 + 类型 + 数据日标注 */}
       <div className="flex items-center justify-between">
         <div className="flex items-center gap-2">
           <span className="text-sm font-medium">{fmtDate(brief.briefDate)}</span>
           <span className={cn('text-xs px-1.5 py-0.5 rounded', isMorning ? 'bg-amber-100 text-amber-700' : 'bg-blue-100 text-blue-700')}>
             {isMorning ? '盘前提示' : '盘后日报'}
           </span>
+          {brief.dataDate && brief.dataDate !== brief.briefDate && (
+            <span className="text-xs text-gray-400">{fmtDate(brief.dataDate)} 数据</span>
+          )}
         </div>
         <span className="text-xs text-gray-400">{brief.generatedAt.slice(11, 16)} 更新</span>
       </div>
 
-      {/* 一句话总结 */}
-      <div className="bg-gray-50 dark:bg-gray-800/50 rounded-lg p-3 text-sm text-gray-700 dark:text-gray-300">
-        {brief.summary}
+      {/* 数据完整性提示（旧简报无此字段时隐藏） */}
+      {(brief.dataIssues ?? []).length > 0 && (
+        <div className="flex items-start gap-2 bg-amber-50 dark:bg-amber-950/30 border border-amber-200 dark:border-amber-900/50 rounded-lg px-3 py-2 text-xs text-amber-700 dark:text-amber-400">
+          <AlertTriangle className="w-3.5 h-3.5 mt-0.5 shrink-0" />
+          <div className="space-y-0.5">
+            {(brief.dataIssues ?? []).map((issue, i) => <p key={i}>{issue}</p>)}
+          </div>
+        </div>
+      )}
+
+      {/* 解读（LLM 生成，失败回退模板总结） */}
+      <div className="bg-gray-50 dark:bg-gray-800/50 rounded-lg p-3 text-sm text-gray-700 dark:text-gray-300 whitespace-pre-line">
+        {brief.insight ?? brief.summary}
       </div>
 
       {/* 市场概况 */}
@@ -114,13 +138,44 @@ export function DailyBrief({ type }: { type: 'morning' | 'daily' }) {
             {pct(m.avgChange)}
           </div>
         </div>
-        <div className="bg-white dark:bg-gray-900 rounded-lg border border-gray-100 dark:border-gray-800 p-2.5">
-          <div className="text-xs text-gray-400">北向资金</div>
-          <div className={cn('text-lg font-semibold mt-0.5', (m.northMoney ?? 0) >= 0 ? 'text-red-600' : 'text-green-600')}>
-            {m.northMoney != null ? `${(m.northMoney / 10000).toFixed(1)}亿` : '--'}
+        {m.northMoney != null && (
+          <div className="bg-white dark:bg-gray-900 rounded-lg border border-gray-100 dark:border-gray-800 p-2.5">
+            <div className="text-xs text-gray-400">北向资金</div>
+            <div className={cn('text-lg font-semibold mt-0.5', m.northMoney >= 0 ? 'text-red-600' : 'text-green-600')}>
+              {`${(m.northMoney / 10000).toFixed(1)}亿`}
+            </div>
+          </div>
+        )}
+      </div>
+
+      {/* 板块资金 */}
+      {brief.sectorFlow && (brief.sectorFlow.inflow.length > 0 || brief.sectorFlow.outflow.length > 0) && (
+        <div className="bg-white dark:bg-gray-900 rounded-lg border border-gray-100 dark:border-gray-800 p-3">
+          <div className="text-xs font-medium text-gray-500 mb-2">板块资金（亿元）</div>
+          <div className="space-y-2 text-xs">
+            {brief.sectorFlow.inflow.length > 0 && (
+              <div>
+                <span className="text-gray-400">流入：</span>
+                {brief.sectorFlow.inflow.map((s, i) => (
+                  <span key={s.name} className="text-gray-700 dark:text-gray-300">
+                    {i > 0 && '、'}{s.name} <span className="text-red-600">+{s.net.toFixed(1)}</span>
+                  </span>
+                ))}
+              </div>
+            )}
+            {brief.sectorFlow.outflow.length > 0 && (
+              <div>
+                <span className="text-gray-400">流出：</span>
+                {brief.sectorFlow.outflow.map((s, i) => (
+                  <span key={s.name} className="text-gray-700 dark:text-gray-300">
+                    {i > 0 && '、'}{s.name} <span className="text-green-600">{s.net.toFixed(1)}</span>
+                  </span>
+                ))}
+              </div>
+            )}
           </div>
         </div>
-      </div>
+      )}
 
       {/* 龙虎榜 */}
       {brief.dragonTiger && (
@@ -164,7 +219,7 @@ export function DailyBrief({ type }: { type: 'morning' | 'daily' }) {
       {/* 筛选表现（仅 daily） */}
       {!isMorning && brief.aiScreen && brief.aiScreen.length > 0 && (
         <div className="bg-white dark:bg-gray-900 rounded-lg border border-gray-100 dark:border-gray-800 p-3">
-          <div className="text-xs font-medium text-gray-500 mb-2">昨日筛选表现（T+1）</div>
+          <div className="text-xs font-medium text-gray-500 mb-2">筛选表现（T+1，上一交易日入选）</div>
           <div className="space-y-1.5 text-xs">
             {brief.aiScreen.map((s) => (
               <div key={s.strategy} className="flex items-center justify-between">
@@ -172,6 +227,21 @@ export function DailyBrief({ type }: { type: 'morning' | 'daily' }) {
                 <span className={cn('font-medium', (s.t1WinRate ?? 0) >= 50 ? 'text-red-600' : 'text-green-600')}>
                   胜率 {s.t1WinRate != null ? `${s.t1WinRate}%` : '--'}
                 </span>
+              </div>
+            ))}
+          </div>
+        </div>
+      )}
+
+      {/* 预警触发概况（仅 daily） */}
+      {!isMorning && brief.alertTriggers && brief.alertTriggers.total > 0 && (
+        <div className="bg-white dark:bg-gray-900 rounded-lg border border-gray-100 dark:border-gray-800 p-3">
+          <div className="text-xs font-medium text-gray-500 mb-2">预警触发概况（{brief.alertTriggers.total} 次）</div>
+          <div className="space-y-1.5 text-xs">
+            {brief.alertTriggers.top.map((t) => (
+              <div key={t.label} className="flex items-center justify-between">
+                <span className="text-gray-700 dark:text-gray-300">{t.label}</span>
+                <span className="font-medium text-gray-500">{t.n} 次</span>
               </div>
             ))}
           </div>

@@ -9,38 +9,6 @@ export const MARKET_COLORS = {
   downBg: "#f0fdf4",   // green-50
 } as const;
 
-export const ALERT_COLORS = {
-  CRITICAL: {
-    text: "#dc2626",
-    bg: "#fef2f2",
-    border: "#fca5a5",
-  },
-  WARNING: {
-    text: "#ea580c",
-    bg: "#fff7ed",
-    border: "#fdba74",
-  },
-  INFO: {
-    text: "#2563eb",
-    bg: "#eff6ff",
-    border: "#93c5fd",
-  },
-} as const;
-
-// Trading hours (Beijing time)
-export const TRADING_HOURS = {
-  morningStart: { hours: 9, minutes: 30 },
-  morningEnd: { hours: 11, minutes: 30 },
-  afternoonStart: { hours: 13, minutes: 0 },
-  afternoonEnd: { hours: 15, minutes: 0 },
-} as const;
-
-// Polling interval for real-time quotes during trading hours
-export const QUOTE_POLL_INTERVAL = 5000; // 5 seconds
-
-// Scanner concurrency
-export const SCANNER_CONCURRENCY = 5;
-
 // App routes
 export const ROUTES = {
   home: "/",

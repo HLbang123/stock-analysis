@@ -167,37 +167,6 @@ export default function StockDetailPage() {
     };
   }, [kLines, quote]);
 
-  // 预警标记到K线索引的映射
-  const kLineMarkers = useMemo(() => {
-    const markerMap: Record<number, number> = {};
-    ruleResults.forEach((result, i) => {
-      const idx = result.barIndex ?? kLines.length;
-      markerMap[idx] = i + 1;
-    });
-    return markerMap;
-  }, [ruleResults, kLines]);
-
-  // 分时图预警标记（智能定位：见顶放最高点，见底放最低点）
-  const minuteMarkers = useMemo(() => {
-    if (minuteData.length === 0 || ruleResults.length === 0) return [];
-    return ruleResults.map((result, i) => {
-      let index = minuteData.length - 1; // 默认最后一点
-      const ruleId = result.ruleId || '';
-      if (ruleId === 'R01') {
-        // 见顶阶梯 → 最高价位置
-        let maxIdx = 0; let maxPrice = 0;
-        minuteData.forEach((p, idx) => { if (p.price > maxPrice) { maxPrice = p.price; maxIdx = idx; } });
-        index = maxIdx;
-      } else if (['R06', 'R07', 'R08', 'R09', 'R10', 'R12'].includes(ruleId)) {
-        // 见底/企稳形态 → 最低价位置
-        let minIdx = 0; let minPrice = Infinity;
-        minuteData.forEach((p, idx) => { if (p.price < minPrice) { minPrice = p.price; minIdx = idx; } });
-        index = minIdx;
-      }
-      return { index, number: i + 1, level: ALERT_RULES.find(r => r.id === ruleId)?.level || 'INFO' };
-    });
-  }, [ruleResults, minuteData]);
-
   if (isLoading) {
     return (
       <div className="flex items-center justify-center py-20">
@@ -403,7 +372,6 @@ export default function StockDetailPage() {
                   data={minuteData}
                   prevClose={quote?.preClose || 0}
                   height={400}
-                  alertMarkers={minuteMarkers}
                 />
               ) : (
                 <div className="flex items-center justify-center h-[400px] text-gray-400">
@@ -423,13 +391,6 @@ export default function StockDetailPage() {
               <KLineChart
                 data={kLines}
                 height={400}
-                alertMarkers={Object.entries(kLineMarkers).map(([barIndex, number]) => ({
-                  barIndex: parseInt(barIndex),
-                  number,
-                  level: ruleResults[number - 1]?.ruleId
-                    ? (ALERT_RULES.find(r => r.id === ruleResults[number - 1].ruleId)?.level || 'INFO')
-                    : 'INFO',
-                }))}
                 levels={srData ? [
                   ...srData.supports.map(l => ({ price: l.price, color: '#16a34a', title: `支撑·${l.label}` })),
                   ...srData.resistances.map(l => ({ price: l.price, color: '#dc2626', title: `压力·${l.label}` })),

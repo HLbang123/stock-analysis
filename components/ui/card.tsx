@@ -61,23 +61,3 @@ export function Card({ className, children, onClick, variant = 'default', clicka
     </div>
   );
 }
-
-export function CardHeader({ className, children }: { className?: string; children: ReactNode }) {
-  return (
-    <div className={cn("mb-3 flex items-center justify-between", className)}>
-      {children}
-    </div>
-  );
-}
-
-export function CardTitle({ className, children }: { className?: string; children: ReactNode }) {
-  return (
-    <h3 className={cn("text-base font-semibold text-gray-900 dark:text-white", className)}>
-      {children}
-    </h3>
-  );
-}
-
-export function CardContent({ className, children }: { className?: string; children: ReactNode }) {
-  return <div className={cn("space-y-2", className)}>{children}</div>;
-}

@@ -1,7 +1,7 @@
 import { create } from 'zustand';
 import { persist } from 'zustand/middleware';
 import type { TScorePanelResult } from '@/components/ai/TScorePanel';
-import type { DeepResult } from '@/services/deep-analysis/engine';
+import type { DeepResult } from '@/services/deep-analysis/types';
 
 export interface AiProfile {
   id: string;

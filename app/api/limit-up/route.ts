@@ -9,8 +9,8 @@ export async function GET() {
   try {
     // ── 1. 同花顺涨停池（实时）──
     try {
-      const { fuyaoGet } = await import("@/lib/fuyao");
-      const pool = await fuyaoGet<{ timestamp: number; item: any[] }>("/api/a-share/special-data/limit-up-pool");
+      const { getLimitUpPool } = await import("@/lib/fuyao");
+      const pool = await getLimitUpPool();
       if (pool?.item?.length) {
         return Response.json({
           source: "ths",
