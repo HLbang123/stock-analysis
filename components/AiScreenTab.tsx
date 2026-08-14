@@ -36,6 +36,7 @@ interface RunWithPicks {
   llmSelectionLogic?: string;
   llmPortfolioRisk?: string;
   degradation: string[];
+  marketRegime?: string | null; // attack/neutral/defense
   picks: AiPick[];
 }
 
@@ -154,6 +155,14 @@ export function AiScreenTab() {
         <Card className="p-3 mb-4">
           <div className="flex flex-wrap items-center gap-3 text-xs text-gray-500">
             <span>数据日 {current.barDate}</span>
+            {current.marketRegime && current.marketRegime !== 'neutral' && (
+              <span className={cn('px-1.5 py-0.5 rounded',
+                current.marketRegime === 'attack'
+                  ? 'bg-red-100 text-red-700 dark:bg-red-950/40 dark:text-red-400'
+                  : 'bg-green-100 text-green-700 dark:bg-green-950/40 dark:text-green-400')}>
+                {current.marketRegime === 'attack' ? '进攻期' : '防守期'}
+              </span>
+            )}
             <span>候选 {current.candidateCount} → 入选 {current.pickCount}</span>
             {current.llmReranked ? (
               <span className="bg-purple-100 text-purple-700 px-1.5 py-0.5 rounded">AI 重排{current.llmCoverage != null ? ` ${(current.llmCoverage * 100).toFixed(0)}%` : ''}</span>

@@ -85,12 +85,13 @@ function toText(p: WeeklyReviewPayload): string {
   return lines.join('\n');
 }
 
-function StatCard({ label, main, sub, tone }: { label: string; main: string; sub?: string; tone?: 'up' | 'down' }) {
+function StatCard({ label, main, sub, tone, mainClass }: { label: string; main: string; sub?: string; tone?: 'up' | 'down'; mainClass?: string }) {
   return (
     <div className="text-center bg-white/60 dark:bg-gray-900/40 rounded-[var(--radius-md)] py-2 px-1">
       <div className="text-[10px] text-gray-400 truncate">{label}</div>
       <div className={cn(
-        'text-lg font-bold leading-tight',
+        'font-bold leading-tight',
+        mainClass ?? 'text-lg',
         tone === 'up' ? 'text-[var(--color-up)]' : tone === 'down' ? 'text-[var(--color-down)]' : 'text-gray-800 dark:text-gray-100'
       )}>{main}</div>
       {sub && <div className="text-[10px] text-gray-400 truncate">{sub}</div>}
@@ -161,6 +162,7 @@ export function WeeklyReview() {
               <StatCard
                 label="涨跌家数"
                 main={`${p.market.upCount}/${p.market.downCount}`}
+                mainClass="text-sm sm:text-lg tabular-nums"
                 sub={`周均 ${signed(p.market.avgChange)}`}
                 tone={(p.market.avgChange ?? 0) >= 0 ? 'up' : 'down'}
               />

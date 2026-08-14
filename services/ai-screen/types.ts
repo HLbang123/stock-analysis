@@ -102,6 +102,11 @@ export interface AiPick {
   chipPeakPos: number | null;       // (价 − 主峰) / avgCost，站上主峰为正
   chipPeakDrift: number | null;     // 5 日峰位漂移 / avgCost，下移为负(吸筹)
 
+  // 箱体形态特征（lib/box.ts，2026-08-14 移植；运行态字段，不落库单列——
+  // 质量分以 factorScores.box 零权重观察因子身份随 JSON 落库攒样本，IC 验证有效后再升正式因子）
+  boxQuality: number | null; // 0-100 箱体质量分（null=非箱体或数据不足）
+  boxPos: number | null;     // 现价在箱体内位置 (价−底)/箱高：<0 跌破、>1 突破
+
   // 基本面
   roe: number | null;
   grossprofitMargin: number | null;
@@ -161,6 +166,7 @@ export interface AiScreenRun {
   degradation: string[];
   riskEnabled: boolean;
   portfolioEnabled: boolean;
+  marketRegime: string | null; // attack / neutral / defense（2026-08-14 市场状态标记，只展示不拦截）
 }
 
 /** LLM 重排请求参数（前端传入） */

@@ -57,11 +57,9 @@ export const STRATEGY_PRESETS: StrategyPreset[] = [
     rulesText: [
       '硬筛：RPS(60日)70~95 · 成交额≥5千万 · 单日±7% · 60日涨幅≤60% · 量比≤2.5 · 波动率≤45% · 回撤≥-15%',
       '因子侧重：入场点50% · 质量25% · 波动15% · 趋势5%',
-      '组合约束：同方向最多2只',
     ].join('\n'),
     maxOutput: 30,
     llmRerank: true,
-    portfolioProfile: { maxSameBucket: 2, concentrationPenalty: 3.5 },
   },
   {
     id: 'momentum',
@@ -107,11 +105,9 @@ export const STRATEGY_PRESETS: StrategyPreset[] = [
     rulesText: [
       '硬筛：RPS(60日)70~97 · 成交额≥8千万 · 单日-5%~+7% · 60日涨幅≤60% · MA5>MA13>MA55 · 量比≤2.5 · 波动率≤60% · 回撤≥-25%',
       '因子侧重：入场点35% · 波动35% · 质量20% · 趋势5%',
-      '组合约束：同方向最多2只',
     ].join('\n'),
     maxOutput: 30,
     llmRerank: true,
-    portfolioProfile: { maxSameBucket: 2, concentrationPenalty: 4.0 },
   },
   // —— 以下两个旧预设保留（历史胜率数据延续），新 UI 不展示 ——
   {
@@ -153,11 +149,9 @@ export const STRATEGY_PRESETS: StrategyPreset[] = [
     rulesText: [
       '硬筛：RPS(120日)≥70 · 成交额≥6千万 · 单日-7%~+7% · 波动率≤45% · 回撤≥-12%',
       '因子侧重：质量34% · 趋势18% · 入场点18% · 波动14% · 流动性10% · 板块4% · 筹码2%',
-      '组合约束：同方向最多2只(重基本面,找优质回踩)',
     ].join('\n'),
     maxOutput: 20,
     llmRerank: true,
-    portfolioProfile: { maxSameBucket: 2, concentrationPenalty: 3.0 },
   },
   {
     id: 'defensive',
@@ -205,11 +199,9 @@ export const STRATEGY_PRESETS: StrategyPreset[] = [
     rulesText: [
       '硬筛：RPS(60日)≥65 · 成交额≥8千万 · 单日-4%~+5% · 60日涨≤35% · 波动率≤32% · 回撤≥-8%',
       '因子侧重：波动30% · 质量22% · 流动性16% · 趋势14% · 入场点10% · 板块4% · 筹码4%',
-      '组合约束：同方向最多1只(最严控波动,防守观察仓)',
     ].join('\n'),
     maxOutput: 20,
     llmRerank: true,
-    portfolioProfile: { maxSameBucket: 1, concentrationPenalty: 3.5 },
   },
 ];
 

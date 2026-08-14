@@ -18,6 +18,14 @@
  *   gcDaysList - 金叉窗口多选，逗号分隔（0=即将金叉；正整数=最近N日内上穿，多值取并集）
  *   gcDays    - legacy 单窗口（0=即将金叉；>0=最近N日内上穿，默认 5）；gcDaysList 存在时忽略
  *   ma55Up    - 是否启用 55日线朝上过滤（默认 false）
+ *   mbDays    - 均线多头排列持续≥N日（MA5>MA13>MA55 连续 N 日，0/不传=关闭）
+ *   maRising  - 三线上行：MA5/MA13/MA55 今日均 > 5 交易日前（默认 false）
+ *   nearHigh250 - 距250日新高 ≤X%（如 25；启用时历史窗口扩到 400 日历日）
+ *   bias55Min / bias55Max - 相对 MA55 乖离率 % 区间（如 0~30：在趋势内但未过热）
+ *   pbMa13Min / pbMa13Max - 相对 MA13 乖离率 % 区间（如 -3~5：上升通道内回踩）
+ *   volShrink - 近5日均量 < 前20日均量（缩量整理，默认 false）
+ *   box       - 吸筹箱体：in=箱体内 / breakout=已突破（量≥1.6×箱均量确认）。
+ *               启用时 SQL 不限 200（TS 侧算完箱体再截取），全市场扫描会变慢，属预期
  *   minRoe    - 最低 ROE（仅 filterRoe=true 时生效，默认 15）
  *   filterRoe - 是否启用 ROE 过滤（默认 false）
  *   filterRsi - 是否启用 RSI 过滤（默认 false）
@@ -29,6 +37,8 @@
  *   minMv     - 流通市值下限（亿元，默认 100；仅 filterMv=true 时生效，取最新交易日 circ_mv）
  *   limit     - 返回数量（默认 50，上限 200）
  */
+import { boxFeatures } from "@/lib/box";
+
 export async function GET(request: Request) {
   const { searchParams } = new URL(request.url);
   // RPS 周期多选（AND 共振）；缺省回退 legacy 单值 period。主周期=最短周期（排序/兼容字段用它）
@@ -63,6 +73,19 @@ export async function GET(request: Request) {
   // 多个正数窗口的 OR（近3日 ∨ 近5日）等价于最大窗口（近5日 ⊇ 近3日），SQL 只需算一个
   const gcMaxDays = Math.max(0, ...gcDaysList.filter((n) => n > 0));
   const ma55Up = searchParams.get("ma55Up") === "true";
+  // 趋势结构过滤（阶段预设用；各自独立可组合，全部缺省=不启用零成本）
+  const mbDaysRaw = parseInt(searchParams.get("mbDays") || "0");
+  const mbDays = Number.isFinite(mbDaysRaw) ? Math.min(Math.max(Math.floor(mbDaysRaw), 0), 60) : 0;
+  const maRising = searchParams.get("maRising") === "true";
+  const nearHigh250Raw = parseFloat(searchParams.get("nearHigh250") || "");
+  const nearHigh250 = Number.isFinite(nearHigh250Raw) ? nearHigh250Raw : null;
+  const bias55Min = searchParams.get("bias55Min");
+  const bias55Max = searchParams.get("bias55Max");
+  const pbMa13Min = searchParams.get("pbMa13Min");
+  const pbMa13Max = searchParams.get("pbMa13Max");
+  const volShrink = searchParams.get("volShrink") === "true";
+  const boxRaw = searchParams.get("box");
+  const boxMode: 'in' | 'breakout' | null = boxRaw === 'in' || boxRaw === 'breakout' ? boxRaw : null;
   const filterRoe = searchParams.get("filterRoe") === "true";
   const minRoe = parseFloat(searchParams.get("minRoe") || "15");
   const filterRsi = searchParams.get("filterRsi") === "true";
@@ -96,15 +119,20 @@ export async function GET(request: Request) {
       select: { tradeDate: true },
     });
 
-    // startDate：120 日历日（覆盖 MA55 窗口）
+    // startDate：默认 120 日历日（覆盖 MA55 窗口）；需要 250 日高点时扩到 400 日历日
     const start = new Date();
-    start.setDate(start.getDate() - 120);
+    start.setDate(start.getDate() - (nearHigh250 != null ? 400 : 120));
     const startDate = start.toISOString().slice(0, 10).replace(/-/g, "");
 
     // ---- 候选股预筛（非信号类硬过滤：RPS/行业/板块/ROE）----
     // 先剔除不满足硬条件的标的，再进重窗口函数 CTE，避免对全市场 ~5000 只算 MA/金叉信号。
     // 此前对全市场算完信号才过滤，过滤型查询（如 RPS+金叉）会很慢，用户长时间看到空白以为筛不出来。
     // 候选集 ⊇ 最终结果集（信号类过滤 gc/ma55/rsi 仍在最终 WHERE），故结果不变。
+    //
+    // 箱体预计算表当日有数据 → 走 SQL JOIN 快路径；无数据（迁移/每日任务未跑）→ 回退 TS 即时计算
+    const boxPrecomputed = boxMode != null && latestBar
+      ? !!(await prisma.stockBox.findFirst({ where: { tradeDate: latestBar.tradeDate }, select: { tsCode: true } }))
+      : false;
     const candParams: (string | number)[] = [];
     const candWhere: string[] = [`s.is_active = true`];
     if (filterRps) { for (const p of periods) { candParams.push(minRps); candWhere.push(`r.rps_${p} >= $${candParams.length}`); } }
@@ -121,6 +149,14 @@ export async function GET(request: Request) {
       candParams.push(minMv * 10000);
       const mvIdx = candParams.length;
       candWhere.push(`s.ts_code IN (SELECT "tsCode" FROM daily_bars WHERE "tradeDate" = $${dateIdx} AND circ_mv >= $${mvIdx})`);
+    }
+    // 箱体（预计算快路径）：进候选预筛，直接把窗口 CTE 的计算量砍到箱体票集合
+    if (boxMode && boxPrecomputed && latestBar) {
+      candParams.push(latestBar.tradeDate);
+      const dIdx = candParams.length;
+      candWhere.push(boxMode === 'breakout'
+        ? `s.ts_code IN (SELECT ts_code FROM stock_box WHERE trade_date = $${dIdx} AND breakout)`
+        : `s.ts_code IN (SELECT ts_code FROM stock_box WHERE trade_date = $${dIdx} AND in_box AND box_pos BETWEEN 0 AND 1)`);
     }
 
     // 全局参数顺序：$1=calcDate, $2=startDate, $3..=candParams, 然后 rsi 参数, 最后 limit
@@ -144,12 +180,27 @@ export async function GET(request: Request) {
       if (gcParts.length > 0) where.push(gcParts.length > 1 ? `(${gcParts.join(" OR ")})` : gcParts[0]);
     }
     if (ma55Up) where.push(`sig.ma55_up = true`);
+    // 趋势结构过滤（阶段预设）
+    if (mbDays > 0) where.push(`sig.mb_ok = true`);
+    if (maRising) where.push(`sig.ma_rising = true`);
+    if (nearHigh250 != null) {
+      params.push(1 - nearHigh250 / 100);
+      where.push(`sig.high250_now IS NOT NULL AND sig.latest_close_ma >= sig.high250_now * $${params.length}`);
+    }
+    const biasExpr = `(sig.latest_close_ma / NULLIF(sig.ma55_now, 0) - 1) * 100`;
+    if (bias55Min != null && bias55Min !== "") { params.push(Number(bias55Min)); where.push(`${biasExpr} >= $${params.length}`); }
+    if (bias55Max != null && bias55Max !== "") { params.push(Number(bias55Max)); where.push(`${biasExpr} <= $${params.length}`); }
+    const pbExpr = `(sig.latest_close_ma / NULLIF(sig.ma13_now, 0) - 1) * 100`;
+    if (pbMa13Min != null && pbMa13Min !== "") { params.push(Number(pbMa13Min)); where.push(`${pbExpr} >= $${params.length}`); }
+    if (pbMa13Max != null && pbMa13Max !== "") { params.push(Number(pbMa13Max)); where.push(`${pbExpr} <= $${params.length}`); }
+    if (volShrink) where.push(`sig.vol20p_now IS NOT NULL AND sig.vol5_now < sig.vol20p_now`);
     if (filterRsi) {
       const rsiExpr = `(CASE WHEN sig.rsi_al_now IS NULL OR sig.rsi_al_now = 0 THEN 100 ELSE 100 - 100 / (1 + sig.rsi_ag_now / sig.rsi_al_now) END)`;
       if (rsiMin != null && rsiMin !== "") { params.push(Number(rsiMin)); where.push(`${rsiExpr} >= $${params.length}`); }
       if (rsiMax != null && rsiMax !== "") { params.push(Number(rsiMax)); where.push(`${rsiExpr} <= $${params.length}`); }
     }
-    params.push(limit);
+    // 箱体 TS 兜底路径才需要放大 SQL 上限（预计算路径走 cand 预筛，limit 照旧）
+    params.push(boxMode && !boxPrecomputed ? 2000 : limit);
 
     // gcMaxDays 作为 SQL 参数传入 sig CTE 的 BOOL_OR（金叉窗口）；无正数窗口时 gc_fresh 不用，给个大值无害
     const gcParam = gcMaxDays > 0 ? gcMaxDays : 9999;
@@ -171,6 +222,35 @@ export async function GET(request: Request) {
                ELSE 100 - 100 / (1 + sig.rsi_ag_now / sig.rsi_al_now) END AS rsi`
       : "";
 
+    // ---- 趋势结构专属 SQL 片段（未启用时全部为空字符串，查询退化为原样）----
+    // 前复权高点（与 close 同口径归一）+ 250 日窗口最高
+    const highBarCol = nearHigh250 != null ? `,
+                 high * COALESCE(adj_factor, 1)
+                   / FIRST_VALUE(COALESCE(adj_factor, 1)) OVER (PARTITION BY "tsCode" ORDER BY "tradeDate" DESC) AS high` : "";
+    const highRecentCol = nearHigh250 != null ? `,
+          MAX(high) OVER (PARTITION BY "tsCode" ORDER BY "tradeDate" ROWS BETWEEN 249 PRECEDING AND CURRENT ROW) AS high250` : "";
+    const highMasCol = nearHigh250 != null ? `, high250` : "";
+    const highSigCol = nearHigh250 != null ? `,
+          MAX(CASE WHEN rn = 1 THEN high250 END) AS high250_now` : "";
+    // 量能：近5日均量 vs 前20日均量（缩量整理判定）
+    const volBarCol = volShrink ? `, vol` : "";
+    const volRecentCols = volShrink ? `,
+          AVG(vol) OVER (PARTITION BY "tsCode" ORDER BY "tradeDate" ROWS BETWEEN 4 PRECEDING AND CURRENT ROW) AS vol5,
+          AVG(vol) OVER (PARTITION BY "tsCode" ORDER BY "tradeDate" ROWS BETWEEN 24 PRECEDING AND 5 PRECEDING) AS vol20p` : "";
+    const volMasCols = volShrink ? `, vol5, vol20p` : "";
+    const volSigCols = volShrink ? `,
+          MAX(CASE WHEN rn = 1 THEN vol5 END) AS vol5_now,
+          MAX(CASE WHEN rn = 1 THEN vol20p END) AS vol20p_now` : "";
+    // 多头排列持续≥N日：近 N 日每日 MA5>MA13>MA55（且历史不少于 N 日，防新股误判）
+    const mbSigCol = mbDays > 0 ? `,
+          (MIN(CASE WHEN rn <= ${mbDays} THEN CASE WHEN ma5 > ma13 AND ma13 > ma55 THEN 1 ELSE 0 END END) = 1
+           AND MAX(rn) >= ${mbDays}) AS mb_ok` : "";
+    // 三线上行：MA5/MA13/MA55 今日均 > 5 交易日前（rn=6 不存在则 null → 自动排除）
+    const maRisingSigCol = maRising ? `,
+          (MAX(CASE WHEN rn = 1 THEN ma5 END) > MAX(CASE WHEN rn = 6 THEN ma5 END)
+           AND MAX(CASE WHEN rn = 1 THEN ma13 END) > MAX(CASE WHEN rn = 6 THEN ma13 END)
+           AND MAX(CASE WHEN rn = 1 THEN ma55 END) > MAX(CASE WHEN rn = 6 THEN ma55 END)) AS ma_rising` : "";
+
     // 每个选中周期输出一列 RPS/收益（前端分行展示；响应再补主周期单值字段做兼容）
     const rpsColsSelect = periods.map((p) => `r.rps_${p} AS rps_${p}, r.ret_${p} AS ret_${p}`).join(", ");
 
@@ -180,7 +260,7 @@ export async function GET(request: Request) {
         SELECT "tsCode", "tradeDate", close,
           AVG(close) OVER w5  AS ma5,
           AVG(close) OVER w13 AS ma13,
-          AVG(close) OVER w55 AS ma55${rsiRecentCols},
+          AVG(close) OVER w55 AS ma55${rsiRecentCols}${highRecentCol}${volRecentCols},
           ROW_NUMBER() OVER (PARTITION BY "tsCode" ORDER BY "tradeDate" DESC) AS rn
         FROM (
           -- 前复权口径：close × adj_factor / 窗口内最新因子。除权日的假跳空会让 MA/金叉/RSI 失真；
@@ -188,7 +268,7 @@ export async function GET(request: Request) {
           -- adj_factor 缺失(回补未完成)时 COALESCE 退化为原始价，与旧行为一致
           SELECT "tsCode", "tradeDate",
                  close * COALESCE(adj_factor, 1)
-                   / FIRST_VALUE(COALESCE(adj_factor, 1)) OVER (PARTITION BY "tsCode" ORDER BY "tradeDate" DESC) AS close
+                   / FIRST_VALUE(COALESCE(adj_factor, 1)) OVER (PARTITION BY "tsCode" ORDER BY "tradeDate" DESC) AS close${highBarCol}${volBarCol}
           FROM daily_bars
           WHERE "tradeDate" >= $2
             AND "tsCode" IN (SELECT ts_code FROM cand)
@@ -201,7 +281,7 @@ export async function GET(request: Request) {
       mas AS (
         SELECT "tsCode", rn, ma5, ma13, ma55, "tradeDate", close,
           LAG(ma5)  OVER (PARTITION BY "tsCode" ORDER BY "tradeDate") AS ma5_prev,
-          LAG(ma13) OVER (PARTITION BY "tsCode" ORDER BY "tradeDate") AS ma13_prev${rsiMasCols}
+          LAG(ma13) OVER (PARTITION BY "tsCode" ORDER BY "tradeDate") AS ma13_prev${rsiMasCols}${highMasCol}${volMasCols}
         FROM recent
       ),
       sig AS (
@@ -218,7 +298,7 @@ export async function GET(request: Request) {
            AND (MAX(CASE WHEN rn = 1 THEN ma13 END) - MAX(CASE WHEN rn = 1 THEN ma5 END)) / NULLIF(MAX(CASE WHEN rn = 1 THEN ma13 END), 0) < 0.02
            AND MAX(CASE WHEN rn = 1 THEN ma5 END) > MAX(CASE WHEN rn = 2 THEN ma5 END)) AS gc_approaching,
           -- 55日线朝上：最新价 > 最新MA55
-          (MAX(CASE WHEN rn = 1 THEN close END) > MAX(CASE WHEN rn = 1 THEN ma55 END)) AS ma55_up${rsiSigCols}
+          (MAX(CASE WHEN rn = 1 THEN close END) > MAX(CASE WHEN rn = 1 THEN ma55 END)) AS ma55_up${rsiSigCols}${highSigCol}${volSigCols}${mbSigCol}${maRisingSigCol}
         FROM mas GROUP BY "tsCode"
       )
       SELECT s.ts_code, s.name, s.industry,
@@ -244,13 +324,60 @@ export async function GET(request: Request) {
 
     const rows = await prisma.$queryRawUnsafe<any[]>(query, ...params);
 
+    // 吸筹箱体过滤（TS 兜底：预计算表当日无数据时即时算；形态逻辑单一事实源 = lib/box.ts）
+    // 简化口径：箱体窗口含最新一根（compute-box 预计算表亦同口径；突破判定在表内已锚定前一日窗口）
+    let finalRows = rows;
+    if (boxMode && !boxPrecomputed && rows.length > 0) {
+      const codes = rows.map((r: any) => r.ts_code);
+      const series = await prisma.$queryRawUnsafe<any[]>(
+        `SELECT "tsCode", "tradeDate", close, high, low, vol, COALESCE(adj_factor, 1) AS adj
+         FROM daily_bars WHERE "tsCode" = ANY($1) AND "tradeDate" >= $2
+         ORDER BY "tsCode", "tradeDate"`,
+        codes, startDate
+      );
+      const byCode = new Map<string, { c: number[]; h: number[]; l: number[]; v: number[]; adj: number[] }>();
+      for (const r of series) {
+        if (r.close == null) continue;
+        let s = byCode.get(r.tsCode);
+        if (!s) { s = { c: [], h: [], l: [], v: [], adj: [] }; byCode.set(r.tsCode, s); }
+        s.c.push(Number(r.close));
+        s.h.push(r.high != null ? Number(r.high) : Number(r.close));
+        s.l.push(r.low != null ? Number(r.low) : Number(r.close));
+        s.v.push(r.vol != null ? Number(r.vol) : 0);
+        s.adj.push(Number(r.adj) || 1);
+      }
+      finalRows = [];
+      for (const r of rows) {
+        const s = byCode.get(r.ts_code);
+        if (!s || s.c.length < 30) continue;
+        // 前复权归一（与 recent CTE 同口径）
+        const latestAdj = s.adj[s.adj.length - 1] || 1;
+        const closes = s.c.map((x, i) => (x * s.adj[i]) / latestAdj);
+        const highs = s.h.map((x, i) => (x * s.adj[i]) / latestAdj);
+        const lows = s.l.map((x, i) => (x * s.adj[i]) / latestAdj);
+        const box = boxFeatures(closes, highs, lows, 60);
+        if (!box.inBox || box.boxPos == null) continue;
+        if (boxMode === 'in') {
+          if (box.boxPos < 0 || box.boxPos > 1) continue;
+        } else {
+          // 已突破：现价站上箱顶 + 量 ≥1.6×箱体均量（防无量假突破）
+          if (box.boxPos <= 1) continue;
+          const win = s.v.slice(-61, -1);
+          const avgV = win.length ? win.reduce((a, b) => a + b, 0) / win.length : 0;
+          if (avgV <= 0 || s.v[s.v.length - 1] < avgV * 1.6) continue;
+        }
+        finalRows.push(r);
+        if (finalRows.length >= limit) break;
+      }
+    }
+
     return Response.json({
       calcDate: latestRps.calcDate,
       barDate: latestBar?.tradeDate,
       period: primaryPeriod, // 兼容字段：主周期（最短选中周期）
       periods,
-      count: rows.length,
-      items: rows.map((r: any) => ({
+      count: finalRows.length,
+      items: finalRows.map((r: any) => ({
         tsCode: r.ts_code,
         name: r.name,
         industry: r.industry,

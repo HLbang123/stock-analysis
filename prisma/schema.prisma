@@ -84,6 +84,23 @@ model MarketBreadth {
   @@map("market_breadth")
 }
 
+/// 吸筹箱体预计算（一行/标的/交易日，仅落 in_box 或 breakout 的行），由 compute-box 算
+/// in_box/box_* 口径：窗口含当日（"当前在箱体内"状态）；breakout 口径：窗口不含当日 + 放量确认
+model StockBox {
+  tsCode     String  @db.VarChar(12) @map("ts_code")
+  tradeDate  String  @db.VarChar(8)  @map("trade_date")
+  inBox      Boolean @default(false) @map("in_box")
+  boxQuality Float?  @map("box_quality")
+  boxPos     Float?  @map("box_pos")
+  boxTop     Float?  @map("box_top")
+  boxBottom  Float?  @map("box_bottom")
+  breakout   Boolean @default(false) // 收盘>箱顶×1.001 且 量≥1.6×箱均量 且 涨幅2~9.5%
+
+  @@id([tsCode, tradeDate])
+  @@index([tradeDate])
+  @@map("stock_box")
+}
+
 /// 指数估值历史（6 大指数 × 多日），由 sync-index-valuation 拉
 model IndexValuation {
   tsCode       String @db.VarChar(12) @map("ts_code")
@@ -192,6 +209,7 @@ model AiScreenRun {
   degradation       String[] // 降级日志
   riskEnabled       Boolean @default(true) @map("risk_enabled")
   portfolioEnabled  Boolean @default(false) @map("portfolio_enabled")
+  marketRegime      String? @map("market_regime") @db.VarChar(12) // attack/neutral/defense 市场状态标记(只展示不拦截)
 
   picks AiScreenPick[]
 

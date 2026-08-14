@@ -83,6 +83,7 @@ export async function persistRun(run: AiScreenRun, candidates: AiPick[]): Promis
       degradation: run.degradation,
       riskEnabled: run.riskEnabled,
       portfolioEnabled: run.portfolioEnabled,
+      marketRegime: run.marketRegime,
       picks: { create: candidates.map(pickToCreate) },
     },
   });
@@ -108,5 +109,6 @@ export function serializeRun(r: any): AiScreenRun {
     degradation: r.degradation ?? [],
     riskEnabled: r.riskEnabled,
     portfolioEnabled: r.portfolioEnabled,
+    marketRegime: r.marketRegime ?? null,
   };
 }

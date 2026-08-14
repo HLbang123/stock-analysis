@@ -82,6 +82,9 @@ export function MinuteChart({
         vertLine: { color: isDark ? '#374151' : '#d1d5db', style: 2, labelVisible: true },
         horzLine: { color: isDark ? '#374151' : '#d1d5db', style: 2, labelVisible: true },
       },
+      // 分时图完全固定：不可拖动、不可缩放
+      handleScroll: false,
+      handleScale: false,
     });
 
     // 昨收线

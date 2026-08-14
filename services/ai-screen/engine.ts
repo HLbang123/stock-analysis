@@ -13,14 +13,21 @@ import { macdStatus, rsiStatus, volatility20d, maxDrawdown20d, atr20pct, volumeR
 import { computeScreenScores } from './scorer';
 import { rankCandidates } from './ranker';
 import { applyRiskOverlay, applyPortfolioOverlay } from './risk';
+import { boxFeatures } from '@/lib/box';
+import { detectMarketRegime, tradingDayLag } from './regime';
 
 /** CandidateRaw → AiPick，计算技术特征；返回 null 表示被 TS 侧技术硬筛剔除 */
 function enrich(c: CandidateRaw, preset: StrategyPreset): AiPick | null {
+  return enrichWithReason(c, preset).pick;
+}
+
+/** enrich 的带原因版（漏斗审计脚本用）：剔除时给出主因 */
+export function enrichWithReason(c: CandidateRaw, preset: StrategyPreset): { pick: AiPick | null; reason?: string } {
   const closes = c.closes;
   const highs = c.highs;
   const lows = c.lows;
   const vols = c.vols;
-  if (closes.length < 20 || c.latestClose == null) return null;
+  if (closes.length < 20 || c.latestClose == null) return { pick: null, reason: '数据不足' };
 
   const macd = macdStatus(closes);
   const rsiS = rsiStatus(closes);
@@ -33,15 +40,17 @@ function enrich(c: CandidateRaw, preset: StrategyPreset): AiPick | null {
   const pb = pullbackToMa20Pct(closes);
   const bo = highs.length === closes.length ? breakout20dPct(closes, highs) : null;
   const chip = chipFeatures(closes, highs, lows, vols, c.turnoverRates, c.latestClose);
+  // 箱体形态特征（只算分落库攒样本，不进权重；IC 验证有效后再升因子）
+  const box = highs.length === closes.length ? boxFeatures(closes, highs, lows) : null;
 
   // TS 侧技术硬筛
   const hf = preset.hardFilters;
-  if (hf.volumeRatioMax != null && vr != null && vr > hf.volumeRatioMax) return null;
-  if (hf.volatility20dPctMax != null && vol20 != null && vol20 > hf.volatility20dPctMax) return null;
-  if (hf.maxDrawdown20dPctMin != null && dd20 != null && dd20 < hf.maxDrawdown20dPctMin) return null;
-  if (hf.requireMaBullish && mab !== true) return null;
+  if (hf.volumeRatioMax != null && vr != null && vr > hf.volumeRatioMax) return { pick: null, reason: '量比超限' };
+  if (hf.volatility20dPctMax != null && vol20 != null && vol20 > hf.volatility20dPctMax) return { pick: null, reason: '波动率超限' };
+  if (hf.maxDrawdown20dPctMin != null && dd20 != null && dd20 < hf.maxDrawdown20dPctMin) return { pick: null, reason: '回撤超限' };
+  if (hf.requireMaBullish && mab !== true) return { pick: null, reason: 'MA非多头' };
 
-  return {
+  return { pick: {
     tsCode: c.tsCode,
     name: c.name,
     industry: c.industry,
@@ -64,6 +73,8 @@ function enrich(c: CandidateRaw, preset: StrategyPreset): AiPick | null {
     chipProfitRatio: chip.chipProfitRatio,
     chipPeakPos: chip.chipPeakPos,
     chipPeakDrift: chip.chipPeakDrift,
+    boxQuality: box?.boxQuality ?? null,
+    boxPos: box?.boxPos ?? null,
     roe: c.roe,
     grossprofitMargin: c.grossprofitMargin,
     orYoy: c.orYoy,
@@ -93,7 +104,7 @@ function enrich(c: CandidateRaw, preset: StrategyPreset): AiPick | null {
     rank: 0,
     entryPrice: c.latestClose,
     entryDate: '',
-  };
+  } };
 }
 
 export interface ScreenOutcome {
@@ -113,6 +124,12 @@ export async function runScreen(preset: StrategyPreset, llmCfg?: LlmConfig, _ful
   const degradation: string[] = [];
   const { barDate, candidates } = await fetchCandidates(preset);
 
+  // 市场环境三态（只标记不拦截，UI 徽章展示）+ 数据新鲜度按交易日滞后（≥2 个工作日标记过期）
+  const regimeInfo = await detectMarketRegime();
+  if (regimeInfo.regime === 'defense') degradation.push('market_defense_regime');
+  const staleLag = tradingDayLag(barDate);
+  if (staleLag >= 2) degradation.push(`stale_bars_lag${staleLag}`);
+
   // enrich + TS 侧技术硬筛
   let picks: AiPick[] = [];
   for (const c of candidates) {
@@ -129,6 +146,8 @@ export async function runScreen(preset: StrategyPreset, llmCfg?: LlmConfig, _ful
 
   // 因子打分(全候选)
   computeScreenScores(picks, preset);
+  // 箱体质量分并入 factorScores（权重 0 的观察因子：落库 JSON 攒样本，胜率复盘 IC 脚本加 'box' 键即可验证，验证有效前不进权重）
+  for (const p of picks) (p.factorScores as Record<string, number | null>).box = p.boxQuality;
 
   // LLM 重排(可选,仅对 topK 打分)
   let llmRanked = false;
@@ -189,6 +208,7 @@ export async function runScreen(preset: StrategyPreset, llmCfg?: LlmConfig, _ful
     degradation,
     riskEnabled: true,
     portfolioEnabled: !!preset.portfolioProfile,
+    marketRegime: regimeInfo.regime,
   };
 
   return { run, candidates: picks, picks: selected };
@@ -219,6 +239,8 @@ export function dbPickToAiPick(r: any): AiPick {
     chipProfitRatio: r.chipProfitRatio ?? null,
     chipPeakPos: r.chipPeakPos ?? null,
     chipPeakDrift: r.chipPeakDrift ?? null,
+    boxQuality: r.boxQuality ?? null,
+    boxPos: r.boxPos ?? null,
     roe: r.roe,
     grossprofitMargin: r.grossprofitMargin,
     orYoy: r.orYoy,

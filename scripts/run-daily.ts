@@ -14,6 +14,8 @@ const STEPS: { name: string; cmd: string; fatal?: boolean }[] = [
   { name: "基金日线", cmd: "npx tsx scripts/sync-fund-daily.ts", fatal: false },
   { name: "涨跌停价", cmd: "npx tsx scripts/sync-stock-limit.ts", fatal: false },
   { name: "大盘宽度", cmd: "npx tsx scripts/compute-market-breadth.ts" },
+  // 吸筹箱体预计算（扫描器箱体条件/后续突破预警的数据源，失败不阻断）
+  { name: "箱体形态", cmd: "npx tsx scripts/compute-box.ts", fatal: false },
   { name: "行业指数", cmd: "npx tsx scripts/sync-sw-daily.ts" },
   { name: "指数估值", cmd: "npx tsx scripts/sync-index-valuation.ts" },
   { name: "融资融券", cmd: "npx tsx scripts/sync-margin.ts" },

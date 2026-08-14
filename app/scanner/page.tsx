@@ -3,7 +3,7 @@
 import { useState, useCallback, useEffect, useMemo } from 'react';
 import { useRouter } from 'next/navigation';
 import { useStockStore } from '@/store';
-import { useScannerStore, type Board } from '@/store/scanner-store';
+import { useScannerStore, type Board, type ScanPhase } from '@/store/scanner-store';
 import { useUiStore } from '@/store/ui-store';
 import { cn } from '@/lib/utils';
 import { Card } from '@/components/ui/card';
@@ -25,7 +25,17 @@ const RSI_PERIODS = [
   { value: 24, label: '24日' },
 ];
 
+/** 阶段预设：一键套用下方趋势条件组（套用后每行仍可单独勾选/改数值） */
+const PHASES: { value: ScanPhase; label: string }[] = [
+  { value: 'none', label: '不限' },
+  { value: 'startup', label: '启动期' },
+  { value: 'uptrend', label: '上升期' },
+  { value: 'pullback', label: '回踩整理' },
+];
+
 const GC_PRESETS = [1, 3, 5];
+const MB_DAYS = [3, 5, 10, 15, 20];
+const NEAR_HIGH_OPTS = [10, 15, 20, 25, 30, 40];
 
 export default function ScannerPage() {
   // tab 位置存 ui-store：从扫描结果钻进详情返回后仍停在原 tab（useState 会被重挂载重置为默认 ai）
@@ -67,10 +77,23 @@ function ManualScan() {
     rpsIndustry, setRpsIndustry,
     industryLevel, setIndustryLevel,
     rpsResults, setRpsResults,
-    filterRps, setFilterRps,
+    phase, applyPhase,
     goldenCross, setGoldenCross,
     gcDaysList, setGcDaysList,
     ma55Up, setMa55Up,
+    filterMb, setFilterMb,
+    mbDays, setMbDays,
+    maRising, setMaRising,
+    nearHigh250, setNearHigh250,
+    filterBias55, setFilterBias55,
+    bias55Min, setBias55Min,
+    bias55Max, setBias55Max,
+    filterPbMa13, setFilterPbMa13,
+    pbMa13Min, setPbMa13Min,
+    pbMa13Max, setPbMa13Max,
+    volShrink, setVolShrink,
+    boxMode, setBoxMode,
+    filterRps, setFilterRps,
     filterRoe, setFilterRoe,
     minRoe, setMinRoe,
     filterRsi, setFilterRsi,
@@ -128,8 +151,16 @@ function ManualScan() {
       params.set('filterRps', String(st.filterRps));
       if (st.filterRps) params.set('minRps', String(st.rpsMin));
       if (st.rpsIndustry) { params.set('industry', st.rpsIndustry); params.set('industryLevel', st.industryLevel); }
+      // 趋势/阶段条件（阶段预设就是这组条件的一键套用，逐行可改）
       if (st.goldenCross) { params.set('goldenCross', 'true'); params.set('gcDaysList', st.gcDaysList.join(',')); }
       if (st.ma55Up) params.set('ma55Up', 'true');
+      if (st.filterMb) params.set('mbDays', String(st.mbDays));
+      if (st.maRising) params.set('maRising', 'true');
+      if (st.nearHigh250 != null) params.set('nearHigh250', String(st.nearHigh250));
+      if (st.filterBias55) { params.set('bias55Min', String(st.bias55Min)); params.set('bias55Max', String(st.bias55Max)); }
+      if (st.filterPbMa13) { params.set('pbMa13Min', String(st.pbMa13Min)); params.set('pbMa13Max', String(st.pbMa13Max)); }
+      if (st.volShrink) params.set('volShrink', 'true');
+      if (st.boxMode) params.set('box', st.boxMode);
       if (st.filterRoe) { params.set('filterRoe', 'true'); params.set('minRoe', String(st.minRoe)); }
       if (st.filterRsi) {
         params.set('filterRsi', 'true');
@@ -220,9 +251,16 @@ function ManualScan() {
 
   // 当前查询条件描述
   const condParts: string[] = [];
-  if (filterRps) condParts.push(`RPS(${rpsPeriods.join('/')})≥${rpsMin}`);
   if (goldenCross) condParts.push(`5/13金叉(${gcDaysList.map((d) => (d === 0 ? '即将' : `近${d}日`)).join('/')})`);
-  if (ma55Up) condParts.push('价格在55日线上方');
+  if (ma55Up) condParts.push('站上55日线');
+  if (filterMb) condParts.push(`多头排列≥${mbDays}日`);
+  if (maRising) condParts.push('三线上行');
+  if (nearHigh250 != null) condParts.push(`距年新高≤${nearHigh250}%`);
+  if (filterBias55) condParts.push(`乖离${bias55Min}~${bias55Max}%`);
+  if (filterPbMa13) condParts.push(`贴MA13(${pbMa13Min}~${pbMa13Max}%)`);
+  if (volShrink) condParts.push('缩量整理');
+  if (boxMode) condParts.push(boxMode === 'breakout' ? '突破箱体' : '吸筹箱体');
+  if (filterRps) condParts.push(`RPS(${rpsPeriods.join('/')})≥${rpsMin}`);
   if (filterRoe) condParts.push(`ROE≥${minRoe}%`);
   if (filterMv) condParts.push(`流通市值≥${minMv}亿`);
   if (filterRsi) {
@@ -404,6 +442,20 @@ function ManualScan() {
       {/* 筛选条件 */}
       <Card className="p-4 mb-4">
         <div className="space-y-3">
+          {/* 阶段预设（一键套用下方趋势条件组，套用后仍可逐行改） */}
+          <div className="flex flex-wrap items-center gap-3">
+            <span className="text-sm font-medium">阶段</span>
+            <div className="flex gap-1">
+              {PHASES.map(p => (
+                <button key={p.value} onClick={() => applyPhase(p.value)}
+                  className={cn("px-3 py-1.5 rounded-lg text-sm transition",
+                    phase === p.value ? "bg-blue-600 text-white" : "bg-gray-100 dark:bg-gray-700 text-gray-600 dark:text-gray-400 hover:bg-gray-200")}>
+                  {p.label}
+                </button>
+              ))}
+            </div>
+          </div>
+
           {/* RPS */}
           <div className="flex flex-wrap items-center gap-3">
             <label className="flex items-center gap-2 text-sm font-medium cursor-pointer">
@@ -459,7 +511,6 @@ function ManualScan() {
                   onChange={e => onCustomGcDays(e.target.value)}
                   className="w-16 px-2 py-1.5 border border-gray-200 dark:border-gray-700 rounded-lg bg-white dark:bg-gray-800 text-sm" />
                 <span className="text-sm text-gray-500">日</span>
-                <span className="text-xs text-gray-400">可多选，任一窗口命中即可</span>
               </>
             )}
           </div>
@@ -468,8 +519,107 @@ function ManualScan() {
           <div className="flex flex-wrap items-center gap-3">
             <label className="flex items-center gap-2 text-sm font-medium cursor-pointer">
               <input type="checkbox" checked={ma55Up} onChange={e => setMa55Up(e.target.checked)} className="w-4 h-4 rounded accent-blue-600" />
-              股价在55日线上方
+              站上55日线
             </label>
+          </div>
+
+          {/* 均线多头排列 */}
+          <div className="flex flex-wrap items-center gap-3">
+            <label className="flex items-center gap-2 text-sm font-medium cursor-pointer">
+              <input type="checkbox" checked={filterMb} onChange={e => setFilterMb(e.target.checked)} className="w-4 h-4 rounded accent-blue-600" />
+              多头排列
+            </label>
+            {filterMb && (
+              <>
+                <span className="text-sm text-gray-500">持续 ≥</span>
+                <select value={mbDays} onChange={e => setMbDays(Number(e.target.value))}
+                  className="px-3 py-1.5 border border-gray-200 dark:border-gray-700 rounded-lg bg-white dark:bg-gray-800 text-sm">
+                  {MB_DAYS.map(n => <option key={n} value={n}>{n}</option>)}
+                </select>
+                <span className="text-sm text-gray-500">日</span>
+              </>
+            )}
+          </div>
+
+          {/* 三线上行 + 缩量整理（无参数，合并一行） */}
+          <div className="flex flex-wrap items-center gap-4">
+            <label className="flex items-center gap-2 text-sm font-medium cursor-pointer">
+              <input type="checkbox" checked={maRising} onChange={e => setMaRising(e.target.checked)} className="w-4 h-4 rounded accent-blue-600" />
+              三线上行
+            </label>
+            <label className="flex items-center gap-2 text-sm font-medium cursor-pointer">
+              <input type="checkbox" checked={volShrink} onChange={e => setVolShrink(e.target.checked)} className="w-4 h-4 rounded accent-blue-600" />
+              缩量整理
+            </label>
+          </div>
+
+          {/* 距250日新高 */}
+          <div className="flex flex-wrap items-center gap-3">
+            <label className="flex items-center gap-2 text-sm font-medium cursor-pointer">
+              <input type="checkbox" checked={nearHigh250 != null} onChange={e => setNearHigh250(e.target.checked ? 25 : null)} className="w-4 h-4 rounded accent-blue-600" />
+              距一年新高 ≤
+            </label>
+            {nearHigh250 != null && (
+              <select value={nearHigh250} onChange={e => setNearHigh250(Number(e.target.value))}
+                className="px-3 py-1.5 border border-gray-200 dark:border-gray-700 rounded-lg bg-white dark:bg-gray-800 text-sm">
+                {NEAR_HIGH_OPTS.map(n => <option key={n} value={n}>{n}%</option>)}
+              </select>
+            )}
+          </div>
+
+          {/* 乖离率（对55日线） */}
+          <div className="flex flex-wrap items-center gap-3">
+            <label className="flex items-center gap-2 text-sm font-medium cursor-pointer">
+              <input type="checkbox" checked={filterBias55} onChange={e => setFilterBias55(e.target.checked)} className="w-4 h-4 rounded accent-blue-600" />
+              乖离率(55线)
+            </label>
+            {filterBias55 && (
+              <>
+                <input type="number" value={bias55Min} onChange={e => setBias55Min(Number(e.target.value) || 0)}
+                  className="w-16 px-2 py-1.5 border border-gray-200 dark:border-gray-700 rounded-lg bg-white dark:bg-gray-800 text-sm" />
+                <span className="text-sm text-gray-500">~</span>
+                <input type="number" value={bias55Max} onChange={e => setBias55Max(Number(e.target.value) || 0)}
+                  className="w-16 px-2 py-1.5 border border-gray-200 dark:border-gray-700 rounded-lg bg-white dark:bg-gray-800 text-sm" />
+                <span className="text-sm text-gray-500">%</span>
+              </>
+            )}
+          </div>
+
+          {/* 贴近MA13（回踩） */}
+          <div className="flex flex-wrap items-center gap-3">
+            <label className="flex items-center gap-2 text-sm font-medium cursor-pointer">
+              <input type="checkbox" checked={filterPbMa13} onChange={e => setFilterPbMa13(e.target.checked)} className="w-4 h-4 rounded accent-blue-600" />
+              贴近13日线
+            </label>
+            {filterPbMa13 && (
+              <>
+                <input type="number" value={pbMa13Min} onChange={e => setPbMa13Min(Number(e.target.value) || 0)}
+                  className="w-16 px-2 py-1.5 border border-gray-200 dark:border-gray-700 rounded-lg bg-white dark:bg-gray-800 text-sm" />
+                <span className="text-sm text-gray-500">~</span>
+                <input type="number" value={pbMa13Max} onChange={e => setPbMa13Max(Number(e.target.value) || 0)}
+                  className="w-16 px-2 py-1.5 border border-gray-200 dark:border-gray-700 rounded-lg bg-white dark:bg-gray-800 text-sm" />
+                <span className="text-sm text-gray-500">%</span>
+              </>
+            )}
+          </div>
+
+          {/* 吸筹箱体 */}
+          <div className="flex flex-wrap items-center gap-3">
+            <label className="flex items-center gap-2 text-sm font-medium cursor-pointer">
+              <input type="checkbox" checked={boxMode !== ''} onChange={e => setBoxMode(e.target.checked ? 'in' : '')} className="w-4 h-4 rounded accent-blue-600" />
+              吸筹箱体
+            </label>
+            {boxMode !== '' && (
+              <div className="flex gap-1">
+                {([['in', '箱体内'], ['breakout', '已突破']] as const).map(([v, label]) => (
+                  <button key={v} onClick={() => setBoxMode(v)}
+                    className={cn("px-3 py-1.5 rounded-lg text-sm transition",
+                      boxMode === v ? "bg-blue-600 text-white" : "bg-gray-100 dark:bg-gray-700 text-gray-600 dark:text-gray-400 hover:bg-gray-200")}>
+                    {label}
+                  </button>
+                ))}
+              </div>
+            )}
           </div>
 
           {/* ROE */}

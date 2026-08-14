@@ -73,6 +73,19 @@ export function KLineChart({
         timeVisible: false,
         rightOffset: 3,
       },
+      // 只允许左右滑动 + 横向缩放（双指捏合/滚轮/时间轴拖拽）；纵向锁死自适应
+      handleScroll: {
+        mouseWheel: false,
+        pressedMouseMove: true,
+        horzTouchDrag: true,
+        vertTouchDrag: false,
+      },
+      handleScale: {
+        mouseWheel: true,
+        pinch: true,
+        axisPressedMouseMove: { time: true, price: false },
+        axisDoubleClickReset: false,
+      },
     });
 
     // K线 (A股配色: 红涨绿跌)
@@ -150,7 +163,10 @@ export function KLineChart({
       });
     }
 
-    chart.timeScale().fitContent();
+    // 默认只展示最近 20 根 K 线（rightOffset 3 格留白），更早的左右滑动查看
+    const to = candleData.length - 1 + 3;
+    const from = Math.max(0, candleData.length - 20);
+    chart.timeScale().setVisibleLogicalRange({ from, to });
     chartRef.current = chart;
     return chart;
   }, [data, showVolume, height, onBarClick, resolvedTheme, levels]);
