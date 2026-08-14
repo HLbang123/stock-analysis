@@ -174,7 +174,7 @@ export async function prepareDeepContext(
 
   const updatedKLines = kLines.length >= 5 ? buildUpdatedKLines(quote, kLines) : kLines;
   const chip: ChipDistribution | null = await getChipData(selectedCode).catch(() => null);
-  const engineResults = checkAllRules(updatedKLines, quote, ALERT_RULES.filter(r => r.isEnabled), chip);
+  const engineResults = checkAllRules(updatedKLines, quote, ALERT_RULES.filter(r => r.isEnabled), chip, undefined, isETF(selectedCode));
   const engineSummary = engineResults.length > 0
     ? engineResults.map(r => `${r.ruleId}:${r.message}`).join('; ')
     : '未触发任何破位/死叉/急跌等风险信号，技术面健康';

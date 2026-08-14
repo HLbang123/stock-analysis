@@ -98,17 +98,6 @@ model IndexValuation {
   @@map("index_valuation")
 }
 
-/// 北向资金（一行/交易日），由 sync-hsgt 拉
-model NorthboundFlow {
-  tradeDate  String @id @db.VarChar(8) @map("trade_date")
-  northMoney Float? @map("north_money") // 当日净流入(万元)
-  hgt        Float? // 沪股通
-  sgt        Float? // 深股通
-  northTotal Float? @map("north_total") // 累计余额(万元)
-
-  @@map("northbound_flow")
-}
-
 /// 融资融券市场总量（一行/交易所/日），由 sync-margin 拉
 model MarginTotal {
   tradeDate String @db.VarChar(8) @map("trade_date")
@@ -380,19 +369,6 @@ model WeeklyReview {
   @@map("weekly_reviews")
 }
 
-/// 每日简报（盘前提示 morning / 盘后日报 daily）— 复盘弹窗 tab 数据源
-model DailyBrief {
-  id        String @id @default(uuid()) @db.VarChar(36)
-  briefDate String @map("brief_date") @db.VarChar(8) // 交易日 YYYYMMDD
-  type      String @db.VarChar(8)                    // morning=盘前提示 / daily=盘后日报
-  payload   String @db.Text                          // 完整简报 JSON
-  createdAt String @map("created_at") @db.VarChar(32)
-
-  @@unique([briefDate, type])
-  @@index([briefDate])
-  @@map("daily_briefs")
-}
-
 /// 波段评分(做T)信号在线落库 — 每次用户算评分顺手记一条（因子分口径），日内/隔日收益回填
 /// 样本来源是真实使用（无历史分时可回放），攒够后做因子权重扫描
 model TScoreRecord {
@@ -497,6 +473,25 @@ model FundDaily {
   @@id([tsCode, tradeDate])
   @@index([tradeDate])
   @@map("fund_daily_bars")
+}
+
+/// ETF 品种档案（tushare fund_basic + 派生分类，ETF 注册表唯一事实源）
+/// assetClass/tPlus0/limitPct 由 lib/fund-classify.ts classifyFund 派生。
+/// 后续若 tushare 积分到 8000，可加列 indexCode/totalSize/totalShare 后 backfill（etf_basic/etf_share_size）。
+model FundProfile {
+  tsCode     String  @id @map("ts_code") @db.VarChar(12) // 511880.SH
+  name       String  @db.VarChar(40)
+  fundType   String? @map("fund_type") @db.VarChar(20) // 股票型/债券型/混合型/货币型/另类投资型
+  investType String? @map("invest_type") @db.VarChar(20) // 被动指数型/增强指数型
+  benchmark  String? @db.VarChar(120) // 业绩基准文本
+  listDate   String? @map("list_date") @db.VarChar(8)
+  delistDate String? @map("delist_date") @db.VarChar(8)
+  assetClass String? @map("asset_class") @db.VarChar(16) // 派生：equity/cross-border/bond/commodity/money
+  tPlus0     Boolean @default(false) @map("t_plus0") // 派生：支持 T+0
+  limitPct   Int?    @map("limit_pct") // 派生：10/20
+  isActive   Boolean @default(true) @map("is_active")
+
+  @@map("fund_profiles")
 }
 
 /// 涨跌停价（stk_limit，全市场每票每日精确涨停/跌停价，R01 封板/炸板判定用）

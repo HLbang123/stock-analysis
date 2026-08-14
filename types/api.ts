@@ -14,10 +14,6 @@ export interface BreadthItem {
 }
 export interface BreadthResp { count: number; items: BreadthItem[] }
 
-// ── /api/market/northbound ───────────────────────────────────────────
-export interface NorthboundItem { date: string; northMoney: number | null; [k: string]: any }
-export interface NorthboundResp { count?: number; items: NorthboundItem[] }
-
 // ── /api/market/margin ───────────────────────────────────────────────
 export interface MarginItem { date: string; rzye: number | null; netChange?: number | null; [k: string]: any }
 export interface MarginResp { count?: number; items: MarginItem[] }

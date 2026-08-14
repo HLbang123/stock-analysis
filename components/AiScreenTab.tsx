@@ -7,6 +7,7 @@
 
 import { useState, useEffect, useCallback, Fragment } from 'react';
 import { useRouter } from 'next/navigation';
+import { useUiStore } from '@/store/ui-store';
 import { cn } from '@/lib/utils';
 import { Card } from '@/components/ui/card';
 import { ChevronDown, ChevronUp, Info, Sparkles, AlertTriangle, Loader2 } from 'lucide-react';
@@ -41,7 +42,9 @@ interface RunWithPicks {
 export function AiScreenTab() {
   const router = useRouter();
   const [strategies, setStrategies] = useState<StrategyInfo[]>([]);
-  const [selected, setSelected] = useState<string>('momentum');
+  // 选中策略存 ui-store：钻进详情返回后仍停在原策略（useState 会被重挂载重置）
+  const selected = useUiStore(s => s.aiScreenStrategy);
+  const setSelected = useUiStore(s => s.setAiScreenStrategy);
   const [current, setCurrent] = useState<RunWithPicks | null>(null);
   const [loading, setLoading] = useState(false);
   const [showLlm, setShowLlm] = useState(false);

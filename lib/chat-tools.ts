@@ -36,6 +36,24 @@ export async function executeTool(name: string, args: any, origin: string): Prom
         const bars = (d as any[]).slice(-days);
         return `近${bars.length}日K线(日期 开高低调收量):\n${bars.map((b: any) => `${b.date} ${b.open} ${b.high} ${b.low} ${b.close} ${b.volume}`).join('\n')}`;
       }
+      case "get_stock_fundamentals": {
+        const r = await fetch(`${origin}/api/tushare/stock-data?code=${encodeURIComponent(args.code)}`);
+        const d = await r.json();
+        if (d.error) return `获取基本面失败: ${d.error}`;
+        const data = d.data;
+        const db = data?.dailyBasic?.[0];
+        const fi = data?.finaIndicator?.[0];
+        const hk = data?.hkHold?.[0];
+        const parts: string[] = [];
+        if (db?.pe_ttm != null) parts.push(`PE ${db.pe_ttm.toFixed(1)}`);
+        if (db?.pb != null) parts.push(`PB ${db.pb.toFixed(2)}`);
+        if (fi?.roe != null) parts.push(`ROE ${fi.roe.toFixed(1)}%`);
+        if (fi?.or_yoy != null) parts.push(`营收增速${fi.or_yoy > 0 ? '+' : ''}${fi.or_yoy.toFixed(1)}%`);
+        if (db?.total_mv != null) { const yi = db.total_mv / 10000; parts.push(`总市值${yi >= 1 ? yi.toFixed(1) + '亿' : db.total_mv.toFixed(0) + '万'}`); }
+        if (hk?.hold_ratio != null) parts.push(`北向持股${hk.hold_ratio.toFixed(2)}%`);
+        if (!parts.length) return `${args.code} 无基本面数据`;
+        return `${args.code} 基本面：${parts.join(' | ')}`;
+      }
       case "get_stock_rps": {
         const { prisma } = await import("@/lib/db");
         const m = (args.code as string).match(/^([a-z]+)(\d+)$/i);
@@ -56,15 +74,6 @@ export async function executeTool(name: string, args: any, origin: string): Prom
         );
         if (!rows.length) return "无市场宽度数据";
         return rows.map((r) => `${r.trade_date}: 涨${r.advance} 跌${r.decline} 涨停${r.limit_up} 跌停${r.limit_down} MA55上方${r.above_ma55_ratio}% RPS60改善占比${r.rps_improve_ratio}%`).join('\n');
-      }
-      case "get_northbound_flow": {
-        const days = args.days || 5;
-        const { prisma } = await import("@/lib/db");
-        const rows: any[] = await prisma.$queryRawUnsafe(
-          `SELECT trade_date, north_money, north_total FROM northbound_flow ORDER BY trade_date DESC LIMIT $1`, days
-        );
-        if (!rows.length) return "无北向资金数据";
-        return rows.map((r) => `${r.trade_date}: 净流入${(r.north_money / 10000).toFixed(2)}亿 累计${(r.north_total / 10000).toFixed(0)}亿`).join('\n');
       }
       case "get_stock_history": {
         const { prisma } = await import("@/lib/db");

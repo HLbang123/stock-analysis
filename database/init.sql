@@ -78,15 +78,6 @@ CREATE TABLE IF NOT EXISTS index_valuation (
 );
 CREATE INDEX IF NOT EXISTS idx_index_val_date ON index_valuation(trade_date);
 
--- 北向资金（一行/交易日）
-CREATE TABLE IF NOT EXISTS northbound_flow (
-    trade_date   VARCHAR(8) PRIMARY KEY,
-    north_money  DOUBLE PRECISION,
-    hgt          DOUBLE PRECISION,
-    sgt          DOUBLE PRECISION,
-    north_total  DOUBLE PRECISION
-);
-
 -- 融资融券市场总量（一行/交易所/日）
 CREATE TABLE IF NOT EXISTS margin_total (
     trade_date VARCHAR(8)  NOT NULL,

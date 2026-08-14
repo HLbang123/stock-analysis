@@ -3,7 +3,7 @@
 import { useState } from 'react';
 import { useAiStore, AiProfile } from '@/store/ai-store';
 import { cn } from '@/lib/utils';
-import { X, Loader2 } from 'lucide-react';
+import { X, Loader2, Eye, EyeOff } from 'lucide-react';
 import { toast } from 'sonner';
 import { PRESET_PLATFORMS, generateId } from './shared';
 import { normalizeBaseUrl, buildLLMHeaders } from '@/lib/llm/shared';
@@ -19,6 +19,7 @@ export function ProfileFormModal({ editingProfile, onClose }: Props) {
   const aiStore = useAiStore();
   const [formName, setFormName] = useState(editingProfile?.name ?? '');
   const [formApiKey, setFormApiKey] = useState(editingProfile?.apiKey ?? '');
+  const [showApiKey, setShowApiKey] = useState(false);
   const [formBaseUrl, setFormBaseUrl] = useState(editingProfile?.baseUrl ?? '');
   const [formModel, setFormModel] = useState(editingProfile?.model ?? '');
   const [formModels, setFormModels] = useState<string[]>([]);
@@ -181,13 +182,24 @@ export function ProfileFormModal({ editingProfile, onClose }: Props) {
 
           <div>
             <label className="text-sm font-medium mb-1 block">API Key</label>
-            <input
-              type="password"
-              value={formApiKey}
-              onChange={e => setFormApiKey(e.target.value)}
-              placeholder="sk-..."
-              className="w-full p-2.5 border border-gray-200 dark:border-gray-700 rounded-lg bg-white dark:bg-gray-800 text-sm"
-            />
+            <div className="relative">
+              <input
+                type={showApiKey ? 'text' : 'password'}
+                value={formApiKey}
+                onChange={e => setFormApiKey(e.target.value)}
+                placeholder="sk-..."
+                className="w-full p-2.5 pr-10 border border-gray-200 dark:border-gray-700 rounded-lg bg-white dark:bg-gray-800 text-sm"
+              />
+              <button
+                type="button"
+                onClick={() => setShowApiKey(v => !v)}
+                className="absolute right-2.5 top-1/2 -translate-y-1/2 text-gray-400 hover:text-gray-600 dark:hover:text-gray-300 transition"
+                title={showApiKey ? '隐藏' : '显示'}
+                aria-label={showApiKey ? '隐藏 API Key' : '显示 API Key'}
+              >
+                {showApiKey ? <EyeOff className="w-4 h-4" /> : <Eye className="w-4 h-4" />}
+              </button>
+            </div>
           </div>
 
           <div>

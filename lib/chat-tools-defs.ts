@@ -48,6 +48,18 @@ export const CHAT_TOOLS = [
   {
     type: "function",
     function: {
+      name: "get_stock_fundamentals",
+      description: "获取个股基本面（估值 PE/PB、ROE、营收增速、总市值、北向持股比例），判断估值贵贱与盈利能力",
+      parameters: {
+        type: "object",
+        properties: { code: { type: "string", description: "股票代码，如 sz002463 或 sh600519" } },
+        required: ["code"],
+      },
+    },
+  },
+  {
+    type: "function",
+    function: {
       name: "get_stock_rps",
       description: "获取股票的RPS相对强度排名（20/60/120/250日百分位），判断在全市场的强弱",
       parameters: {
@@ -65,17 +77,6 @@ export const CHAT_TOOLS = [
       parameters: {
         type: "object",
         properties: { days: { type: "number", description: "近几日，默认3", default: 3 } },
-      },
-    },
-  },
-  {
-    type: "function",
-    function: {
-      name: "get_northbound_flow",
-      description: "获取北向资金流向（每日净流入+累计余额），判断外资态度",
-      parameters: {
-        type: "object",
-        properties: { days: { type: "number", description: "近几日，默认5", default: 5 } },
       },
     },
   },

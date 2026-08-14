@@ -60,7 +60,6 @@ interface AiStoreState {
   currentProfileId: string;
   history: AiAnalysisRecord[];
   chatMessages: ChatMessage[];
-  compareCodes: string[];
   lastSession: LastSession | null;
 
   addProfile: (p: AiProfile) => void;
@@ -71,7 +70,6 @@ interface AiStoreState {
   deleteHistory: (id: string) => void;
   clearHistory: () => void;
   setChatMessages: (updater: ChatMessage[] | ((prev: ChatMessage[]) => ChatMessage[])) => void;
-  setCompareCodes: (updater: string[] | ((prev: string[]) => string[])) => void;
   updateLastSession: (patch: Partial<LastSession>) => void;
   clearChatMessages: () => void;
 }
@@ -83,7 +81,6 @@ export const useAiStore = create<AiStoreState>()(
       currentProfileId: '',
       history: [],
       chatMessages: [],
-      compareCodes: [],
       lastSession: null,
 
       addProfile: (p) => {
@@ -131,11 +128,6 @@ export const useAiStore = create<AiStoreState>()(
         set({ chatMessages: next });
       },
 
-      setCompareCodes: (updater) => {
-        const next = typeof updater === 'function' ? (updater as (p: string[]) => string[])(get().compareCodes) : updater;
-        set({ compareCodes: next });
-      },
-
       updateLastSession: (patch) => {
         const prev = get().lastSession;
         set({ lastSession: { ...(prev as LastSession | null), ...patch } as LastSession });
@@ -165,7 +157,6 @@ export const useAiStore = create<AiStoreState>()(
         currentProfileId: state.currentProfileId,
         history: state.history,
         chatMessages: state.chatMessages,
-        compareCodes: state.compareCodes,
         lastSession: state.lastSession,
       }),
     }

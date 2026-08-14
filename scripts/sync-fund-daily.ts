@@ -1,6 +1,6 @@
 /**
  * 基金(ETF)日线同步 — fund_daily → fund_daily_bars
- * 只同步 ETF（51xxxx/588xxx 沪 + 159xxx 深），按 ts_code 逐只拉最近 N 日；
+ * 清单取自 fund_profiles（在营 ETF，见 sync-fund-profiles.ts），按 ts_code 逐只拉最近 N 日；
  * 初始化 --init 回补 250 日。ETF 约 900 只，按日增量时每只拉最近 5 日（覆盖周末缺口）。
  *
  * 运行：npx tsx scripts/sync-fund-daily.ts [--init]
@@ -22,19 +22,17 @@ interface FundItem {
   amount?: number;
 }
 
-const isEtfCode = (code: string) => /^(51\d{4}|588\d{3}|159\d{3})\./.test(code);
-
 async function main() {
   const isInit = process.argv.includes("--init");
   const days = isInit ? 250 : 5;
 
-  // ETF 列表：fund_basic 或 stocks 表？stocks 表不一定含 ETF → 用 fund_daily 自身去重 + 前缀过滤
-  // 直接按 trade_date 拉全量会超单次上限(基金 1万+)，改按代码前缀无法枚举 → 从 stocks 表取代码
+  // ETF 列表：fund_profiles（ETF 注册表唯一事实源，见 sync-fund-profiles.ts）。
+  // 直接按 trade_date 拉全量会超单次上限(基金 1万+)，改按代码前缀无法枚举 → 按注册表逐只拉
   const etfs: any[] = await prisma.$queryRawUnsafe(
-    `SELECT "tsCode" FROM stocks WHERE "tsCode" ~ '^(51|588|159)' ORDER BY "tsCode"`
+    `SELECT ts_code AS "tsCode" FROM fund_profiles WHERE is_active = true ORDER BY ts_code`
   );
   if (etfs.length === 0) {
-    console.log("[fund-daily] stocks 表无 ETF 代码，跳过");
+    console.log("[fund-daily] fund_profiles 无在营 ETF，跳过（先跑 sync-fund-profiles.ts --init）");
     await prisma.$disconnect();
     return;
   }

@@ -109,15 +109,17 @@ export function validateStockCode(code: string | number): { market: Market; pure
 
 /**
  * 从自由文本提取 6 位标的代码（OCR 识别文本 / 用户粘贴文本共用）。
- * 处理链：全角数字→半角（截图常见全角，不转正则完全不认）→ 窗口匹配。
- * 窗口匹配：恰好 6 位数字，允许位间夹单个空白/标点（OCR 拆行 "60 0000"、插点 "600.519"），
- * 前后不能再是数字——7 位长串（金额/日期）与"两代码相邻"被天然排除，不做整体合并（整体合并
- * 会把相邻代码拼成 12 位长串全灭，08-13 实测）。
- * 混淆字符归一化副本（OCR 把数字认成字母：0→O、1→l、5→S 等，反向映射回数字）再匹配一遍取并集；
- * 归一化可能造出假 6 位串，由后续名录校验过滤。
+ * 处理链：全角数字→半角（截图常见全角，不转正则完全不认）→ 两段窗口匹配。
+ * - 6 位窗口：允许位间夹单个空白/标点（OCR 拆行 "60 0000"、插点 "600.519"），前后非数字。
+ * - 7-9 位连续窗口（无分隔符）：仅在混淆归一化副本上跑——字母被映射成数字后，
+ *   代码前粘了误读的市场标签/列粘连噪声（"E1600183"→"31600183"，取后 6 位 "600183"）。
+ *   无分隔符避免把相邻列（代码+价格 "1600206 52.65"）拼成一条长串。
+ * 混淆字符归一化（OCR 把数字认成字母：0→O、1→l、E→3 等，反向映射回数字）；归一化可能造出假串，
+ * 由后续名录校验过滤。
  */
 export function extractStockCodes(text: string): string[] {
-  const windowRegex = /(?<!\d)(?:\d[\s.\-_/·]?){5}\d(?!\d)/g;
+  const sixRegex = /(?<!\d)(?:\d[\s.\-_/·]?){5}\d(?!\d)/g;
+  const longRegex = /(?<!\d)\d{7,9}(?!\d)/g;
   const digitsOnly = (s: string) => s.replace(/\D/g, '');
   const half = text.replace(/[０-９]/g, (ch) => String.fromCharCode(ch.charCodeAt(0) - 0xFEE0));
   const CONFUSE: Record<string, string> = {
@@ -128,9 +130,16 @@ export function extractStockCodes(text: string): string[] {
   const normalized = half.replace(/[A-Za-z|!&$]/g, (ch) => CONFUSE[ch] ?? ' ');
   const out = new Set<string>();
   for (const variant of [half, normalized]) {
-    for (const m of variant.match(windowRegex) || []) {
+    for (const m of variant.match(sixRegex) || []) {
+      // 跳过小数：以 .X/.XX 结尾的是价格/指数（如 3934.09、135.30），不是代码
+      if (/\.\d{1,2}$/.test(m)) continue;
       out.add(digitsOnly(m));
     }
+  }
+  // 7-9 位长串只在归一化副本取后 6 位（原始文本里的长数字是价格/账号，不碰）
+  for (const m of normalized.match(longRegex) || []) {
+    if (/\.\d{1,2}$/.test(m)) continue;
+    out.add(m.slice(-6));
   }
   return [...out];
 }

@@ -8,6 +8,7 @@ import { ALERT_RULES, checkAllRules, isBuyRule, REFERENCE_RULE_IDS, buyRuleWeigh
 import { AlertRecord } from '@/types';
 import { formatTime, cn } from '@/lib/utils';
 import { buildUpdatedKLines } from '@/lib/stock-helpers';
+import { isETF } from '@/lib/identify';
 import { AlertTriangle, Trash2, BarChart3, Cloud, Share2 } from 'lucide-react';
 import { UpdateLog } from '@/components/UpdateLog';
 import { AlertRulesModal } from '@/components/AlertRulesModal';
@@ -15,6 +16,7 @@ import { ReviewModal } from '@/components/ReviewModal';
 import { SyncModal } from '@/components/SyncModal';
 import { ShareModal } from '@/components/ShareModal';
 import { useSyncStore } from '@/store/sync-store';
+import { useUiStore } from '@/store/ui-store';
 import { Button } from '@/components/ui/button';
 import { PageHeader } from '@/components/ui/page-header';
 import { ALL_GROUP_ID } from '@/components/GroupBar';
@@ -54,7 +56,9 @@ export default function HomePage() {
 
   const [resultMessage, setResultMessage] = useState<string | null>(null);
   const [buyExpanded, setBuyExpanded] = useState<Set<string>>(new Set());
-  const [selectedGroupId, setSelectedGroupId] = useState<string>(ALL_GROUP_ID);
+  // 分组筛选位置存 ui-store：钻详情返回后仍在原分组（useState 会被重挂载重置）
+  const selectedGroupId = useUiStore(s => s.homeAlertGroupId);
+  const setSelectedGroupId = useUiStore(s => s.setHomeAlertGroupId);
   const [showRules, setShowRules] = useState(false);
   const [showReview, setShowReview] = useState(false);
   const [showSync, setShowSync] = useState(false);
@@ -255,7 +259,7 @@ export default function HomePage() {
 
         // 检查规则
         const enabledRules = ALERT_RULES.filter(r => r.isEnabled);
-        const results = checkAllRules(updatedKLines, quote, enabledRules, chip, limitMap);
+        const results = checkAllRules(updatedKLines, quote, enabledRules, chip, limitMap, isETF(stock.code));
 
         for (const result of results) {
           const rule = enabledRules.find(r => r.id === result.ruleId);
@@ -396,14 +400,6 @@ export default function HomePage() {
               <Share2 className="w-4 h-4" />
               分享
             </button>
-            {alerts.length > 0 && (
-              <button
-                onClick={() => clearAllAlerts()}
-                className="px-3 py-1.5 text-sm text-[var(--color-danger)] hover:bg-[var(--color-danger-soft)] rounded-[var(--radius-md)] transition"
-              >
-                清除全部
-              </button>
-            )}
           </>
         }
       />
@@ -459,6 +455,20 @@ export default function HomePage() {
           </div>
         ) : (
           <div className="mt-[var(--space-section)] space-y-3">
+            {/* 清除全部：移出顶部 header（手机端头部太挤），与预警计数并列放列表上方 */}
+            <div className="flex items-center justify-between px-1">
+              <span className="text-xs text-gray-400">
+                {groupedAlerts.reduce((s, g) => s + g.alerts.length, 0)} 条预警
+              </span>
+              <button
+                onClick={() => clearAllAlerts()}
+                className="flex items-center gap-1 text-xs text-[var(--color-danger)] hover:bg-[var(--color-danger-soft)] px-2 py-1 rounded-[var(--radius-sm)] transition"
+              >
+                <Trash2 className="w-3.5 h-3.5" />
+                清除全部
+              </button>
+            </div>
+
             {/* 分组过滤栏（有分组才显示；计数=该组下有预警的标的数） */}
             {groups.length > 0 && (
               <div className="bg-white dark:bg-gray-900 rounded-xl p-2 shadow-sm flex items-center gap-1.5 overflow-x-auto">

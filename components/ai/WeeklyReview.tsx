@@ -30,7 +30,6 @@ interface WeeklyReviewPayload {
     limitUpTotal: number;
     limitDownTotal: number;
     days: { date: string; up: number; down: number; newHigh: number | null }[];
-    northTotalWan: number;
   };
   aiScreen: {
     runs: number;
@@ -68,7 +67,7 @@ function toText(p: WeeklyReviewPayload): string {
     '【市场】',
     `涨 ${p.market.upCount} 家 / 跌 ${p.market.downCount} 家，周均涨跌 ${signed(p.market.avgChange)}`,
     ...p.market.days.map((d) => `  ${d.date}：涨 ${d.up} / 跌 ${d.down}`),
-    `涨停 ${p.sentiment?.limitUpTotal ?? '--'} 家 / 跌停 ${p.sentiment?.limitDownTotal ?? '--'} 家${p.sentiment?.northTotalWan ? `，北向净流入 ${(p.sentiment.northTotalWan / 10000).toFixed(1)} 亿` : ''}`,
+    `涨停 ${p.sentiment?.limitUpTotal ?? '--'} 家 / 跌停 ${p.sentiment?.limitDownTotal ?? '--'} 家`,
     '',
     '【AI 筛选】',
     `运行 ${p.aiScreen.runs} 次，入选 ${p.aiScreen.picks} 条`,
@@ -269,7 +268,7 @@ export function WeeklyReview() {
               ))}
             </div>
 
-            {/* 市场情绪：涨停/跌停 + 20日新高 + 北向资金（旧快照无 sentiment 字段则跳过） */}
+            {/* 市场情绪：涨停/跌停 + 20日新高（旧快照无 sentiment 字段则跳过） */}
             {p.sentiment && (
               <div className="mt-2.5 space-y-2">
                 <div className="flex items-center gap-3">
@@ -280,12 +279,6 @@ export function WeeklyReview() {
                   <div className="flex-1 text-center bg-[var(--color-down-soft)] rounded-[var(--radius-lg)] py-1.5">
                     <div className="text-base font-bold text-[var(--color-down)]">{p.sentiment.limitDownTotal}</div>
                     <div className="text-[10px] text-gray-400">跌停合计</div>
-                  </div>
-                  <div className="flex-1 text-center bg-gray-100 dark:bg-gray-800 rounded-[var(--radius-lg)] py-1.5">
-                    <div className={cn('text-base font-bold', (p.sentiment.northTotalWan ?? 0) >= 0 ? 'text-[var(--color-up)]' : 'text-[var(--color-down)]')}>
-                      {p.sentiment.northTotalWan != null ? `${(p.sentiment.northTotalWan / 10000).toFixed(1)}亿` : '--'}
-                    </div>
-                    <div className="text-[10px] text-gray-400">北向周净流入</div>
                   </div>
                 </div>
                 <div className="flex flex-wrap gap-1.5">

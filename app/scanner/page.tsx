@@ -4,6 +4,7 @@ import { useState, useCallback, useEffect, useMemo } from 'react';
 import { useRouter } from 'next/navigation';
 import { useStockStore } from '@/store';
 import { useScannerStore, type Board } from '@/store/scanner-store';
+import { useUiStore } from '@/store/ui-store';
 import { cn } from '@/lib/utils';
 import { Card } from '@/components/ui/card';
 import { PageHeader } from '@/components/ui/page-header';
@@ -27,7 +28,9 @@ const RSI_PERIODS = [
 const GC_PRESETS = [1, 3, 5];
 
 export default function ScannerPage() {
-  const [tab, setTab] = useState<'manual' | 'ai'>('ai');
+  // tab 位置存 ui-store：从扫描结果钻进详情返回后仍停在原 tab（useState 会被重挂载重置为默认 ai）
+  const tab = useUiStore(s => s.scannerTab);
+  const setTab = useUiStore(s => s.setScannerTab);
 
   return (
     <div>

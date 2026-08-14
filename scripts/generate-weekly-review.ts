@@ -53,15 +53,10 @@ async function main() {
     days: [...perDay.entries()].map(([date, d]) => ({ date: date.slice(4, 6) + '-' + date.slice(6, 8), up: d.up, down: d.down })),
   };
 
-  // ── 市场情绪：涨停/跌停家数 + 20日新高 + 北向资金（market_breadth / northbound_flow）──
+  // ── 市场情绪：涨停/跌停家数 + 20日新高（market_breadth）──
   const breadthRows = await prisma.marketBreadth.findMany({
     where: { tradeDate: { gte: ws, lte: we } },
     select: { tradeDate: true, limitUp: true, limitDown: true, newHigh20: true },
-    orderBy: { tradeDate: 'asc' },
-  });
-  const northRows = await prisma.northboundFlow.findMany({
-    where: { tradeDate: { gte: ws, lte: we } },
-    select: { tradeDate: true, northMoney: true },
     orderBy: { tradeDate: 'asc' },
   });
   const sentiment = {
@@ -73,7 +68,6 @@ async function main() {
       down: r.limitDown ?? 0,
       newHigh: r.newHigh20 ?? null,
     })),
-    northTotalWan: northRows.reduce((a, r) => a + (r.northMoney ?? 0), 0),
   };
 
   // ── AI 筛选：本周运行 + 入选建议 T+1 表现 ────────────────────────
@@ -207,7 +201,7 @@ async function main() {
     return parts.length ? `做T信号：${parts.join('，')}` : '做T信号本周暂无回填样本';
   })();
   const summary = [
-    `本周（${weekLabel}）市场${marketTone}，涨 ${upCount} / 跌 ${downCount}（周均 ${pct(avgChg)}），涨停 ${sentiment.limitUpTotal} 家${sentiment.northTotalWan ? `，北向净流入 ${(sentiment.northTotalWan / 10000).toFixed(1)} 亿` : ''}。`,
+    `本周（${weekLabel}）市场${marketTone}，涨 ${upCount} / 跌 ${downCount}（周均 ${pct(avgChg)}），涨停 ${sentiment.limitUpTotal} 家。`,
     winRateText + '。',
     tscoreText + '。',
     `深度分析 ${deepRecords.length} 次，预警触发 ${triggers.length} 次。`,

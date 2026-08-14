@@ -3,8 +3,9 @@
 import { useEffect, useState, useRef } from 'react';
 import { useRouter } from 'next/navigation';
 import { useStockStore } from '@/store';
+import { useUiStore } from '@/store/ui-store';
 import { getRealtimeQuote, getKLineSina, parseStockCode, searchStocks } from '@/services/stockApi';
-import { isETF, validateStockCode, extractStockCodes } from '@/lib/identify';
+import { isETF, validateStockCode, extractStockCodes, detectMarket } from '@/lib/identify';
 import { computeMaCross, type MaCrossState } from '@/lib/stock-helpers';
 import { RealtimeQuote } from '@/types';
 import { formatPrice, formatChange, cn } from '@/lib/utils';
@@ -16,6 +17,33 @@ import { Input } from '@/components/ui/input';
 import { GroupBar, ALL_GROUP_ID } from '@/components/GroupBar';
 import { GroupManageModal } from '@/components/GroupManageModal';
 import { MoveToGroupMenu } from '@/components/MoveToGroupMenu';
+
+/** 全量股票名录缓存（名称识别用，与搜索共用 /stocks.json 静态名录） */
+let stockDictCache: { name: string; code: string }[] | null = null;
+const loadStockDict = async (): Promise<{ name: string; code: string }[]> => {
+  if (stockDictCache) return stockDictCache;
+  try {
+    const res = await fetch('/stocks.json');
+    if (res.ok) {
+      const list: { c: string; n: string }[] = await res.json();
+      stockDictCache = list.map((s) => ({ name: s.n, code: s.c }));
+    }
+  } catch { /* 名录加载失败 → 名称识别降级为空 */ }
+  return stockDictCache ?? [];
+};
+
+/** 从自由文本提取股票名称：字典匹配，长名优先（避免短名吞掉长名，如"平安" vs "平安银行"） */
+function extractStockNames(text: string, dict: { name: string; code: string }[]): { name: string; code: string }[] {
+  let remaining = text;
+  const out: { name: string; code: string }[] = [];
+  for (const s of [...dict].sort((a, b) => b.name.length - a.name.length)) {
+    if (remaining.includes(s.name)) {
+      out.push({ name: s.name, code: s.code });
+      remaining = remaining.split(s.name).join(' '); // 移除已命中，避免子串重复
+    }
+  }
+  return out;
+}
 
 export default function WatchlistPage() {
   const router = useRouter();
@@ -32,8 +60,9 @@ export default function WatchlistPage() {
   const debounceRef = useRef<NodeJS.Timeout | null>(null);
   const ocrFileRef = useRef<HTMLInputElement>(null);
 
-  // 分组状态
-  const [selectedGroupId, setSelectedGroupId] = useState<string>(ALL_GROUP_ID);
+  // 分组状态（位置存 ui-store：钻详情返回后仍在原分组）
+  const selectedGroupId = useUiStore(s => s.watchlistGroupId);
+  const setSelectedGroupId = useUiStore(s => s.setWatchlistGroupId);
   const [showGroupManage, setShowGroupManage] = useState(false);
   const [moveMenuFor, setMoveMenuFor] = useState<string | null>(null);
 
@@ -55,22 +84,49 @@ export default function WatchlistPage() {
   // tesseract 在字符高度 ~30px 以上才准（手机截图字太小要放大），且对白字黑底的深色截图识别率暴跌。
   const preprocessImage = async (file: File): Promise<Blob> => {
     const bitmap = await createImageBitmap(file);
-    const scale = bitmap.width < 1200 ? 2 : Math.min(1, 2000 / bitmap.width);
+    // 3x 放大窄图（手机截图代码列 ~11px → 33px，跨过 tesseract ~30px 精度线），宽图也补到 ≥2400px
+    const scale = bitmap.width < 1200 ? 3 : Math.max(1, 2400 / bitmap.width);
     const canvas = document.createElement('canvas');
     canvas.width = Math.round(bitmap.width * scale);
     canvas.height = Math.round(bitmap.height * scale);
     const ctx = canvas.getContext('2d')!;
+    ctx.imageSmoothingEnabled = true;
+    ctx.imageSmoothingQuality = 'high';
     ctx.drawImage(bitmap, 0, 0, canvas.width, canvas.height);
     bitmap.close();
-    // 抽样平均亮度，偏暗判定为深色模式 → 反色
+    // 深色模式反色：抽样平均亮度偏暗 → 全图反色
     const imgData = ctx.getImageData(0, 0, canvas.width, canvas.height);
     const d = imgData.data;
     let sum = 0, n = 0;
     for (let i = 0; i < d.length; i += 400) { sum += d[i] + d[i + 1] + d[i + 2]; n++; }
     if (sum / n / 3 < 128) {
       for (let i = 0; i < d.length; i += 4) { d[i] = 255 - d[i]; d[i + 1] = 255 - d[i + 1]; d[i + 2] = 255 - d[i + 2]; }
-      ctx.putImageData(imgData, 0, 0);
     }
+
+    // 灰度 + OTSU 二值化：把浅灰小字（同花顺代码列常见 #999）拉黑、白底拉白，
+    // 否则 tesseract 内部二值化会把浅灰代码当背景丢掉（08-14 实测代码列整列读不出）
+    const gray = (i: number) => (d[i] * 299 + d[i + 1] * 587 + d[i + 2] * 114) / 1000;
+    const hist = new Uint32Array(256);
+    const total = d.length / 4;
+    for (let i = 0; i < d.length; i += 4) hist[gray(i) | 0]++;
+    let sumAll = 0;
+    for (let t = 0; t < 256; t++) sumAll += t * hist[t];
+    let sumB = 0, wB = 0, thr = 128, maxVar = 0;
+    for (let t = 0; t < 256; t++) {
+      wB += hist[t];
+      if (wB === 0) continue;
+      const wF = total - wB;
+      if (wF === 0) break;
+      sumB += t * hist[t];
+      const between = wB * wF * ((sumB / wB) - ((sumAll - sumB) / wF)) ** 2;
+      if (between > maxVar) { maxVar = between; thr = t; }
+    }
+    for (let i = 0; i < d.length; i += 4) {
+      const g = gray(i) < thr ? 0 : 255;
+      d[i] = d[i + 1] = d[i + 2] = g;
+    }
+    ctx.putImageData(imgData, 0, 0);
+
     return new Promise((resolve, reject) => canvas.toBlob((b) => (b ? resolve(b) : reject(new Error('图像预处理失败'))), 'image/png'));
   };
 
@@ -126,14 +182,32 @@ export default function WatchlistPage() {
     }
   };
 
-  // 粘贴文本提取（与截图识别同一管线，免引擎秒出）
+  // 粘贴文本提取：代码 + 名称两条路合并（名称走本地名录字典，不依赖后端/行情）
   const handleTextExtract = async () => {
     const t = ocrText.trim();
     if (!t) { toast.error('请先粘贴文本'); return; }
     setIsOcrProcessing(true);
     setOcrResults([]);
     try {
-      await finishExtract(extractStockCodes(t), '未从文本中提取到标的代码');
+      const codes = extractStockCodes(t);
+      const nameHits = extractStockNames(t, await loadStockDict());
+
+      const codeResults = codes.length > 0 ? await resolveStockCodes(codes) : [];
+      const seen = new Set(codeResults.map((r) => r.code));
+      const merged = [...codeResults];
+      for (const { name, code } of nameHits) {
+        const full = `${detectMarket(code) ?? 'sh'}${code}`;
+        if (seen.has(full)) continue;
+        seen.add(full);
+        merged.push({ code: full, name, added: isInWatchlist(full) });
+      }
+
+      if (merged.length > 0) {
+        setOcrResults(merged);
+        setOcrStatus(`识别到 ${merged.length} 只标的`);
+      } else {
+        setOcrStatus('未从文本中提取到标的（代码或名称）');
+      }
     } finally {
       setIsOcrProcessing(false);
     }
@@ -163,7 +237,7 @@ export default function WatchlistPage() {
           }
         },
       });
-      // 表格截图按"整块文本"理解，减少名称列与代码列黏连
+      // 表格截图按"整块文本"理解，减少名称列与代码列黏连（AUTO 版面分析反而漏掉代码列，08-14 实测回退）
       await worker.setParameters({ tessedit_pageseg_mode: Tesseract.PSM.SINGLE_BLOCK });
 
       const texts: string[] = [];
@@ -451,7 +525,7 @@ export default function WatchlistPage() {
                 value={ocrText}
                 onChange={(e) => setOcrText(e.target.value)}
                 rows={3}
-                placeholder="或直接粘贴持仓/关注列表文本，提取其中的标的代码"
+                placeholder="或直接粘贴持仓/关注列表文本，提取其中的代码或名称"
                 className="w-full px-3 py-2 text-sm border border-gray-200 dark:border-gray-700 rounded-[var(--radius-md)] bg-white dark:bg-gray-900 resize-none focus:outline-none focus:ring-1 focus:ring-[var(--color-accent)]"
               />
               <Button

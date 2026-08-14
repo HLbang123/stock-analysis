@@ -3,13 +3,10 @@
 import { useState, useRef, useEffect } from 'react';
 import { AiProfile, useAiStore, type ChatMessage } from '@/store/ai-store';
 import { Stock } from '@/types';
-import { getRealtimeQuote, getKLineSina } from '@/services/stockApi';
-import { fetchTushareData, formatTopListForChat } from '@/services/tushareData';
 import { cn } from '@/lib/utils';
-import { Send, Trash, X, Plus } from 'lucide-react';
-import { toast } from 'sonner';
+import { Send, Trash } from 'lucide-react';
 import { ReasoningPanel } from '@/components/ai/ReasoningPanel';
-import { Input, Select } from '@/components/ui/input';
+import { Input } from '@/components/ui/input';
 import { streamChatDirectChat } from '@/services/chat/browser-chat';
 import { isDirectConnectionError } from '@/services/llm/browser-client';
 import type { TScorePanelResult } from '@/components/ai/TScorePanel';
@@ -83,13 +80,9 @@ export function AiChat({ currentProfile, selectedCode, watchlist, result, deepSt
   // chat 状态以 store 为单一事实源（切路由恢复）；本地只留输入框/流式开关等瞬态
   const chatMessages = useAiStore(s => s.chatMessages);
   const setChatMessages = useAiStore(s => s.setChatMessages);
-  const compareCodes = useAiStore(s => s.compareCodes);
-  const setCompareCodes = useAiStore(s => s.setCompareCodes);
   const [chatInput, setChatInput] = useState('');
   const [isChatStreaming, setIsChatStreaming] = useState(false);
-  const [attachStockContext, setAttachStockContext] = useState(true);
   const [attachAnalysisResult, setAttachAnalysisResult] = useState(true);
-  const [pendingAdd, setPendingAdd] = useState('');
   const chatAbortRef = useRef<AbortController | null>(null);
   const chatEndRef = useRef<HTMLDivElement>(null);
   // 流式回复本地累积：每 token 只 set 本地 state 触发渲染，不写 store（避免每 token 写 localStorage）；
@@ -107,20 +100,6 @@ export function AiChat({ currentProfile, selectedCode, watchlist, result, deepSt
     }
     chatEndRef.current?.scrollIntoView({ behavior: 'smooth' });
   }, [chatMessages, streamingMsg]);
-
-  // 主标的固定首位（随上方选择自动切换，不累积）；compareCodes 只存用户手动添加的对比标的
-  const effectiveCodes = selectedCode
-    ? [selectedCode, ...compareCodes.filter(c => c !== selectedCode)].slice(0, 5)
-    : compareCodes.slice(0, 5);
-
-  const addCompareCode = (code: string) => {
-    if (!code || effectiveCodes.includes(code) || effectiveCodes.length >= 5) return;
-    setCompareCodes(prev => [...prev, code]);
-  };
-
-  const removeCompareCode = (code: string) => {
-    setCompareCodes(prev => prev.filter(c => c !== code));
-  };
 
   const cancelChat = () => {
     if (chatAbortRef.current) {
@@ -145,57 +124,23 @@ export function AiChat({ currentProfile, selectedCode, watchlist, result, deepSt
     useAiStore.getState().clearChatMessages();
   };
 
-  /** 拼单只标的的数据块（实时行情 + 近20日K线 + 基本面 + 龙虎榜）。取数失败返回 null。
-   *  分析结论仅附给主标的 selectedCode（对比股没有分析结果）。 */
-  const buildStockBlock = async (code: string): Promise<string | null> => {
-    const stock = watchlist.find(s => s.code === code);
-    const [quote, kLines, tushare] = await Promise.all([
-      getRealtimeQuote(code),
-      getKLineSina(code, 240, 60),
-      fetchTushareData(code).catch(() => null),
-    ]);
-    if (!quote) return null;
-    const klineSummary = kLines.slice(-20).map(k =>
-      `${k.date} ${k.open} ${k.high} ${k.low} ${k.close} ${k.volume}`
-    ).join('\n');
-    let block = `当前标的：${stock?.name || quote.name} (${code})\n实时行情：${JSON.stringify({ price: quote.price, changePercent: quote.changePercent.toFixed(2) + '%', high: quote.high, low: quote.low, open: quote.open, volume: quote.volume })}\n近20日K线：\n${klineSummary}`;
-
-    if (tushare) {
-      const parts: string[] = [];
-      const db = tushare.dailyBasic?.[0];
-      const fi = tushare.finaIndicator?.[0];
-      const hk = tushare.hkHold?.[0];
-      // 注意：tushare 缺失字段返回 null 而非 undefined，必须用 != null 兜住（否则 null.toFixed 崩溃）
-      if (db?.pe_ttm != null) parts.push(`PE ${db.pe_ttm.toFixed(1)}`);
-      if (db?.pb != null) parts.push(`PB ${db.pb.toFixed(2)}`);
-      if (fi?.roe != null) parts.push(`ROE ${fi.roe.toFixed(1)}%`);
-      if (fi?.or_yoy != null) parts.push(`营收${fi.or_yoy > 0 ? '+' : ''}${fi.or_yoy.toFixed(1)}%`);
-      if (db?.total_mv != null) {
-        const yi = db.total_mv / 10000;
-        parts.push(`市值${yi >= 1 ? yi.toFixed(1) + '亿' : db.total_mv.toFixed(0) + '万'}`);
-      }
-      if (hk?.hold_ratio != null) parts.push(`北向${hk.hold_ratio.toFixed(2)}%`);
-      if (parts.length > 0) block += `\n基本面：${parts.join(' | ')}`;
-      const tlLine = formatTopListForChat(tushare);
-      if (tlLine) block += `\n${tlLine}`;
+  /** 附带分析结论（波段评分 + 深度分析，均为页面内存状态，工具调不到，只能注入） */
+  const buildAnalysisBlock = (): string | null => {
+    const parts: string[] = [];
+    if (result) {
+      parts.push(`最新波段评分：买点 ${result.finalBuy} 分${result.buyAdjust ? `（LLM微调${result.buyAdjust > 0 ? '+' : ''}${result.buyAdjust}）` : ''}，卖点 ${result.finalSell} 分`);
+      if (result.analysis) parts.push(result.analysis);
     }
-
-    if (code === selectedCode && attachAnalysisResult) {
-      if (result) {
-        block += `\n\n最新波段评分：买点 ${result.finalBuy} 分${result.buyAdjust ? `（LLM微调${result.buyAdjust > 0 ? '+' : ''}${result.buyAdjust}）` : ''}，卖点 ${result.finalSell} 分`;
-        if (result.analysis) block += `\n${result.analysis}`;
+    if (deepStructured?.action) {
+      parts.push(`最新深度分析结论：${deepStructured.action} | 风险${deepStructured.riskLevel} | 信心${deepStructured.confidence}% | 仓位${Number.isFinite(deepStructured.position) ? deepStructured.position.toFixed(0) + '%' : '--'} | 目标${Number.isFinite(deepStructured.targetLow) ? deepStructured.targetLow.toFixed(2) : '--'}-${Number.isFinite(deepStructured.targetHigh) ? deepStructured.targetHigh.toFixed(2) : '--'} | 止损${Number.isFinite(deepStructured.stopLoss) ? deepStructured.stopLoss.toFixed(2) : '--'}`);
+      if (deepStructured.keyPoints && deepStructured.keyPoints.length > 0) {
+        parts.push(`关键要点：${deepStructured.keyPoints.join('；')}`);
       }
-      if (deepStructured?.action) {
-        block += `\n\n最新深度分析结论：${deepStructured.action} | 风险${deepStructured.riskLevel} | 信心${deepStructured.confidence}% | 仓位${Number.isFinite(deepStructured.position) ? deepStructured.position.toFixed(0) + '%' : '--'} | 目标${Number.isFinite(deepStructured.targetLow) ? deepStructured.targetLow.toFixed(2) : '--'}-${Number.isFinite(deepStructured.targetHigh) ? deepStructured.targetHigh.toFixed(2) : '--'} | 止损${Number.isFinite(deepStructured.stopLoss) ? deepStructured.stopLoss.toFixed(2) : '--'}`;
-        if (deepStructured.keyPoints && deepStructured.keyPoints.length > 0) {
-          block += `\n关键要点：${deepStructured.keyPoints.join('；')}`;
-        }
-        if (deepStructured.reasoning) {
-          block += `\n决策理由：${deepStructured.reasoning.slice(0, 300)}`;
-        }
+      if (deepStructured.reasoning) {
+        parts.push(`决策理由：${deepStructured.reasoning.slice(0, 300)}`);
       }
     }
-    return block;
+    return parts.length ? parts.join('\n') : null;
   };
 
   const sendMessage = async (text?: string) => {
@@ -213,17 +158,15 @@ export function AiChat({ currentProfile, selectedCode, watchlist, result, deepSt
     chatAbortRef.current = abortController;
 
     try {
+      // 只注入当前选中标的身份（一行，数据由 AI 通过工具按需取）；分析结论（页面内存状态）仍注入
       let stockContext = '';
-      if (attachStockContext && effectiveCodes.length > 0) {
-        const blocks = await Promise.all(effectiveCodes.map(code => buildStockBlock(code)));
-        stockContext = effectiveCodes
-          .map((code, i) => {
-            if (!blocks[i]) return null;
-            const name = watchlist.find(s => s.code === code)?.name || code;
-            return `=== 对比标的 ${i + 1}/${effectiveCodes.length}：${name} (${code}) ===\n${blocks[i]}`;
-          })
-          .filter(Boolean)
-          .join('\n\n');
+      if (selectedCode) {
+        const name = watchlist.find(s => s.code === selectedCode)?.name || selectedCode;
+        stockContext = `当前选中标的：${name} (${selectedCode})`;
+      }
+      if (attachAnalysisResult) {
+        const analysis = buildAnalysisBlock();
+        if (analysis) stockContext += `\n\n## 附带分析结论（对当前选中标的 ${selectedCode || ''}）\n${analysis}`;
       }
 
       const recentMessages = chatMessages.slice(-20).map(m => ({ role: m.role, content: m.content }));
@@ -305,17 +248,6 @@ export function AiChat({ currentProfile, selectedCode, watchlist, result, deepSt
           AI 对话
         </h3>
         <div className="flex items-center gap-2">
-          <label className="flex items-center gap-1.5 cursor-pointer select-none">
-            <input
-              type="checkbox"
-              checked={attachStockContext}
-              onChange={(e) => setAttachStockContext(e.target.checked)}
-              className="w-3.5 h-3.5 rounded accent-blue-600"
-            />
-            <span className="text-xs text-gray-500">
-              {effectiveCodes.length > 0 ? `附上 ${effectiveCodes.length} 只标的数据` : '附上标的数据'}
-            </span>
-          </label>
           {(result || deepStructured?.action) && (
             <label className="flex items-center gap-1.5 cursor-pointer select-none">
               <input
@@ -338,72 +270,6 @@ export function AiChat({ currentProfile, selectedCode, watchlist, result, deepSt
             </button>
           )}
         </div>
-      </div>
-
-      {/* 对比标的：主标的随上方切换自动更新，其余手动添加（合计最多 5 只） */}
-      <div className="flex flex-wrap items-center gap-2 mb-3">
-        <Select
-          value={pendingAdd}
-          onChange={(e) => setPendingAdd(e.target.value)}
-          block={false}
-          className="p-1.5 text-xs max-w-[180px] w-auto"
-        >
-          <option value="">-- 添加自选 --</option>
-          {watchlist.filter(s => !effectiveCodes.includes(s.code)).map(stock => (
-            <option key={stock.code} value={stock.code}>
-              {stock.name} ({stock.code})
-            </option>
-          ))}
-        </Select>
-        <button
-          type="button"
-          onClick={() => {
-            if (effectiveCodes.length >= 5) {
-              toast.warning('最多对比 5 只标的');
-              return;
-            }
-            addCompareCode(pendingAdd);
-            setPendingAdd('');
-          }}
-          className="p-1.5 rounded-lg bg-blue-600 text-white hover:bg-blue-700 transition disabled:opacity-40"
-          disabled={!pendingAdd || effectiveCodes.length >= 5}
-          title="添加到对比"
-        >
-          <Plus className="w-3.5 h-3.5" />
-        </button>
-        {effectiveCodes.length === 0 ? (
-          <span className="text-xs text-gray-400">未选择对比标的（可只发纯问答）</span>
-        ) : (
-          effectiveCodes.map(code => {
-            const name = watchlist.find(s => s.code === code)?.name || code;
-            const isPrimary = code === selectedCode;
-            return (
-              <span
-                key={code}
-                title={isPrimary ? '当前选中标的，随上方切换自动更新' : undefined}
-                className={cn(
-                  'inline-flex items-center gap-1 px-2 py-1 rounded-full text-xs',
-                  isPrimary
-                    ? 'bg-purple-50 dark:bg-purple-900/30 text-purple-700 dark:text-purple-300'
-                    : 'bg-blue-50 dark:bg-blue-900/30 text-blue-700 dark:text-blue-300',
-                )}
-              >
-                {isPrimary && <span className="opacity-60">主</span>}
-                {name} ({code})
-                {!isPrimary && (
-                  <button
-                    type="button"
-                    onClick={() => removeCompareCode(code)}
-                    className="hover:text-red-500 transition"
-                    title="移除"
-                  >
-                    <X className="w-3 h-3" />
-                  </button>
-                )}
-              </span>
-            );
-          })
-        )}
       </div>
 
       {(chatMessages.length > 0 || isChatStreaming) && (

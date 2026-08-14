@@ -1,6 +1,7 @@
 'use client';
 
 import { useState, useEffect, useCallback } from 'react';
+import { useUiStore } from '@/store/ui-store';
 import { EChart } from '@/components/market/EChart';
 import { Card } from '@/components/ui/card';
 import { PageHeader } from '@/components/ui/page-header';
@@ -8,7 +9,7 @@ import { Select } from '@/components/ui/input';
 import { cn } from '@/lib/utils';
 import { getJSON, getJSONOr } from '@/services/api';
 import type {
-  BreadthResp, BreadthItem, NorthboundResp, NorthboundItem, MarginResp, MarginItem,
+  BreadthResp, BreadthItem, MarginResp, MarginItem,
   RpsSectorsResp, RpsSectorItem, SectorFlowResp, SectorFlowItem, SectorIndexResp, SectorIndexItem,
   IndexValuationResp, LimitUpResp, HotStocksResp,
 } from '@/types/api';
@@ -25,15 +26,15 @@ const IDX_OPTIONS = [
 ];
 
 const md = (d: string) => d ? `${d.slice(4, 6)}-${d.slice(6, 8)}` : '';
-const yi = (wan: number | null) => (wan == null ? null : Number((wan / 10000).toFixed(2))); // 万元→亿
 const yi2 = (yuan: number | null) => (yuan == null ? null : Number((yuan / 1e8).toFixed(2))); // 元→亿
 
 export default function MarketPage() {
   const [breadth, setBreadth] = useState<BreadthItem[]>([]);
-  const [northbound, setNorthbound] = useState<NorthboundItem[]>([]);
   const [margin, setMargin] = useState<MarginItem[]>([]);
   const [sectors, setSectors] = useState<RpsSectorItem[]>([]);
-  const [idxCode, setIdxCode] = useState('000001.SH');
+  // 指数估值选中项存 ui-store：切页/返回后仍是上次看的指数
+  const idxCode = useUiStore(s => s.marketIdxCode);
+  const setIdxCode = useUiStore(s => s.setMarketIdxCode);
   const [idxVal, setIdxVal] = useState<IndexValuationResp | null>(null);
   const [loading, setLoading] = useState(true);
   const [limitUp, setLimitUp] = useState<LimitUpResp | null>(null);
@@ -44,9 +45,8 @@ export default function MarketPage() {
   const fetchAll = useCallback(async () => {
     setLoading(true);
     try {
-      const [b, n, m, s, lu, hs, sf, si] = await Promise.all([
+      const [b, m, s, lu, hs, sf, si] = await Promise.all([
         getJSON<BreadthResp>('/api/market/breadth?days=60'),
-        getJSON<NorthboundResp>('/api/market/northbound?days=120'),
         getJSON<MarginResp>('/api/market/margin?days=120'),
         getJSON<RpsSectorsResp>('/api/rps/sectors?period=60&min=87'),
         getJSONOr<LimitUpResp | null>('/api/limit-up', null),
@@ -55,7 +55,6 @@ export default function MarketPage() {
         getJSONOr<SectorIndexResp | null>('/api/market/sector-index?days=1', null),
       ]);
       if (b.items) setBreadth(b.items);
-      if (n.items) setNorthbound(n.items);
       if (m.items) setMargin(m.items);
       if (s.sectors) setSectors(s.sectors);
       if (lu && !lu.error) setLimitUp(lu);
@@ -229,25 +228,6 @@ export default function MarketPage() {
                   xAxis: { type: 'category', data: (idxVal?.history ?? []).map(h => md(h.date)), axisLabel: { fontSize: 10 } },
                   yAxis: { type: 'value', scale: true },
                   series: [{ type: 'line', data: (idxVal?.history ?? []).map(h => h.pe), smooth: true, showSymbol: false, lineStyle: { width: 1.5 } }],
-                }} />
-              ) : <Empty />}
-            </div>
-          </Card>
-
-          {/* 5. 北向资金 */}
-          <Card className="p-4">
-            <h3 className="font-medium mb-1">北向资金（亿元）</h3>
-            <p className="text-xs text-gray-500 mb-2">日净流入（柱）</p>
-            <div className="h-56">
-              {northbound.length > 0 ? (
-                <EChart option={{
-                  tooltip: { trigger: 'axis' },
-                  grid: { left: 45, right: 15, top: 15, bottom: 25 },
-                  xAxis: { type: 'category', data: northbound.map(n => md(n.date)), axisLabel: { fontSize: 10 } },
-                  yAxis: { type: 'value', name: '净流入', scale: true },
-                  series: [
-                    { name: '日净流入', type: 'bar', data: northbound.map(n => yi(n.northMoney)), itemStyle: { color: (p: any) => (p.value >= 0 ? MARKET_COLORS.up : MARKET_COLORS.down) } },
-                  ],
                 }} />
               ) : <Empty />}
             </div>

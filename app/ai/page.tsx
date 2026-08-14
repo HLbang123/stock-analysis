@@ -3,6 +3,7 @@
 import { useState, useRef, useEffect, useMemo } from 'react';
 import { useStockStore } from '@/store';
 import { useAiStore, AiProfile } from '@/store/ai-store';
+import { useUiStore } from '@/store/ui-store';
 import type { Stock } from '@/types';
 import { getRealtimeQuote, getKLineSina, getMinuteDataCached, getChipData, fetchMarketStatusNote, searchStocks, parseStockCode } from '@/services/stockApi';
 import { ALERT_RULES, checkAllRules } from '@/services/alertRules';
@@ -72,8 +73,9 @@ export default function AiPage() {
   const [showSettings, setShowSettings] = useState(false);
   const [showAddProfile, setShowAddProfile] = useState(false);
   const [mode, setMode] = useState<'analyze'>('analyze');
-  // 底部平级切换：AI 对话 / 历史分析（胜率复盘已迁至首页「复盘」弹窗）
-  const [deepTab, setDeepTab] = useState<'chat' | 'history'>('chat');
+  // 底部平级切换：AI 对话 / 历史分析（胜率复盘已迁至首页「复盘」弹窗）；位置存 ui-store 防重挂载丢失
+  const deepTab = useUiStore(s => s.aiDeepTab);
+  const setDeepTab = useUiStore(s => s.setAiDeepTab);
   const [editingProfile, setEditingProfile] = useState<AiProfile | null>(null);
   const [selectedCode, setSelectedCode] = useState<string>(aiStore.lastSession?.selectedCode ?? '');
   // 搜索选中的非自选标的（自选内标的为 null）；随 lastSession 持久化
@@ -209,7 +211,7 @@ export default function AiPage() {
       if (!quote) throw new Error('获取行情失败');
 
       const updatedKLines = kLines.length >= 5 ? buildUpdatedKLines(quote, kLines) : kLines;
-      const engineResults = checkAllRules(updatedKLines, quote, ALERT_RULES.filter(r => r.isEnabled), chip);
+      const engineResults = checkAllRules(updatedKLines, quote, ALERT_RULES.filter(r => r.isEnabled), chip, undefined, isETF(selectedCode));
       const indDaily = calculateIndicators(updatedKLines);
       const intraday = buildIntradayContext(minute);
       const marketNote = await fetchMarketStatusNote();

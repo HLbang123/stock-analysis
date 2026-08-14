@@ -979,17 +979,23 @@ export type LimitPriceMap = Record<string, { up: number; down: number }>;
 /**
  * 检查所有启用的规则
  * @param limitMap 可选：当日精确涨跌停价表（/api/stock-limit 预取），R01 涨停封板/炸板判定用
+ * @param isETF 可选：标的为 ETF 时传 true。ETF 无打板/连板情绪生态（宽基几乎不可能涨停），
+ *   且 R01 内部量比阈值按个股口径标定（跨境 T+0 品种量比 5x 是日常），故整体跳过 R01。
+ *   P1 可回灌「对子顶/巨量见顶」子信号 + ETF 量比档（见 memory: etf-feature-notes）。
+ *   R13/R14 筹码规则无需在此禁用——ETF 无 daily_bars 换手率，chip 恒为 null，规则内部自跳过。
  */
 export function checkAllRules(
   kLines: KLineData[],
   quote: RealtimeQuote | null,
   enabledRules: AlertRule[] = ALERT_RULES.filter(r => r.isEnabled),
   chip?: ChipDistribution | null,
-  limitMap?: LimitPriceMap | null
+  limitMap?: LimitPriceMap | null,
+  isETF = false
 ): RuleCheckResult[] {
   const results: RuleCheckResult[] = [];
 
   for (const rule of enabledRules) {
+    if (isETF && rule.id === 'R01') continue;
     let result: RuleCheckResult;
     switch (rule.id) {
       case 'R01': result = checkTopPattern(kLines, quote, rule, limitMap); break;

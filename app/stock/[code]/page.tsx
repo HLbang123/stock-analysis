@@ -85,7 +85,7 @@ export default function StockDetailPage() {
       if (kLineData.length >= 5) {
         const updatedKLines = buildUpdatedKLines(quoteData, kLineData);
         const chip = await getChipData(code).catch(() => null);
-        const results = checkAllRules(updatedKLines, quoteData, ALERT_RULES.filter(r => r.isEnabled), chip);
+        const results = checkAllRules(updatedKLines, quoteData, ALERT_RULES.filter(r => r.isEnabled), chip, undefined, isETF(code));
         setSrData(computeSupportResistance(updatedKLines, chip));
 
         setRuleResults(results);

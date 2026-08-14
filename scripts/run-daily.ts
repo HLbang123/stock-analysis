@@ -16,7 +16,6 @@ const STEPS: { name: string; cmd: string; fatal?: boolean }[] = [
   { name: "大盘宽度", cmd: "npx tsx scripts/compute-market-breadth.ts" },
   { name: "行业指数", cmd: "npx tsx scripts/sync-sw-daily.ts" },
   { name: "指数估值", cmd: "npx tsx scripts/sync-index-valuation.ts" },
-  { name: "北向资金", cmd: "npx tsx scripts/sync-hsgt.ts" },
   { name: "融资融券", cmd: "npx tsx scripts/sync-margin.ts" },
   // AI 筛选 T+N 回测回填(纯分析,失败不阻断日任务)
   { name: "AI筛选T+N回填", cmd: "npx tsx scripts/backfill-ai-screen-eval.ts", fatal: false },
