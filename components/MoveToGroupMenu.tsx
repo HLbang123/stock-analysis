@@ -27,22 +27,24 @@ export function MoveToGroupMenu({ code, onClose, onCreateGroup }: Props) {
       onClick={e => e.stopPropagation()}
     >
       <p className="px-3 pt-1 pb-1 text-xs text-gray-400">分组（可多选）</p>
-      {groups.map(g => (
-        <button
-          key={g.id}
-          onClick={() => { toggleStockGroup(code, g.id); }}
-          className={cn(
-            'w-full flex items-center justify-between px-3 py-1.5 text-sm hover:bg-gray-50 dark:hover:bg-gray-800 transition',
-            inGroups.has(g.id) ? 'text-blue-600' : 'text-gray-700 dark:text-gray-300',
-          )}
-        >
-          {g.name}
-          {inGroups.has(g.id) && <Check className="w-4 h-4" />}
-        </button>
-      ))}
-      {groups.length === 0 && (
-        <p className="px-3 py-1.5 text-xs text-gray-400">还没有分组</p>
-      )}
+      <div className="max-h-[50vh] overflow-y-auto">
+        {groups.map(g => (
+          <button
+            key={g.id}
+            onClick={() => { toggleStockGroup(code, g.id); }}
+            className={cn(
+              'w-full flex items-center justify-between px-3 py-1.5 text-sm hover:bg-gray-50 dark:hover:bg-gray-800 transition',
+              inGroups.has(g.id) ? 'text-blue-600' : 'text-gray-700 dark:text-gray-300',
+            )}
+          >
+            {g.name}
+            {inGroups.has(g.id) && <Check className="w-4 h-4" />}
+          </button>
+        ))}
+        {groups.length === 0 && (
+          <p className="px-3 py-1.5 text-xs text-gray-400">还没有分组</p>
+        )}
+      </div>
       <div className="border-t border-gray-100 dark:border-gray-800 mt-1 pt-1">
         <button
           onClick={() => { onClose(); onCreateGroup(); }}

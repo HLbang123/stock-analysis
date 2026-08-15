@@ -25,7 +25,6 @@ interface PriceRow {
 
 async function main() {
   // 1. 交易日历：递归 CTE 逐日索引回跳，一次探测取一个更早的交易日
-  let t = Date.now();
   const dateRows = await prisma.$queryRawUnsafe<{ d: string }[]>(`
     WITH RECURSIVE dates AS (
       (SELECT "tradeDate" AS d FROM daily_bars ORDER BY "tradeDate" DESC LIMIT 1)
@@ -42,10 +41,9 @@ async function main() {
     process.exit(1);
   }
   const calcDate = dateList[0];
-  console.log(`[compute-rps] 计算日期：${calcDate}，可用交易日 ${dateList.length}（日历 ${Date.now() - t}ms）`);
+  console.log(`[compute-rps] 计算日期：${calcDate}，可用交易日 ${dateList.length}`);
 
   // 2. 一次查询取齐 calcDate + 各周期回看日的收盘价（日期来自本库，格式校验后内联）
-  t = Date.now();
   const neededDates = [...new Set([0, ...PERIODS].map((i) => dateList[i]).filter((d): d is string => !!d))];
   if (!neededDates.every((d) => /^\d{8}$/.test(d))) {
     console.error("[compute-rps] 交易日期格式异常", neededDates);
@@ -67,10 +65,9 @@ async function main() {
     m.set(r.tsCode, r.close * (r.adjFactor ?? 1));
   }
   const priceMap = byDate.get(calcDate) ?? new Map();
-  console.log(`[compute-rps] 取价 ${priceRows.length} 行 / ${neededDates.length} 个交易日（${Date.now() - t}ms）`);
+  console.log(`[compute-rps] 取价 ${priceRows.length} 行 / ${neededDates.length} 个交易日`);
 
   // 3. 按周期批量计算
-  t = Date.now();
   const toInsert = new Map<string, Record<string, number>>();
 
   for (const period of PERIODS) {
@@ -111,51 +108,55 @@ async function main() {
 
     console.log(`[compute-rps] RPS(${period})：${total} 只`);
   }
-  console.log(`[compute-rps] 排名计算（${Date.now() - t}ms）`);
 
   // 4. 批量写入（使用原始 SQL 做 upsert）
-  t = Date.now();
   const entries = Array.from(toInsert.values());
   console.log(`[compute-rps] 写入 ${entries.length} 条记录...`);
 
-  for (let i = 0; i < entries.length; i += 500) {
-    const batch = entries.slice(i, i + 500);
-    const values: string[] = [];
-    const params: any[] = [];
+  // 单事务写入：12 次提交合并成 1 次 fsync（慢盘下写入从 ~49s 压到秒级），且当日 RPS 全写或全不写
+  await prisma.$transaction(
+    async (tx) => {
+      for (let i = 0; i < entries.length; i += 500) {
+        const batch = entries.slice(i, i + 500);
+        const values: string[] = [];
+        const params: any[] = [];
 
-    for (const e of batch) {
-      const idx = params.length;
-      values.push(
-        `($${idx + 1}, $${idx + 2}, $${idx + 3}, $${idx + 4}, $${idx + 5}, $${idx + 6}, $${idx + 7}, $${idx + 8}, $${idx + 9}, $${idx + 10})`
-      );
-      params.push(
-        e.ts_code,
-        e.calc_date,
-        e.rps_20 ?? null,
-        e.ret_20 ?? null,
-        e.rps_60 ?? null,
-        e.ret_60 ?? null,
-        e.rps_120 ?? null,
-        e.ret_120 ?? null,
-        e.rps_250 ?? null,
-        e.ret_250 ?? null
-      );
-    }
+        for (const e of batch) {
+          const idx = params.length;
+          values.push(
+            `($${idx + 1}, $${idx + 2}, $${idx + 3}, $${idx + 4}, $${idx + 5}, $${idx + 6}, $${idx + 7}, $${idx + 8}, $${idx + 9}, $${idx + 10})`
+          );
+          params.push(
+            e.ts_code,
+            e.calc_date,
+            e.rps_20 ?? null,
+            e.ret_20 ?? null,
+            e.rps_60 ?? null,
+            e.ret_60 ?? null,
+            e.rps_120 ?? null,
+            e.ret_120 ?? null,
+            e.rps_250 ?? null,
+            e.ret_250 ?? null
+          );
+        }
 
-    await prisma.$executeRawUnsafe(
-      `INSERT INTO rps_scores ("tsCode", "calcDate", rps_20, ret_20, rps_60, ret_60, rps_120, ret_120, rps_250, ret_250)
-       VALUES ${values.join(", ")}
-       ON CONFLICT ("tsCode", "calcDate")
-       DO UPDATE SET
-         rps_20 = EXCLUDED.rps_20, ret_20 = EXCLUDED.ret_20,
-         rps_60 = EXCLUDED.rps_60, ret_60 = EXCLUDED.ret_60,
-         rps_120 = EXCLUDED.rps_120, ret_120 = EXCLUDED.ret_120,
-         rps_250 = EXCLUDED.rps_250, ret_250 = EXCLUDED.ret_250`,
-      ...params
-    );
-  }
+        await tx.$executeRawUnsafe(
+          `INSERT INTO rps_scores ("tsCode", "calcDate", rps_20, ret_20, rps_60, ret_60, rps_120, ret_120, rps_250, ret_250)
+           VALUES ${values.join(", ")}
+           ON CONFLICT ("tsCode", "calcDate")
+           DO UPDATE SET
+             rps_20 = EXCLUDED.rps_20, ret_20 = EXCLUDED.ret_20,
+             rps_60 = EXCLUDED.rps_60, ret_60 = EXCLUDED.ret_60,
+             rps_120 = EXCLUDED.rps_120, ret_120 = EXCLUDED.ret_120,
+             rps_250 = EXCLUDED.rps_250, ret_250 = EXCLUDED.ret_250`,
+          ...params
+        );
+      }
+    },
+    { timeout: 120000 }
+  );
 
-  console.log(`[compute-rps] 完成：RPS(${PERIODS.join("/")}) 已写入 ${calcDate}（写入 ${Date.now() - t}ms）`);
+  console.log(`[compute-rps] 完成：RPS(${PERIODS.join("/")}) 已写入 ${calcDate}`);
   await prisma.$disconnect();
 }
 

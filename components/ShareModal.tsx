@@ -336,21 +336,23 @@ export function ShareModal({ open, onClose }: { open: boolean; onClose: () => vo
                 {showPicker && (
                   <Modal title="移入分组" onClose={() => setShowPicker(false)} variant="center" maxWidth="sm:max-w-sm">
                     <div className="p-4 space-y-1">
-                      <button
-                        onClick={() => moveSelected(undefined)}
-                        className="w-full text-left px-3 py-2 rounded-lg text-sm text-gray-700 dark:text-gray-300 hover:bg-gray-50 dark:hover:bg-gray-800 transition"
-                      >
-                        未分组
-                      </button>
-                      {groups.map((g) => (
+                      <div className="max-h-[50vh] overflow-y-auto space-y-1">
                         <button
-                          key={g.id}
-                          onClick={() => moveSelected(g.id)}
+                          onClick={() => moveSelected(undefined)}
                           className="w-full text-left px-3 py-2 rounded-lg text-sm text-gray-700 dark:text-gray-300 hover:bg-gray-50 dark:hover:bg-gray-800 transition"
                         >
-                          {g.name}（{g.stockCodes.length}）
+                          未分组
                         </button>
-                      ))}
+                        {groups.map((g) => (
+                          <button
+                            key={g.id}
+                            onClick={() => moveSelected(g.id)}
+                            className="w-full text-left px-3 py-2 rounded-lg text-sm text-gray-700 dark:text-gray-300 hover:bg-gray-50 dark:hover:bg-gray-800 transition"
+                          >
+                            {g.name}（{g.stockCodes.length}）
+                          </button>
+                        ))}
+                      </div>
                       <div className="flex gap-2 pt-2 border-t border-gray-100 dark:border-gray-800">
                         <Input
                           value={newGroupName}

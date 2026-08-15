@@ -79,7 +79,7 @@ export function GroupManageModal({ onClose }: { onClose: () => void }) {
           </div>
 
           {/* 分组列表 */}
-          <div className="space-y-2">
+          <div className="space-y-2 max-h-[50vh] overflow-y-auto">
             {groups.length === 0 && (
               <p className="text-xs text-gray-400 text-center py-3">还没有分组，先在上方创建一个</p>
             )}

@@ -7,6 +7,9 @@
  * 价格取 daily_bars（收盘口径）；tsCode 需 sina→Tushare 转换。
  * 当日数据未同步到 → 跳过，下次再跑（run-daily 16:00 同步后即回填当日）。
  *
+ * 性能口径（2026-08-15）：按 PK (tsCode, tradeDate) 精确取需要的 (股票,日期) 对
+ * （当日 + 次日），取代旧的全票×全日超量加载；更新改批量（500/批单事务）。
+ *
  * 用法:
  *   npx tsx scripts/backfill-tscore-records.ts
  */
@@ -35,21 +38,36 @@ async function main() {
   const days = dayRows.map((d) => d.tradeDate);
   const dayIndex = new Map(days.map((d, i) => [d, i]));
 
-  // 按票×日批量取收盘价
-  const codes = [...new Set(pending.map((p) => toTushareCode(p.tsCode)))];
-  const dates = [...new Set(pending.map((p) => p.tradeDate))];
-  const bars = await prisma.dailyBar.findMany({
-    where: { tsCode: { in: codes }, tradeDate: { in: dates } },
-    select: { tsCode: true, tradeDate: true, close: true },
-  });
+  // 收集需要的 (tsCode, tradeDate) 对：当日 + 次日
+  const pairSet = new Set<string>();
+  for (const p of pending) {
+    const tc = toTushareCode(p.tsCode);
+    pairSet.add(`${tc}|${p.tradeDate}`);
+    const idx = dayIndex.get(p.tradeDate);
+    const next = idx != null ? days[idx + 1] : null;
+    if (next) pairSet.add(`${tc}|${next}`);
+  }
+  const pairs = [...pairSet].map((s) => s.split('|') as [string, string]);
+
+  // 分块按 PK 精确取收盘价
   const closeBy = new Map<string, Map<string, number>>();
-  for (const b of bars) {
-    let m = closeBy.get(b.tsCode);
-    if (!m) { m = new Map(); closeBy.set(b.tsCode, m); }
-    if (b.close != null) m.set(b.tradeDate, b.close);
+  for (let i = 0; i < pairs.length; i += 5000) {
+    const chunk = pairs.slice(i, i + 5000);
+    const placeholders = chunk.map((_, j) => `($${j * 2 + 1}, $${j * 2 + 2})`).join(',');
+    const rows = await prisma.$queryRawUnsafe<{ tsCode: string; tradeDate: string; close: number | null }[]>(
+      `SELECT "tsCode", "tradeDate", close FROM daily_bars WHERE ("tsCode", "tradeDate") IN (${placeholders})`,
+      ...chunk.flat()
+    );
+    for (const r of rows) {
+      if (r.close == null) continue;
+      let m = closeBy.get(r.tsCode);
+      if (!m) { m = new Map(); closeBy.set(r.tsCode, m); }
+      m.set(r.tradeDate, r.close);
+    }
   }
 
   let computed = 0, pendingCount = 0;
+  const toApply: { id: string; data: { intradayReturn?: number; nextDayReturn?: number } }[] = [];
   for (const p of pending) {
     const code = toTushareCode(p.tsCode);
     const close = closeBy.get(code)?.get(p.tradeDate);
@@ -70,9 +88,17 @@ async function main() {
       }
     }
     if (Object.keys(updates).length === 0) { pendingCount++; continue; }
-    await prisma.tScoreRecord.update({ where: { id: p.id }, data: updates });
+    toApply.push({ id: p.id, data: updates });
     computed++;
     if (computed % 500 === 0) console.log(`[backfill-tscore] 进度 ${computed}/${pending.length}`);
+  }
+
+  // 批量更新（500 一批单事务）
+  for (let i = 0; i < toApply.length; i += 500) {
+    const chunk = toApply.slice(i, i + 500);
+    await prisma.$transaction(
+      chunk.map((u) => prisma.tScoreRecord.update({ where: { id: u.id }, data: u.data }))
+    );
   }
 
   console.log(`[backfill-tscore] 完成：回填 ${computed}，待数据 ${pendingCount}`);

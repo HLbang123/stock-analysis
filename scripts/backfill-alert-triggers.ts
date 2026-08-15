@@ -5,6 +5,9 @@
  * 第 N 个交易日收盘价算收益（T+N 绝对收益%）。
  * 目标日数据未到 → 跳过，下次再跑。upsert 幂等。
  *
+ * 性能口径（2026-08-15，daily_bars 千万级）：按 PK (tsCode, tradeDate) 精确取
+ * 需要的 (股票,日期) 对，取代旧的全股票×全触发日超量加载；更新改批量（500/批单事务）。
+ *
  * 用法:
  *   npx tsx scripts/backfill-alert-triggers.ts            # 全部待回填
  *   npx tsx scripts/backfill-alert-triggers.ts --limit=1000
@@ -37,20 +40,37 @@ async function main() {
   });
   console.log(`[backfill-alert-triggers] 待回填 ${pending.length} 条`);
 
-  // 按 barDate 批量取收盘价（一次查回所有需要的日×票）
-  const dates = [...new Set(pending.map((p) => p.barDate))];
-  const bars = await prisma.dailyBar.findMany({
-    where: { tradeDate: { in: dates } },
-    select: { tsCode: true, tradeDate: true, close: true },
-  });
+  // 收集需要的 (tsCode, tradeDate) 对：barDate 及 +5 / +10 个交易日
+  const pairSet = new Set<string>();
+  for (const p of pending) {
+    const idx = dayIndex.get(p.barDate);
+    if (idx == null) continue;
+    const tc = toTushareCode(p.tsCode);
+    pairSet.add(`${tc}|${p.barDate}`);
+    if (days[idx + 5]) pairSet.add(`${tc}|${days[idx + 5]}`);
+    if (days[idx + 10]) pairSet.add(`${tc}|${days[idx + 10]}`);
+  }
+  const pairs = [...pairSet].map((s) => s.split('|') as [string, string]);
+
+  // 分块按 PK (tsCode, tradeDate) 精确取收盘价（每块 5000 对=1 万参数，低于 PG 上限）
   const closeBy = new Map<string, Map<string, number>>();
-  for (const b of bars) {
-    let m = closeBy.get(b.tradeDate);
-    if (!m) { m = new Map(); closeBy.set(b.tradeDate, m); }
-    if (b.close != null) m.set(b.tsCode, b.close);
+  for (let i = 0; i < pairs.length; i += 5000) {
+    const chunk = pairs.slice(i, i + 5000);
+    const placeholders = chunk.map((_, j) => `($${j * 2 + 1}, $${j * 2 + 2})`).join(',');
+    const rows = await prisma.$queryRawUnsafe<{ tsCode: string; tradeDate: string; close: number | null }[]>(
+      `SELECT "tsCode", "tradeDate", close FROM daily_bars WHERE ("tsCode", "tradeDate") IN (${placeholders})`,
+      ...chunk.flat()
+    );
+    for (const r of rows) {
+      if (r.close == null) continue;
+      let m = closeBy.get(r.tradeDate);
+      if (!m) { m = new Map(); closeBy.set(r.tradeDate, m); }
+      m.set(r.tsCode, r.close);
+    }
   }
 
   let computed = 0, pendingCount = 0;
+  const toApply: { id: string; data: { t5Return?: number; t10Return?: number } }[] = [];
   for (const p of pending) {
     const idx = dayIndex.get(p.barDate);
     if (idx == null) { pendingCount++; continue; }
@@ -69,9 +89,17 @@ async function main() {
       if (c10 != null && c10 > 0) updates.t10Return = Math.round(((c10 / entry - 1) * 100) * 100) / 100;
     }
     if (Object.keys(updates).length === 0) { pendingCount++; continue; }
-    await prisma.alertRuleTrigger.update({ where: { id: p.id }, data: updates });
+    toApply.push({ id: p.id, data: updates });
     computed++;
     if (computed % 500 === 0) console.log(`[backfill-alert-triggers] 进度 ${computed}/${pending.length}`);
+  }
+
+  // 批量更新（500 一批单事务，避免逐条往返）
+  for (let i = 0; i < toApply.length; i += 500) {
+    const chunk = toApply.slice(i, i + 500);
+    await prisma.$transaction(
+      chunk.map((u) => prisma.alertRuleTrigger.update({ where: { id: u.id }, data: u.data }))
+    );
   }
 
   console.log(`[backfill-alert-triggers] 完成：回填 ${computed}，待数据 ${pendingCount}`);

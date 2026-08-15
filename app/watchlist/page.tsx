@@ -903,14 +903,16 @@ export default function WatchlistPage() {
                       <div className="min-w-0">
                       <h3 className="font-semibold">
                         {stock.name}
-                        {rps60 != null && (rps60 >= 87 || rps60 <= 20) && (
+                        {rps60 != null && (
                           <span
                             title={`RPS60 相对强度 ${Math.round(rps60)}（全市场百分位，${rpsMap[stock.code]?.calcDate ?? ''} 计算）`}
                             className={cn(
                               'inline-block align-middle ml-1.5 px-1.5 py-0.5 text-[10px] font-medium rounded',
                               rps60 >= 87
                                 ? 'bg-[var(--color-up-soft)] text-[var(--color-up)]'
-                                : 'bg-[var(--color-down-soft)] text-[var(--color-down)]'
+                                : rps60 <= 20
+                                  ? 'bg-[var(--color-down-soft)] text-[var(--color-down)]'
+                                  : 'bg-[var(--muted)] text-[var(--muted-foreground)]'
                             )}
                           >
                             RPS {Math.round(rps60)}
@@ -1045,7 +1047,7 @@ export default function WatchlistPage() {
       {/* 多选移动分组弹窗：在「全部」下为加入目标组；在具体分组下为移出当前组并加入目标组 */}
       {showBatchMove && (
         <Modal title={`移动 ${selectedCodes.size} 只到分组`} onClose={() => setShowBatchMove(false)} variant="center" maxWidth="sm:max-w-sm">
-          <div className="p-4 space-y-1.5">
+          <div className="p-4 space-y-1.5 max-h-[60vh] overflow-y-auto">
             {selectedGroupId !== ALL_GROUP_ID && (
               <button
                 onClick={() => handleBatchMove(null)}

@@ -728,7 +728,9 @@ function ManualScan() {
                       onClick={(e) => {
                         e.stopPropagation();
                         const r = e.currentTarget.getBoundingClientRect();
-                        setBatchMenu(m => (m ? null : { x: r.right, y: r.bottom }));
+                        // 弹层最高 50vh+头尾≈110px，y 钳制在视口内防底部分组够不着
+                        const maxY = Math.max(8, window.innerHeight - Math.round(window.innerHeight * 0.5) - 110);
+                        setBatchMenu(m => (m ? null : { x: r.right, y: Math.min(r.bottom, maxY) }));
                       }}
                       className="inline-flex items-center gap-0.5 px-2 py-1 text-xs bg-blue-600 text-white rounded-md hover:bg-blue-700 transition whitespace-nowrap"
                     >
@@ -824,14 +826,16 @@ function ManualScan() {
             style={{ left: Math.max(8, batchMenu.x - 192), top: batchMenu.y + 4 }}
           >
             <div className="px-2 py-1 text-xs text-gray-400">全部添加到分组</div>
-            <button onClick={() => batchAdd(undefined)} className="w-full text-left px-2 py-1.5 rounded hover:bg-gray-100 dark:hover:bg-gray-800 transition">
-              未分组
-            </button>
-            {groups.map(g => (
-              <button key={g.id} onClick={() => batchAdd(g.id)} className="w-full text-left px-2 py-1.5 rounded hover:bg-gray-100 dark:hover:bg-gray-800 transition">
-                {g.name}
+            <div className="max-h-[50vh] overflow-y-auto">
+              <button onClick={() => batchAdd(undefined)} className="w-full text-left px-2 py-1.5 rounded hover:bg-gray-100 dark:hover:bg-gray-800 transition">
+                未分组
               </button>
-            ))}
+              {groups.map(g => (
+                <button key={g.id} onClick={() => batchAdd(g.id)} className="w-full text-left px-2 py-1.5 rounded hover:bg-gray-100 dark:hover:bg-gray-800 transition">
+                  {g.name}
+                </button>
+              ))}
+            </div>
             <div className="mt-1 pt-1.5 border-t border-gray-100 dark:border-gray-800 flex gap-1">
               <input
                 value={newGroupName}
