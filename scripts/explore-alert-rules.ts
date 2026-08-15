@@ -71,12 +71,9 @@ async function main() {
   console.log(`[explore] 最新交易日 ${latest.tradeDate}，活跃 ${active.length} 只，抽样 ${sample.length} 只（步长 ${step}）`);
 
   // 2. 取历史窗口起点（最近 DAYS 个交易日）
-  const days = await prisma.dailyBar.findMany({
-    where: { tradeDate: { lte: latest.tradeDate } },
-    select: { tradeDate: true },
-    distinct: ['tradeDate'],
-    orderBy: { tradeDate: 'desc' },
-  });
+  const days = await prisma.$queryRawUnsafe<{ tradeDate: string }[]>(
+    `SELECT DISTINCT "tradeDate" FROM daily_bars WHERE "tradeDate" <= '${latest.tradeDate}' ORDER BY "tradeDate" DESC`
+  );
   const startDate = days[Math.min(days.length - 1, DAYS)]?.tradeDate ?? '20240101';
   console.log(`[explore] 回放窗口 ${startDate} ~ ${latest.tradeDate}（${Math.min(days.length, DAYS)} 个交易日）`);
 

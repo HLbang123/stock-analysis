@@ -64,11 +64,9 @@ async function main() {
   const since = sinceArg ? sinceArg.slice(8) : null;
 
   // 交易日序列(全市场 distinct tradeDate,升序)
-  const days = await prisma.dailyBar.findMany({
-    select: { tradeDate: true },
-    distinct: ['tradeDate'],
-    orderBy: { tradeDate: 'asc' },
-  });
+  const days = await prisma.$queryRawUnsafe<{ tradeDate: string }[]>(
+    `SELECT DISTINCT "tradeDate" FROM daily_bars ORDER BY "tradeDate" ASC`
+  );
   const sortedDays = days.map((d) => d.tradeDate);
   const dayIndex = new Map<string, number>();
   sortedDays.forEach((d, i) => dayIndex.set(d, i));

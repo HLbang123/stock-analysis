@@ -29,11 +29,9 @@ async function main() {
   if (pending.length === 0) { await prisma.$disconnect(); return; }
 
   // 交易日序列（升序）
-  const dayRows = await prisma.dailyBar.findMany({
-    select: { tradeDate: true },
-    distinct: ['tradeDate'],
-    orderBy: { tradeDate: 'asc' },
-  });
+  const dayRows = await prisma.$queryRawUnsafe<{ tradeDate: string }[]>(
+    `SELECT DISTINCT "tradeDate" FROM daily_bars ORDER BY "tradeDate" ASC`
+  );
   const days = dayRows.map((d) => d.tradeDate);
   const dayIndex = new Map(days.map((d, i) => [d, i]));
 

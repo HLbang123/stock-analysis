@@ -221,7 +221,7 @@ export function AiScreenTab() {
                         k.riskLevel === 'high' ? 'bg-red-50/30 dark:bg-red-950/10' : '',
                       )}
                     >
-                      <td className="px-3 py-2.5" onClick={(e) => { e.stopPropagation(); router.push(`/stock/${toAppCode(k.tsCode)}`); }}>
+                      <td className="px-3 py-2.5 whitespace-nowrap" onClick={(e) => { e.stopPropagation(); router.push(`/stock/${toAppCode(k.tsCode)}`); }}>
                         <div className="font-medium text-blue-600 hover:underline">{k.name}</div>
                         <div className="text-gray-400 text-xs">{k.tsCode.replace(/\.(SH|SZ|BJ)$/, '')} · {k.industry || '--'}</div>
                       </td>

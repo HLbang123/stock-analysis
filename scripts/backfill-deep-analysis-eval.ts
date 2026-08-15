@@ -49,11 +49,9 @@ async function main() {
   const sinceArg = process.argv.find((a) => a.startsWith('--since='));
   const since = sinceArg ? sinceArg.slice(8) : null;
 
-  const days = await prisma.dailyBar.findMany({
-    select: { tradeDate: true },
-    distinct: ['tradeDate'],
-    orderBy: { tradeDate: 'asc' },
-  });
+  const days = await prisma.$queryRawUnsafe<{ tradeDate: string }[]>(
+    `SELECT DISTINCT "tradeDate" FROM daily_bars ORDER BY "tradeDate" ASC`
+  );
   const sortedDays = days.map((d) => d.tradeDate);
   const dayIndex = new Map<string, number>();
   sortedDays.forEach((d, i) => dayIndex.set(d, i));

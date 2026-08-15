@@ -2,6 +2,13 @@
  * RPS 计算引擎 v2
  * 在 TypeScript 中计算排名，SQL 批量写入
  *
+ * 性能口径（2026-08-15，10 年 K 线落库后 daily_bars 达千万级）：
+ * - 交易日历改用递归 CTE 松散索引扫描（261 次 O(log n) 索引探测），
+ *   取代对全表做 DISTINCT+ORDER BY 的旧写法（千万行下会 OOM / 超时）
+ * - calcDate + 4 个回看日的收盘价合并为 1 次 IN 查询（原 5 次单日全市场查询）
+ *
+ * 前置：daily_bars 的 tradeDate 索引已存在（schema.prisma @@index([tradeDate])，生产库已确认）
+ *
  * 运行：npx tsx scripts/compute-rps.ts
  */
 
@@ -9,96 +16,105 @@ import { prisma } from "../lib/db";
 
 const PERIODS = [20, 60, 120, 250] as const;
 
+interface PriceRow {
+  tsCode: string;
+  tradeDate: string;
+  close: number | null;
+  adjFactor: number | null;
+}
+
 async function main() {
-  // 1. 获取所有活跃股票的最新收盘价
-  const latestBar = await prisma.dailyBar.findFirst({
-    orderBy: { tradeDate: "desc" },
-    select: { tradeDate: true },
-  });
-  if (!latestBar) {
+  // 1. 交易日历：递归 CTE 逐日索引回跳，一次探测取一个更早的交易日
+  let t = Date.now();
+  const dateRows = await prisma.$queryRawUnsafe<{ d: string }[]>(`
+    WITH RECURSIVE dates AS (
+      (SELECT "tradeDate" AS d FROM daily_bars ORDER BY "tradeDate" DESC LIMIT 1)
+      UNION ALL
+      SELECT (SELECT "tradeDate" FROM daily_bars WHERE "tradeDate" < dates.d ORDER BY "tradeDate" DESC LIMIT 1)
+      FROM dates
+      WHERE dates.d IS NOT NULL
+    )
+    SELECT d FROM dates WHERE d IS NOT NULL LIMIT 261
+  `);
+  const dateList = dateRows.map((r) => r.d);
+  if (dateList.length === 0) {
     console.error("[compute-rps] 无日线数据，请先运行 sync-daily --init");
     process.exit(1);
   }
-  const calcDate = latestBar.tradeDate;
-  console.log(`[compute-rps] 计算日期：${calcDate}`);
+  const calcDate = dateList[0];
+  console.log(`[compute-rps] 计算日期：${calcDate}，可用交易日 ${dateList.length}（日历 ${Date.now() - t}ms）`);
 
-  const latestPrices = await prisma.dailyBar.findMany({
-    where: { tradeDate: calcDate },
-    select: { tsCode: true, close: true, adjFactor: true },
-  });
+  // 2. 一次查询取齐 calcDate + 各周期回看日的收盘价（日期来自本库，格式校验后内联）
+  t = Date.now();
+  const neededDates = [...new Set([0, ...PERIODS].map((i) => dateList[i]).filter((d): d is string => !!d))];
+  if (!neededDates.every((d) => /^\d{8}$/.test(d))) {
+    console.error("[compute-rps] 交易日期格式异常", neededDates);
+    process.exit(1);
+  }
+  const priceRows = await prisma.$queryRawUnsafe<PriceRow[]>(
+    `SELECT "tsCode", "tradeDate", close, adj_factor AS "adjFactor"
+     FROM daily_bars
+     WHERE "tradeDate" IN (${neededDates.map((d) => `'${d}'`).join(",")})`
+  );
 
   // 复权口径：收益 = (close0×f0)/(closeN×fN) − 1（后复权比率=真实收益，消除除权假跌幅）；
   // adj_factor 缺失（回补未完成）时退化为原始价（与旧行为一致）
-  const adj = (close: number, f: number | null) => close * (f ?? 1);
-  const priceMap = new Map(latestPrices.map((p) => [p.tsCode, adj(p.close!, p.adjFactor)]));
-  console.log(`[compute-rps] ${latestPrices.length} 只股票有当日数据（复权口径）`);
-
-  // 2. 获取历史交易日期列表（用于找 N 天前的日期）
-  const allDates = await prisma.dailyBar.findMany({
-    select: { tradeDate: true },
-    distinct: ["tradeDate"],
-    orderBy: { tradeDate: "desc" },
-    take: 260, // 覆盖 RPS(250) + 缓冲
-  });
-  const dateList = allDates.map((d) => d.tradeDate);
-  console.log(`[compute-rps] 可用交易日数：${dateList.length}`);
+  const byDate = new Map<string, Map<string, number>>();
+  for (const r of priceRows) {
+    if (r.close == null || r.close <= 0) continue;
+    let m = byDate.get(r.tradeDate);
+    if (!m) byDate.set(r.tradeDate, (m = new Map()));
+    m.set(r.tsCode, r.close * (r.adjFactor ?? 1));
+  }
+  const priceMap = byDate.get(calcDate) ?? new Map();
+  console.log(`[compute-rps] 取价 ${priceRows.length} 行 / ${neededDates.length} 个交易日（${Date.now() - t}ms）`);
 
   // 3. 按周期批量计算
+  t = Date.now();
   const toInsert = new Map<string, Record<string, number>>();
 
   for (const period of PERIODS) {
-    console.log(`[compute-rps] 计算 RPS(${period})...`);
-
-    // 找到 N 个交易日前的日期
     const prevDate = dateList[period];
     if (!prevDate) {
       console.warn(`[compute-rps] RPS(${period}) 数据不足，跳过`);
       continue;
     }
-
-    // 获取 N 天前的收盘价（复权口径，同上）
-    const prevPrices = await prisma.dailyBar.findMany({
-      where: { tradeDate: prevDate },
-      select: { tsCode: true, close: true, adjFactor: true },
-    });
-    const prevMap = new Map(prevPrices.map((p) => [p.tsCode, adj(p.close!, p.adjFactor)]));
+    const prevMap = byDate.get(prevDate);
+    if (!prevMap) {
+      console.warn(`[compute-rps] RPS(${period}) 回看日 ${prevDate} 无数据，跳过`);
+      continue;
+    }
 
     // 计算每只股票的收益率
     const returns: { tsCode: string; ret: number }[] = [];
     for (const [tsCode, latestClose] of priceMap) {
       const prevClose = prevMap.get(tsCode);
       if (prevClose && prevClose > 0) {
-        returns.push({
-          tsCode,
-          ret: ((latestClose! - prevClose) / prevClose) * 100,
-        });
+        returns.push({ tsCode, ret: ((latestClose - prevClose) / prevClose) * 100 });
       }
     }
 
-    // 按收益率降序排名
+    // 按收益率降序排名 → 百分位 RPS
     returns.sort((a, b) => b.ret - a.ret);
     const total = returns.length;
-
-    // 计算百分位 RPS
-    for (let rank = 0; rank < returns.length; rank++) {
+    for (let rank = 0; rank < total; rank++) {
       const { tsCode, ret } = returns[rank];
       const rps = ((total - rank) / total) * 100; // rank=1 → RPS≈100, rank=total → RPS≈0
 
       if (!toInsert.has(tsCode)) {
-        toInsert.set(tsCode, {
-          ts_code: tsCode,
-          calc_date: calcDate,
-        } as any);
+        toInsert.set(tsCode, { ts_code: tsCode, calc_date: calcDate } as any);
       }
       const entry = toInsert.get(tsCode)!;
       entry[`rps_${period}`] = Math.round(rps * 100) / 100;
       entry[`ret_${period}`] = Math.round(ret * 100) / 100;
     }
 
-    console.log(`[compute-rps] RPS(${period})：${returns.length} 只`);
+    console.log(`[compute-rps] RPS(${period})：${total} 只`);
   }
+  console.log(`[compute-rps] 排名计算（${Date.now() - t}ms）`);
 
   // 4. 批量写入（使用原始 SQL 做 upsert）
+  t = Date.now();
   const entries = Array.from(toInsert.values());
   console.log(`[compute-rps] 写入 ${entries.length} 条记录...`);
 
@@ -139,7 +155,7 @@ async function main() {
     );
   }
 
-  console.log(`[compute-rps] 完成：RPS(${PERIODS.join("/")}) 已写入 ${calcDate}`);
+  console.log(`[compute-rps] 完成：RPS(${PERIODS.join("/")}) 已写入 ${calcDate}（写入 ${Date.now() - t}ms）`);
   await prisma.$disconnect();
 }
 

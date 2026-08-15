@@ -407,11 +407,9 @@ async function main() {
   console.log(`[backtest] 策略: ${presets.map((s) => s.id).join(', ')}`);
 
   // 1. 全局交易日序列
-  const days = await prisma.dailyBar.findMany({
-    select: { tradeDate: true },
-    distinct: ['tradeDate'],
-    orderBy: { tradeDate: 'asc' },
-  });
+  const days = await prisma.$queryRawUnsafe<{ tradeDate: string }[]>(
+    `SELECT DISTINCT "tradeDate" FROM daily_bars ORDER BY "tradeDate" ASC`
+  );
   const globalDays = days.map((d) => d.tradeDate);
   const giMap = new Map(globalDays.map((d, i) => [d, i]));
   console.log(`[backtest] 交易日 ${globalDays.length} 天: ${globalDays[0]} ~ ${globalDays[globalDays.length - 1]}`);

@@ -51,12 +51,9 @@ async function scanAlertRules() {
   });
   const step = Math.max(1, Math.ceil(active.length / MAX_STOCKS));
   const sample = active.filter((_, i) => i % step === 0).slice(0, MAX_STOCKS).map((s) => s.tsCode);
-  const days = await prisma.dailyBar.findMany({
-    where: { tradeDate: { lte: latest.tradeDate } },
-    select: { tradeDate: true },
-    distinct: ['tradeDate'],
-    orderBy: { tradeDate: 'desc' },
-  });
+  const days = await prisma.$queryRawUnsafe<{ tradeDate: string }[]>(
+    `SELECT DISTINCT "tradeDate" FROM daily_bars WHERE "tradeDate" <= '${latest.tradeDate}' ORDER BY "tradeDate" DESC`
+  );
   const startDate = days[Math.min(days.length - 1, DAYS)]?.tradeDate ?? '20240101';
   const bars = await prisma.dailyBar.findMany({
     where: { tsCode: { in: sample }, tradeDate: { gte: startDate } },
