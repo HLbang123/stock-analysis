@@ -106,14 +106,6 @@ function classifyCandle(k: KLineData): CandleShape {
 }
 
 /**
- * 跳空高开百分比：当日开盘相对前收的跳空幅度（R01 跳空衰竭用）
- */
-function gapUpPercent(k: KLineData, prevClose: number): number {
-  if (!prevClose || prevClose === 0) return 0;
-  return ((k.open - prevClose) / prevClose) * 100;
-}
-
-/**
  * 近 n 根 K 线是否连续收高（每根 close > 前一根 close）。R01 三连阳/连涨上下文用。
  */
 function consecutiveUpDays(kLines: KLineData[], idx: number, n: number): boolean {
@@ -222,7 +214,7 @@ function priceCrossedAboveWithin(kLines: KLineData[], ma: number[], idx: number,
  * 把所有"见顶/过热/量能出逃"信号合并到一个阶梯，内部按严重度择优返回主信号，
  * extraData 列出全部命中的子信号（供 UI 展示）。这样同类信号在一个规则内统一力度，杜绝跨规则矛盾。
  *
- * 子信号严重度：对子顶(5) > 巨量见顶/第二波见顶/长上影+放量/涨停炸板(4) > 长上影/跳空衰竭/纺锤线/长下影见顶(3) > 涨停封板(2) > 巨量异动(1)
+ * 子信号严重度：对子顶(5) > 巨量见顶/第二波见顶/长上影+放量/涨停炸板(4) > 长上影/长下影见顶(3) > 涨停封板(2) > 巨量异动(1)
  * K线形态均要求"连续上涨后"上下文；长下影在连涨后=顶部承接乏力（R01），在下跌末段=底部锤子（R06），同形态靠位置分流。
  */
 function checkTopPattern(kLines: KLineData[], quote: RealtimeQuote | null, rule: AlertRule, limitMap?: LimitPriceMap | null): RuleCheckResult {
@@ -302,14 +294,8 @@ function checkTopPattern(kLines: KLineData[], quote: RealtimeQuote | null, rule:
     if (shape.isLongUpper) {
       triggered.push([isHighVol ? 3 : 2, '长上影见顶', `${isHighVol ? '🔴' : '⚠️'} 长上影见顶：上影 ${shape.upperShadowPct.toFixed(1)}%（≥实体2倍）${isHighVol ? '+放量' : ''}，上方抛压沉重，止盈`]);
     }
-    const gap = gapUpPercent(today, prev1.close);
-    const smallBody = shape.body > 0 && shape.body / today.close < 0.015;
-    if (gap > 0.5 && smallBody && shape.upperShadow > 0 && shape.lowerShadow > 0) {
-      triggered.push([2, '跳空衰竭', `⚠️ 跳空衰竭：跳空高开 ${gap.toFixed(1)}% 收小阳+双向影线，多头动能衰竭，止盈`]);
-    }
-    if (shape.isSpinning) {
-      triggered.push([2, '纺锤线见顶', `⚠️ 纺锤线见顶：实体极小+双向长影，多空分歧极大，顶部信号，止盈`]);
-    }
+    // 跳空衰竭 / 纺锤线见顶 — 已删（2026-08-15 生产胜率：T+5 均值 +0.09%/+0.06% 均为正=纯噪声，
+    // 触发后不但不跌反而微涨；形态类弱提醒只保留长上影/长下影）
     if (shape.isLongLower) {
       triggered.push([2, '长下影见顶', `⚠️ 长下影见顶：下影 ${shape.lowerShadowPct.toFixed(1)}%（≥实体2倍），连续上涨后多头承接无力，空头反扑，止盈`]);
     }
@@ -378,7 +364,7 @@ function checkTieredExit(kLines: KLineData[], quote: RealtimeQuote | null, rule:
     triggered.push([5, '急跌', `🔴 急跌：暴跌 ${change.toFixed(2)}%，先抛再说！`]);
   }
 
-  // 5/13 死叉 — 波段反转。2026-08-10 回测：T+5 均值 +0.11%（全表唯一为正）、胜率 49%——
+  // 5/13 死叉 — 波段反转。2026-08-12 生产胜率复核：T+5 均值 +0.07%（全表少数为正）、胜率 48.5%——
   // 上涨趋势里的假死叉（回调后收回）占多数，一律清仓割在低点。同步跌破 MA55（真下跌趋势）才清仓(4)；
   // 站上 MA55 的假死叉降级减仓(2)，不再一票清仓（短均线数据不足 55 根时按降级处理，无法确认下跌中继）
   if (kLines.length >= 14 && crossedBelowWithin(ma5, ma13, idx, 2)) {
@@ -839,7 +825,7 @@ export const ALERT_RULES: AlertRule[] = [
   {
     id: 'R01',
     name: '见顶阶梯',
-    description: '见顶/过热/量能出逃信号合并阶梯：对子顶/巨量见顶/第二波见顶/长上影/跳空衰竭/纺锤线/长下影见顶（弱提醒）/涨停封板/涨停炸板/巨量异动，按严重度择优只出一条预警',
+    description: '见顶/过热/量能出逃信号合并阶梯：对子顶/巨量见顶/第二波见顶/长上影/长下影见顶（弱提醒）/涨停封板/涨停炸板/巨量异动，按严重度择优只出一条预警',
     category: 'PATTERN' as any,
     level: 'CRITICAL' as any,
     suggestion: '见顶信号，适当减仓；对子顶/巨量见顶等强信号应更果断',

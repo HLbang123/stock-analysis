@@ -119,9 +119,9 @@ export async function GET(request: Request) {
       select: { tradeDate: true },
     });
 
-    // startDate：默认 120 日历日（覆盖 MA55 窗口）；需要 250 日高点时扩到 400 日历日
+    // startDate：120 日历日（覆盖 MA55 窗口）。250 日新高走独立轻量聚合，不拉长主窗口
     const start = new Date();
-    start.setDate(start.getDate() - (nearHigh250 != null ? 400 : 120));
+    start.setDate(start.getDate() - 120);
     const startDate = start.toISOString().slice(0, 10).replace(/-/g, "");
 
     // ---- 候选股预筛（非信号类硬过滤：RPS/行业/板块/ROE）----
@@ -159,8 +159,27 @@ export async function GET(request: Request) {
         : `s.ts_code IN (SELECT ts_code FROM stock_box WHERE trade_date = $${dIdx} AND in_box AND box_pos BETWEEN 0 AND 1)`);
     }
 
-    // 全局参数顺序：$1=calcDate, $2=startDate, $3..=candParams, 然后 rsi 参数, 最后 limit
+    // 全局参数顺序：$1=calcDate, $2=startDate, $3..=candParams, [high250Start], 然后 rsi/趋势参数, 最后 limit
     const params: any[] = [latestRps.calcDate, startDate, ...candParams];
+    // 距一年新高：独立聚合（一次 MAX(high*adj)/当日adj），不逐行窗口、不拉长主窗口
+    let high250Cte = "";
+    if (nearHigh250 != null) {
+      const h = await prisma.$queryRawUnsafe<{ d: string }[]>(
+        `SELECT "tradeDate" AS d FROM daily_bars WHERE "tradeDate" <= $1 ORDER BY "tradeDate" DESC LIMIT 1 OFFSET 249`,
+        latestRps.calcDate
+      );
+      params.push(h[0]?.d ?? startDate);
+      const hp = params.length;
+      high250Cte = `,
+      high250 AS (
+        SELECT "tsCode",
+          MAX(high * COALESCE(adj_factor, 1)) / NULLIF(MAX(CASE WHEN "tradeDate" = $1 THEN COALESCE(adj_factor, 1) END), 0) AS h250
+        FROM daily_bars
+        WHERE "tradeDate" >= $${hp} AND "tradeDate" <= $1
+          AND "tsCode" IN (SELECT ts_code FROM cand)
+        GROUP BY "tsCode"
+      )`;
+    }
     // cand CTE 内占位符需偏移 +2（前面已有 calcDate=$1、startDate=$2）
     const candWhereShifted = candWhere.map((w) => w.replace(/\$(\d+)/g, (_, n) => `$${Number(n) + 2}`));
     const candCte = `cand AS (
@@ -185,7 +204,7 @@ export async function GET(request: Request) {
     if (maRising) where.push(`sig.ma_rising = true`);
     if (nearHigh250 != null) {
       params.push(1 - nearHigh250 / 100);
-      where.push(`sig.high250_now IS NOT NULL AND sig.latest_close_ma >= sig.high250_now * $${params.length}`);
+      where.push(`hh.h250 IS NOT NULL AND sig.latest_close_ma >= hh.h250 * $${params.length}`);
     }
     const biasExpr = `(sig.latest_close_ma / NULLIF(sig.ma55_now, 0) - 1) * 100`;
     if (bias55Min != null && bias55Min !== "") { params.push(Number(bias55Min)); where.push(`${biasExpr} >= $${params.length}`); }
@@ -223,15 +242,6 @@ export async function GET(request: Request) {
       : "";
 
     // ---- 趋势结构专属 SQL 片段（未启用时全部为空字符串，查询退化为原样）----
-    // 前复权高点（与 close 同口径归一）+ 250 日窗口最高
-    const highBarCol = nearHigh250 != null ? `,
-                 high * COALESCE(adj_factor, 1)
-                   / FIRST_VALUE(COALESCE(adj_factor, 1)) OVER (PARTITION BY "tsCode" ORDER BY "tradeDate" DESC) AS high` : "";
-    const highRecentCol = nearHigh250 != null ? `,
-          MAX(high) OVER (PARTITION BY "tsCode" ORDER BY "tradeDate" ROWS BETWEEN 249 PRECEDING AND CURRENT ROW) AS high250` : "";
-    const highMasCol = nearHigh250 != null ? `, high250` : "";
-    const highSigCol = nearHigh250 != null ? `,
-          MAX(CASE WHEN rn = 1 THEN high250 END) AS high250_now` : "";
     // 量能：近5日均量 vs 前20日均量（缩量整理判定）
     const volBarCol = volShrink ? `, vol` : "";
     const volRecentCols = volShrink ? `,
@@ -255,12 +265,12 @@ export async function GET(request: Request) {
     const rpsColsSelect = periods.map((p) => `r.rps_${p} AS rps_${p}, r.ret_${p} AS ret_${p}`).join(", ");
 
     const query = `
-      WITH ${candCte},
+      WITH ${candCte}${high250Cte},
       recent AS (
         SELECT "tsCode", "tradeDate", close,
           AVG(close) OVER w5  AS ma5,
           AVG(close) OVER w13 AS ma13,
-          AVG(close) OVER w55 AS ma55${rsiRecentCols}${highRecentCol}${volRecentCols},
+          AVG(close) OVER w55 AS ma55${rsiRecentCols}${volRecentCols},
           ROW_NUMBER() OVER (PARTITION BY "tsCode" ORDER BY "tradeDate" DESC) AS rn
         FROM (
           -- 前复权口径：close × adj_factor / 窗口内最新因子。除权日的假跳空会让 MA/金叉/RSI 失真；
@@ -268,7 +278,7 @@ export async function GET(request: Request) {
           -- adj_factor 缺失(回补未完成)时 COALESCE 退化为原始价，与旧行为一致
           SELECT "tsCode", "tradeDate",
                  close * COALESCE(adj_factor, 1)
-                   / FIRST_VALUE(COALESCE(adj_factor, 1)) OVER (PARTITION BY "tsCode" ORDER BY "tradeDate" DESC) AS close${highBarCol}${volBarCol}
+                   / FIRST_VALUE(COALESCE(adj_factor, 1)) OVER (PARTITION BY "tsCode" ORDER BY "tradeDate" DESC) AS close${volBarCol}
           FROM daily_bars
           WHERE "tradeDate" >= $2
             AND "tsCode" IN (SELECT ts_code FROM cand)
@@ -281,7 +291,7 @@ export async function GET(request: Request) {
       mas AS (
         SELECT "tsCode", rn, ma5, ma13, ma55, "tradeDate", close,
           LAG(ma5)  OVER (PARTITION BY "tsCode" ORDER BY "tradeDate") AS ma5_prev,
-          LAG(ma13) OVER (PARTITION BY "tsCode" ORDER BY "tradeDate") AS ma13_prev${rsiMasCols}${highMasCol}${volMasCols}
+          LAG(ma13) OVER (PARTITION BY "tsCode" ORDER BY "tradeDate") AS ma13_prev${rsiMasCols}${volMasCols}
         FROM recent
       ),
       sig AS (
@@ -298,7 +308,7 @@ export async function GET(request: Request) {
            AND (MAX(CASE WHEN rn = 1 THEN ma13 END) - MAX(CASE WHEN rn = 1 THEN ma5 END)) / NULLIF(MAX(CASE WHEN rn = 1 THEN ma13 END), 0) < 0.02
            AND MAX(CASE WHEN rn = 1 THEN ma5 END) > MAX(CASE WHEN rn = 2 THEN ma5 END)) AS gc_approaching,
           -- 55日线朝上：最新价 > 最新MA55
-          (MAX(CASE WHEN rn = 1 THEN close END) > MAX(CASE WHEN rn = 1 THEN ma55 END)) AS ma55_up${rsiSigCols}${highSigCol}${volSigCols}${mbSigCol}${maRisingSigCol}
+          (MAX(CASE WHEN rn = 1 THEN close END) > MAX(CASE WHEN rn = 1 THEN ma55 END)) AS ma55_up${rsiSigCols}${volSigCols}${mbSigCol}${maRisingSigCol}
         FROM mas GROUP BY "tsCode"
       )
       SELECT s.ts_code, s.name, s.industry,
@@ -312,6 +322,7 @@ export async function GET(request: Request) {
       JOIN stocks s ON sig."tsCode" = s.ts_code
       JOIN rps_scores r ON r."tsCode" = sig."tsCode" AND r."calcDate" = $1
       LEFT JOIN stock_fundamentals f ON f.ts_code = sig."tsCode"
+      ${nearHigh250 != null ? `LEFT JOIN high250 hh ON hh."tsCode" = sig."tsCode"` : ""}
       LEFT JOIN LATERAL (
         SELECT close, change_pct, vol FROM daily_bars
         WHERE "tsCode" = sig."tsCode" AND "tradeDate" <= $1

@@ -182,7 +182,7 @@ export async function GET(request: NextRequest) {
     }).sort((a, b) => (b.performanceScore || 0) - (a.performanceScore || 0));
 
     // ---- factorIC:每策略每因子(T+5,全候选)----
-    const FACTOR_KEYS = ['trend', 'entry_timing', 'risk', 'quality', 'liquidity', 'theme_heat', 'chip'];
+    const FACTOR_KEYS = ['trend', 'entry_timing', 'risk', 'quality', 'liquidity', 'theme_heat', 'chip', 'box'];
     const factorIC = [...byStrategy.entries()].map(([sid, ps]) => {
       const factors = FACTOR_KEYS.map((k) => {
         const pairs = ps

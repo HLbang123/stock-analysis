@@ -102,8 +102,7 @@ export interface AiPick {
   chipPeakPos: number | null;       // (价 − 主峰) / avgCost，站上主峰为正
   chipPeakDrift: number | null;     // 5 日峰位漂移 / avgCost，下移为负(吸筹)
 
-  // 箱体形态特征（lib/box.ts，2026-08-14 移植；运行态字段，不落库单列——
-  // 质量分以 factorScores.box 零权重观察因子身份随 JSON 落库攒样本，IC 验证有效后再升正式因子）
+  // 箱体形态特征（lib/box.ts；运行态字段，scorer 已升二元因子 factorScores.box，2026-08-15 回放验证）
   boxQuality: number | null; // 0-100 箱体质量分（null=非箱体或数据不足）
   boxPos: number | null;     // 现价在箱体内位置 (价−底)/箱高：<0 跌破、>1 突破
 

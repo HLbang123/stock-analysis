@@ -7,6 +7,10 @@
  *   预设组 = 基底 + 启动期/上升期/回踩整理（UI 预设的完整组合）
  *   消融组 = 上升期预设逐个拆掉单条件（哪条没在干活就砍哪条）
  *   阈值扫描 = 多头排列天数 / 距新高幅度 / 乖离上限 的网格（输出直接指导 UI 档位与默认值）
+ *   箱体因子分桶 = AI 筛选池口径（RPS60≥70）内按箱体状态分桶（非箱体/质量<60/≥60），
+ *                 因子 IC 的回放版——factorScores.box 两个月等待的第一道门
+ *   regime 分段 = 全样本逐日重算 MA55上方占比+20日收益中位数（与 regime.ts 同阈值），
+ *                对照组与三个预设的 T+5/T+20 按入场日市场状态分段（弱市门控验证）
  *
  * 口径（吸取 a-share-accumulation-breakout 的教训）：
  *   - 信号日 T 收盘后可见 → 入场锚定 T+1 收盘（不是 T 收盘，也不是采样日）
@@ -36,6 +40,8 @@ interface Acc {
   days: Set<string>;
   t1: number[]; t5: number[]; t20: number[];
   byYear: Map<string, { n: number; win5: number; sum5: number }>;
+  /** regime 分段用：仅对照组/预设组开启（逐命中记录日期与收益） */
+  tagged?: { date: string; r5: number; r20: number }[];
 }
 const newAcc = (): Acc => ({ n: 0, days: new Set(), t1: [], t5: [], t20: [], byYear: new Map() });
 const winRate = (xs: number[]) => (xs.length ? Math.round((xs.filter((x) => x > 0).length / xs.length) * 1000) / 10 : null);
@@ -43,6 +49,7 @@ const mean = (xs: number[]) => (xs.length ? Math.round((xs.reduce((a, b) => a + 
 
 /** 预计算单标的的全部滑窗序列（ma/high250/vol 均值），条件判定退化为数组读 */
 interface StockWin {
+  code: string;
   bars: Bar[];
   ma5: (number | null)[];
   ma13: (number | null)[];
@@ -63,7 +70,7 @@ function smaArr(xs: number[], n: number): (number | null)[] {
   return out;
 }
 
-function buildWin(bars: Bar[]): StockWin {
+function buildWin(code: string, bars: Bar[]): StockWin {
   const closes = bars.map((b) => b.c);
   const vols = bars.map((b) => b.v);
   // 250 根 rolling max(high)：单调队列；不足 250 根时用已有窗口（新股），60 根起评
@@ -86,7 +93,7 @@ function buildWin(bars: Bar[]): StockWin {
     if (del >= 0) vsum -= vols[del];
     if (add >= 19) vol20p[i] = vsum / 20;
   }
-  return { bars, ma5: smaArr(closes, 5), ma13: smaArr(closes, 13), ma55: smaArr(closes, 55), hi250, vol5: volSma5, vol20p };
+  return { code, bars, ma5: smaArr(closes, 5), ma13: smaArr(closes, 13), ma55: smaArr(closes, 55), hi250, vol5: volSma5, vol20p };
 }
 
 // ── 条件谓词（与 scan route SQL 语义对齐）─────────────────────────────
@@ -132,12 +139,25 @@ const pbMa13 = (lo: number, hi: number): Pred => (s, i) => {
 };
 const volShrink: Pred = (s, i) => s.vol5[i] != null && s.vol20p[i] != null && s.vol5[i]! < s.vol20p[i]!;
 // 吸筹箱体（lib/box.ts，与 scan route 同口径：窗口含最新一根；breakout 带 1.6×箱均量确认）
+// 单日单股只算一次（单槽缓存：主循环严格按 股→日 升序，多个箱体组/分桶复用同一结果）
+let boxSlotKey = '';
+let boxSlotVal: ReturnType<typeof boxFeatures> | null = null;
+function boxAt(s: StockWin, i: number): NonNullable<ReturnType<typeof boxFeatures>> {
+  const k = `${s.code}|${i}`;
+  if (k !== boxSlotKey) {
+    boxSlotKey = k;
+    const from = Math.max(0, i - 59);
+    boxSlotVal = boxFeatures(
+      s.bars.slice(from, i + 1).map((b) => b.c),
+      s.bars.slice(from, i + 1).map((b) => b.h),
+      s.bars.slice(from, i + 1).map((b) => b.l),
+      60
+    );
+  }
+  return boxSlotVal!;
+}
 const boxPred = (mode: 'in' | 'breakout'): Pred => (s, i) => {
-  const from = Math.max(0, i - 59);
-  const closes = s.bars.slice(from, i + 1).map((b) => b.c);
-  const highs = s.bars.slice(from, i + 1).map((b) => b.h);
-  const lows = s.bars.slice(from, i + 1).map((b) => b.l);
-  const box = boxFeatures(closes, highs, lows, 60);
+  const box = boxAt(s, i);
   if (!box.inBox || box.boxPos == null) return false;
   if (mode === 'in') return box.boxPos >= 0 && box.boxPos <= 1;
   if (box.boxPos <= 1) return false;
@@ -187,13 +207,11 @@ async function main() {
     }
   }
 
-  // RPS60 历史（基底过滤用；覆盖外的 stock-day 跳过）
-  const rpsRows = BASE_RPS > 0
-    ? await prisma.rpsScore.findMany({
-        where: { tsCode: { in: sample }, calcDate: { gte: startDate } },
-        select: { tsCode: true, calcDate: true, rps60: true },
-      })
-    : [];
+  // RPS60 历史（基底过滤 + 箱体因子分桶的池口径都要用；覆盖外的 stock-day 跳过）
+  const rpsRows = await prisma.rpsScore.findMany({
+    where: { tsCode: { in: sample }, calcDate: { gte: startDate } },
+    select: { tsCode: true, calcDate: true, rps60: true },
+  });
   const rpsMap = new Map<string, Map<string, number>>();
   for (const r of rpsRows) {
     if (r.rps60 == null) continue;
@@ -231,18 +249,35 @@ async function main() {
 
   const accs = groups.map(() => newAcc());
   const sweepAccs = sweeps.map((sw) => sw.rows.map(() => newAcc()));
+  // regime 分段：对照组 + 三个预设开启逐命中记录
+  accs.forEach((a, i) => { if (i === 0 || groups[i].yearly) a.tagged = []; });
+  // 箱体因子分桶（AI 筛选池口径 RPS60≥70）：0=非箱体 1=质量<60 2=质量≥60
+  const boxBuckets = [newAcc(), newAcc(), newAcc()];
+  // regime 历史重算的原料（全样本逐日，不过滤基底）
+  const dayStats = new Map<string, { above: number; total: number; ret20: number[] }>();
 
   let processed = 0;
   let rpsCovered = 0, rpsTotal = 0;
   for (const [code, arr] of byStock) {
     if (arr.length < WARMUP + FWD + 2) continue;
-    const s = buildWin(arr);
+    const s = buildWin(code, arr);
     const rpsOf = rpsMap.get(code);
     for (let i = WARMUP - 1; i < arr.length - (FWD + 2); i++) {
+      // regime 原料：全样本逐日（MA55 上方占比 + 20 日收益中位数），不过滤基底
+      {
+        const m55 = s.ma55[i];
+        if (m55 != null) {
+          let st = dayStats.get(arr[i].date);
+          if (!st) { st = { above: 0, total: 0, ret20: [] }; dayStats.set(arr[i].date, st); }
+          st.total++;
+          if (arr[i].c > m55) st.above++;
+          if (i >= 20 && arr[i - 20].c > 0) st.ret20.push((arr[i].c / arr[i - 20].c - 1) * 100);
+        }
+      }
       // 基底：RPS60 ≥ 阈值（rps 覆盖外跳过）
+      const rps = rpsOf?.get(arr[i].date);
       if (BASE_RPS > 0) {
         rpsTotal++;
-        const rps = rpsOf?.get(arr[i].date);
         if (rps == null) continue;
         rpsCovered++;
         if (rps < BASE_RPS) continue;
@@ -257,6 +292,7 @@ async function main() {
       const hit = (a: Acc) => {
         a.n++; a.days.add(arr[i].date);
         a.t1.push(r1); a.t5.push(r5); a.t20.push(r20);
+        if (a.tagged) a.tagged.push({ date: arr[i].date, r5, r20 });
         let y = a.byYear.get(year);
         if (!y) { y = { n: 0, win5: 0, sum5: 0 }; a.byYear.set(year, y); }
         y.n++; if (r5 > 0) y.win5++; y.sum5 += r5;
@@ -265,6 +301,13 @@ async function main() {
       for (let sw = 0; sw < sweeps.length; sw++)
         for (let r = 0; r < sweeps[sw].rows.length; r++)
           if (sweeps[sw].rows[r].f(s, i)) hit(sweepAccs[sw][r]);
+
+      // 箱体因子分桶：AI 筛选池口径（RPS60≥70），与基底过滤相互独立
+      if (rps != null && rps >= 70) {
+        const bq = boxAt(s, i);
+        const bi = !bq.inBox || bq.boxQuality == null ? 0 : bq.boxQuality < 60 ? 1 : 2;
+        hit(boxBuckets[bi]);
+      }
     }
     processed++;
     if (processed % 100 === 0) console.log(`[scan-bt] 进度 ${processed}/${byStock.size}`);
@@ -293,6 +336,52 @@ async function main() {
     console.log(`\n=== 扫描：${sw.title} ===`);
     sw.rows.forEach((r, ri) => line(r.key, sweepAccs[swi][ri]));
   });
+
+  // ── 箱体因子分桶（AI 筛选池口径 RPS60≥70）────────────────────────
+  console.log('\n=== 箱体因子分桶（池=RPS60≥70，因子 IC 回放版） ===');
+  const bucketNames = ['非箱体', '箱体质量<60', '箱体质量≥60'];
+  boxBuckets.forEach((a, bi) => {
+    const w5 = winRate(a.t5);
+    const excess = baseWin5 != null && w5 != null ? `${(w5 - baseWin5 >= 0 ? '+' : '')}${(w5 - baseWin5).toFixed(1)}pp` : '--';
+    console.log(`  ${bucketNames[bi].padEnd(12)} 样本${String(a.n).padStart(7)}  T+5胜率${String(w5).padStart(5)}%(vs对照${excess})  T+5均值${String(mean(a.t5)).padStart(6)}%  T+20胜率${String(winRate(a.t20)).padStart(5)}%`);
+  });
+  console.log('  判读：≥60 桶胜率显著高于非箱体桶 → 箱体分有增量信息，值得升因子；三桶几乎无差异 → 在热门票池无效，维持零权重或删除');
+
+  // ── regime 历史重算 + 分段（阈值与 services/ai-screen/regime.ts 一致）──
+  const regimeOf = new Map<string, 'attack' | 'neutral' | 'defense'>();
+  const regimeDays = { attack: 0, neutral: 0, defense: 0 };
+  for (const [d, st] of dayStats) {
+    const ratio = st.total > 0 ? st.above / st.total : null;
+    const sorted = [...st.ret20].sort((a, b) => a - b);
+    const med = sorted.length ? sorted[sorted.length >> 1] : null;
+    let r: 'attack' | 'neutral' | 'defense' = 'neutral';
+    if (ratio != null && ratio <= 0.35) r = 'defense';
+    else if (med != null && med <= -4) r = 'defense';
+    else if (ratio != null && ratio >= 0.55 && med != null && med > 0) r = 'attack';
+    regimeOf.set(d, r);
+    regimeDays[r]++;
+  }
+  console.log(`\n=== 市场状态分段（样本代理全市场：MA55上方占比+20日收益中位数） ===`);
+  console.log(`  天数分布：进攻 ${regimeDays.attack} / 中性 ${regimeDays.neutral} / 防守 ${regimeDays.defense}`);
+  const REGIME_LABEL = { attack: '进攻期', neutral: '中性期', defense: '防守期' } as const;
+  const regimeSplit = (key: string, a: Acc) => {
+    if (!a.tagged || a.tagged.length === 0) return;
+    const bk: Record<string, { n: number; w5: number; s5: number; w20: number; s20: number }> = {};
+    for (const t of a.tagged) {
+      const r = regimeOf.get(t.date) ?? 'neutral';
+      const o = (bk[r] ??= { n: 0, w5: 0, s5: 0, w20: 0, s20: 0 });
+      o.n++; if (t.r5 > 0) o.w5++; o.s5 += t.r5; if (t.r20 > 0) o.w20++; o.s20 += t.r20;
+    }
+    console.log(`  ${key}`);
+    for (const r of ['attack', 'neutral', 'defense'] as const) {
+      const o = bk[r];
+      if (!o) continue;
+      console.log(`    ${REGIME_LABEL[r]}  样本${String(o.n).padStart(7)}  T+5胜率${(Math.round((o.w5 / o.n) * 1000) / 10).toFixed(1)}%  T+5均值${(o.s5 / o.n).toFixed(2)}%  T+20胜率${(Math.round((o.w20 / o.n) * 1000) / 10).toFixed(1)}%  T+20均值${(o.s20 / o.n).toFixed(2)}%`);
+    }
+  };
+  groups.forEach((g, gi) => { if (gi === 0 || g.yearly) regimeSplit(g.key, accs[gi]); });
+  console.log('  判读：防守期 T+5/T+20 显著差于进攻期 → regime 标记有真实区分度，弱市门控值得做（收紧/提示）；无差异 → 徽章当氛围灯');
+
   console.log('\n口径：信号日 T 收盘后可见 → T+1 收盘入场；T+N 为入场后 N 个交易日收盘收益；超额=T+5胜率−对照组。');
 }
 

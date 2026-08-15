@@ -23,6 +23,10 @@ interface StockState {
   updateStockPosition: (code: string, positionPercent: number | undefined) => void;
   /** 勾选/取消分组归属（多组复制语义） */
   toggleStockGroup: (code: string, groupId: string) => void;
+  /** 批量移动：codes 加入 targetId 组（null=只移出），并从 fromId 组移出（多选移动分组用） */
+  moveStocksToGroup: (codes: string[], targetId: string | null, fromId?: string) => void;
+  /** 拖动排序：orderedCodes 为完整新顺序。groupId 缺省=排「全部」(watchlist 数组)；给了=排该组 stockCodes */
+  reorderStocks: (orderedCodes: string[], groupId?: string) => void;
   addGroup: (name: string) => boolean;
   renameGroup: (groupId: string, name: string) => boolean;
   /** 删除分组；withStocks=true 时同时删除该组独有标的（其他组也有的保留） */
@@ -105,6 +109,31 @@ export const useStockStore = create<StockState>()(
               : { ...g, stockCodes: [...g.stockCodes, code] };
           }),
         });
+      },
+      moveStocksToGroup: (codes, targetId, fromId) => {
+        const moving = new Set(codes);
+        set({
+          groups: get().groups.map(g => {
+            let stockCodes = g.stockCodes;
+            if (fromId && g.id === fromId) stockCodes = stockCodes.filter(c => !moving.has(c));
+            if (targetId && g.id === targetId) stockCodes = [...new Set([...stockCodes, ...codes])];
+            return stockCodes === g.stockCodes ? g : { ...g, stockCodes };
+          }),
+        });
+      },
+      reorderStocks: (orderedCodes, groupId) => {
+        if (groupId) {
+          set({
+            groups: get().groups.map(g => (g.id === groupId ? { ...g, stockCodes: orderedCodes } : g)),
+          });
+        } else {
+          const rank = new Map(orderedCodes.map((c, i) => [c, i]));
+          set({
+            watchlist: [...get().watchlist].sort(
+              (a, b) => (rank.get(a.code) ?? Number.MAX_SAFE_INTEGER) - (rank.get(b.code) ?? Number.MAX_SAFE_INTEGER)
+            ),
+          });
+        }
       },
       addGroup: (name) => {
         const trimmed = name.trim();

@@ -21,7 +21,7 @@ export function GroupManageModal({ onClose }: { onClose: () => void }) {
   const [editingId, setEditingId] = useState<string | null>(null);
   const [editName, setEditName] = useState('');
   const [deleteTarget, setDeleteTarget] = useState<{ id: string; name: string; count: number } | null>(null);
-  const [deleteWithStocks, setDeleteWithStocks] = useState(true);
+  const [deleteWithStocks, setDeleteWithStocks] = useState(false);
 
   const countOf = (id: string) => groups.find(g => g.id === id)?.stockCodes.length ?? 0;
 
@@ -124,7 +124,7 @@ export function GroupManageModal({ onClose }: { onClose: () => void }) {
                         <Pencil className="w-4 h-4" />
                       </button>
                       <button
-                        onClick={() => { setDeleteTarget({ id: g.id, name: g.name, count: countOf(g.id) }); }}
+                        onClick={() => { setDeleteTarget({ id: g.id, name: g.name, count: countOf(g.id) }); setDeleteWithStocks(false); }}
                         className="p-1.5 text-gray-400 hover:text-red-600 hover:bg-red-50 dark:hover:bg-red-950 rounded-lg shrink-0"
                         title="删除分组"
                       >

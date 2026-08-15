@@ -144,10 +144,8 @@ export async function runScreen(preset: StrategyPreset, llmCfg?: LlmConfig, _ful
     degradation.push('all_filtered_by_technical_hard_filter');
   }
 
-  // 因子打分(全候选)
+  // 因子打分(全候选)——箱体因子已由 scorer 计算（二元，权重在 strategies.ts）
   computeScreenScores(picks, preset);
-  // 箱体质量分并入 factorScores（权重 0 的观察因子：落库 JSON 攒样本，胜率复盘 IC 脚本加 'box' 键即可验证，验证有效前不进权重）
-  for (const p of picks) (p.factorScores as Record<string, number | null>).box = p.boxQuality;
 
   // LLM 重排(可选,仅对 topK 打分)
   let llmRanked = false;

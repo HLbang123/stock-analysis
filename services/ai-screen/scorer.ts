@@ -52,12 +52,11 @@ export const DEFAULT_SCORING_PROFILE: Record<string, number> = {
   entry_timing_pullback_distance_slope: 8.0,
   rsi_oversold_bonus: 10.0,
   rsi_overbought_penalty: 14.0,
-  // risk(波动回撤,纯风险控制)
+  // risk(波动控制：20日波动率 + ATR；2026-08-15 删除回撤罚项——
+  // 680天+10年两窗口 dd20 IC 稳定为正(momentum +0.045/+0.050, t=12)，深回撤=超跌反弹，罚它是反的)
   risk_base: 78.0,
   risk_high_volatility_pct: 45.0,
   risk_volatility_penalty_slope: 0.45,
-  risk_drawdown_floor_pct: -12.0,
-  risk_drawdown_penalty_slope: 1.2,
   risk_high_atr_pct: 6.0,
   risk_atr_penalty_slope: 2.0,
   // theme_heat(板块风口)
@@ -158,12 +157,11 @@ function entryTiming(picks: AiPick[], p: Record<string, number>): number[] {
   });
 }
 
-/** 波动回撤(纯风险控制,旧 stability 瘦身:不再用 change/volume/signal) */
+/** 波动控制(纯风险控制,旧 stability 瘦身:不再用 change/volume/signal/drawdown) */
 function risk(picks: AiPick[], p: Record<string, number>): number[] {
   return picks.map((k) => {
     let score = p.risk_base;
     if (k.volatility20d != null) score -= Math.max(k.volatility20d - p.risk_high_volatility_pct, 0) * p.risk_volatility_penalty_slope;
-    if (k.maxDrawdown20d != null) score -= Math.max(p.risk_drawdown_floor_pct - k.maxDrawdown20d, 0) * p.risk_drawdown_penalty_slope;
     if (k.atr20 != null) score -= Math.max(k.atr20 - p.risk_high_atr_pct, 0) * p.risk_atr_penalty_slope;
     return clip(score, 0, 100);
   });
@@ -197,6 +195,15 @@ function themeHeat(picks: AiPick[], p: Record<string, number>): number[] {
     score -= Math.max(score - p.theme_heat_overheat_score, 0) * p.theme_heat_overheat_penalty_slope;
     return clip(score, 0, 100);
   });
+}
+
+/**
+ * 箱体形态二元因子（2026-08-15 十年回放验证后升级）：
+ * 箱体内 vs 非箱体 T+5 +2~5pp、T+20 +7~9pp（RPS≥70/87 两口径一致）；
+ * 但质量分非线性（<60 桶 +5.0pp 反而高于 ≥60 桶 +1.7pp）→ 只用 0/1，不喂连续分
+ */
+function box(picks: AiPick[]): number[] {
+  return picks.map((k) => (k.boxQuality != null ? 100 : 0));
 }
 
 /**
@@ -242,6 +249,7 @@ export function computeScreenScores(picks: AiPick[], preset: StrategyPreset): vo
     liquidity: liquidity(picks),
     theme_heat: themeHeat(picks, p),
     chip: chip(picks),
+    box: box(picks),
   };
 
   for (let i = 0; i < picks.length; i++) {

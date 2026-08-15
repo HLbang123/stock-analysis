@@ -8,8 +8,13 @@
  *   - trend -0.06 (t≈-12)         反向显著 → 出局（仅留 0.05 防抖动）
  *   - liquidity -0.08             反向 → 出局
  *   - theme_heat ≈0 / chip ≈0     无效 → 出局
- * 硬筛：RPS/量比 原始信号 IC 显著负（热度=均值回归），激进策略加 RPS 上限 + 量比上限；
- *       池子整体超额在长窗口转正（balanced +0.08%），激进池仍负 → 热度过滤必须松。
+ * 10 年复核（2016-12~2026-07，2332 交易日，2026-08-15）：
+ *   - trend / liquidity 反向跨牛熊稳定（trend OOS -0.056~-0.065，log成交额全市场 IC -0.083 全场最强）
+ *     → 权重彻底清零（此前 0.05/0.03 防抖动残留也去掉）
+ *   - entry_timing 唯一强正（OOS +0.039/+0.057）→ 上调；risk 正向且 T+20 最强（+0.056/+0.074）→ 保留
+ *   - theme_heat ≈0 → 清零；chip 符号不稳（momentum 正 / balanced 负）→ 维持 0
+ *   - 池 vs 市场：10 年窗口池超额转负（-0.22%/-0.27%），动量池是牛市产物——弱市门控为后续大项
+ * 硬筛：RPS/量比 原始信号 IC 显著负（热度=均值回归），激进策略加 RPS 上限 + 量比上限。
  * 保留 quality/defensive 两个旧预设（历史胜率数据延续），新 UI 只展示 momentum/balanced。
  */
 
@@ -37,15 +42,15 @@ export const STRATEGY_PRESETS: StrategyPreset[] = [
     factorWeights: {
       entry_timing: 0.50,
       quality: 0.25,
-      risk: 0.15,
-      trend: 0.05,
-      liquidity: 0.03,
-      theme_heat: 0.02,
-      chip: 0.00,
+      risk: 0.20,
+      trend: 0,
+      liquidity: 0,
+      theme_heat: 0,
+      chip: 0,
+      box: 0.05, // 2026-08-15 回放验证升级（箱体内 T+5 +2~5pp）
     },
     scoringProfile: {
       risk_high_volatility_pct: 38.0,
-      risk_drawdown_floor_pct: -12.0,
     },
     rankingHints: [
       '优先关注：',
@@ -56,7 +61,7 @@ export const STRATEGY_PRESETS: StrategyPreset[] = [
     ].join('\n'),
     rulesText: [
       '硬筛：RPS(60日)70~95 · 成交额≥5千万 · 单日±7% · 60日涨幅≤60% · 量比≤2.5 · 波动率≤45% · 回撤≥-15%',
-      '因子侧重：入场点50% · 质量25% · 波动15% · 趋势5%',
+      '因子侧重：入场点50% · 质量25% · 波动20% · 箱体5%',
     ].join('\n'),
     maxOutput: 30,
     llmRerank: true,
@@ -82,17 +87,17 @@ export const STRATEGY_PRESETS: StrategyPreset[] = [
       maxDrawdown20dPctMin: -25,
     },
     factorWeights: {
-      entry_timing: 0.35,
+      entry_timing: 0.40,
       risk: 0.35,
       quality: 0.20,
-      trend: 0.05,
-      liquidity: 0.03,
-      theme_heat: 0.02,
-      chip: 0.00,
+      trend: 0,
+      liquidity: 0,
+      theme_heat: 0,
+      chip: 0,
+      box: 0.05, // 2026-08-15 回放验证升级（箱体内 T+5 +2~5pp）
     },
     scoringProfile: {
       risk_high_volatility_pct: 50.0,
-      risk_drawdown_floor_pct: -18.0,
       risk_high_atr_pct: 8.0,
     },
     rankingHints: [
@@ -104,7 +109,7 @@ export const STRATEGY_PRESETS: StrategyPreset[] = [
     ].join('\n'),
     rulesText: [
       '硬筛：RPS(60日)70~97 · 成交额≥8千万 · 单日-5%~+7% · 60日涨幅≤60% · MA5>MA13>MA55 · 量比≤2.5 · 波动率≤60% · 回撤≥-25%',
-      '因子侧重：入场点35% · 波动35% · 质量20% · 趋势5%',
+      '因子侧重：入场点40% · 波动35% · 质量20% · 箱体5%',
     ].join('\n'),
     maxOutput: 30,
     llmRerank: true,
@@ -128,16 +133,15 @@ export const STRATEGY_PRESETS: StrategyPreset[] = [
     },
     factorWeights: {
       quality: 0.34,
-      trend: 0.18,
-      entry_timing: 0.18,
-      risk: 0.14,
-      liquidity: 0.10,
-      theme_heat: 0.04,
+      entry_timing: 0.32,
+      risk: 0.22,
+      trend: 0.05,
+      liquidity: 0.03,
+      theme_heat: 0.02,
       chip: 0.02,
     },
     scoringProfile: {
       risk_high_volatility_pct: 38.0,
-      risk_drawdown_floor_pct: -10.0,
     },
     rankingHints: [
       '优先关注：',
@@ -148,7 +152,7 @@ export const STRATEGY_PRESETS: StrategyPreset[] = [
     ].join('\n'),
     rulesText: [
       '硬筛：RPS(120日)≥70 · 成交额≥6千万 · 单日-7%~+7% · 波动率≤45% · 回撤≥-12%',
-      '因子侧重：质量34% · 趋势18% · 入场点18% · 波动14% · 流动性10% · 板块4% · 筹码2%',
+      '因子侧重：质量34% · 入场点32% · 波动22% · 趋势5% · 流动性3% · 板块2% · 筹码2%',
     ].join('\n'),
     maxOutput: 20,
     llmRerank: true,
@@ -171,17 +175,16 @@ export const STRATEGY_PRESETS: StrategyPreset[] = [
       maxDrawdown20dPctMin: -8,
     },
     factorWeights: {
-      risk: 0.30,
+      risk: 0.32,
+      entry_timing: 0.28,
       quality: 0.22,
-      liquidity: 0.16,
-      trend: 0.14,
-      entry_timing: 0.10,
-      theme_heat: 0.04,
+      liquidity: 0.06,
+      trend: 0.05,
+      theme_heat: 0.03,
       chip: 0.04,
     },
     scoringProfile: {
       risk_high_volatility_pct: 30.0,
-      risk_drawdown_floor_pct: -8.0,
       risk_high_atr_pct: 4.2,
       trend_chase_start_pct: 4.0,
     },
@@ -198,7 +201,7 @@ export const STRATEGY_PRESETS: StrategyPreset[] = [
     ].join('\n'),
     rulesText: [
       '硬筛：RPS(60日)≥65 · 成交额≥8千万 · 单日-4%~+5% · 60日涨≤35% · 波动率≤32% · 回撤≥-8%',
-      '因子侧重：波动30% · 质量22% · 流动性16% · 趋势14% · 入场点10% · 板块4% · 筹码4%',
+      '因子侧重：波动32% · 入场点28% · 质量22% · 流动性6% · 趋势5% · 板块3% · 筹码4%',
     ].join('\n'),
     maxOutput: 20,
     llmRerank: true,

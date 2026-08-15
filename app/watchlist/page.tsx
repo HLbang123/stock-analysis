@@ -1,6 +1,6 @@
 'use client';
 
-import { useEffect, useState, useRef } from 'react';
+import { useEffect, useState, useRef, type PointerEvent as ReactPointerEvent } from 'react';
 import { useRouter } from 'next/navigation';
 import { useStockStore } from '@/store';
 import { useUiStore } from '@/store/ui-store';
@@ -9,11 +9,12 @@ import { isETF, validateStockCode, extractStockCodes, detectMarket } from '@/lib
 import { computeMaCross, type MaCrossState } from '@/lib/stock-helpers';
 import { RealtimeQuote } from '@/types';
 import { formatPrice, formatChange, cn } from '@/lib/utils';
-import { Plus, Search, Trash2, TrendingUp, ScanLine, Upload, Camera, X, Check, FolderInput } from 'lucide-react';
+import { Plus, Search, Trash2, TrendingUp, ScanLine, Upload, Camera, X, Check, FolderInput, Menu } from 'lucide-react';
 import { toast } from 'sonner';
 import { Button } from '@/components/ui/button';
 import { Card } from '@/components/ui/card';
 import { Input } from '@/components/ui/input';
+import { Modal } from '@/components/ui/modal';
 import { GroupBar, ALL_GROUP_ID } from '@/components/GroupBar';
 import { GroupManageModal } from '@/components/GroupManageModal';
 import { MoveToGroupMenu } from '@/components/MoveToGroupMenu';
@@ -47,7 +48,7 @@ function extractStockNames(text: string, dict: { name: string; code: string }[])
 
 export default function WatchlistPage() {
   const router = useRouter();
-  const { watchlist, groups, addToWatchlist, removeFromWatchlist, isInWatchlist, addGroup, removeStocks } = useStockStore();
+  const { watchlist, groups, addToWatchlist, removeFromWatchlist, isInWatchlist, addGroup, removeStocks, moveStocksToGroup, reorderStocks } = useStockStore();
   const [searchQuery, setSearchQuery] = useState('');
   const [searchResults, setSearchResults] = useState<RealtimeQuote[]>([]);
   const [isSearching, setIsSearching] = useState(false);
@@ -69,6 +70,126 @@ export default function WatchlistPage() {
   // 多选删除状态
   const [multiSelect, setMultiSelect] = useState(false);
   const [selectedCodes, setSelectedCodes] = useState<Set<string>>(new Set());
+  // 多选移动分组弹窗
+  const [showBatchMove, setShowBatchMove] = useState(false);
+  // 长按进入多选：fired 用于吞掉长按松手后的那次 click（防刚进入就被反选/跳转）
+  const longPressRef = useRef<{ timer: ReturnType<typeof setTimeout> | null; fired: boolean }>({ timer: null, fired: false });
+  const startLongPress = (code: string) => {
+    if (multiSelect) return;
+    cancelLongPress();
+    longPressRef.current.timer = setTimeout(() => {
+      longPressRef.current.fired = true;
+      setMultiSelect(true);
+      setSelectedCodes(new Set([code]));
+    }, 500);
+  };
+  const cancelLongPress = () => {
+    if (longPressRef.current.timer) {
+      clearTimeout(longPressRef.current.timer);
+      longPressRef.current.timer = null;
+    }
+  };
+
+  // 拖动排序（多选模式内，手柄触发）：拖动中只动本地 dragOrder，松手一次性提交 store。
+  // 事件挂 window + rAF 每帧驱动：不依赖 pointer capture 的 React 事件重定向（iOS 上拖动中 DOM 重排
+  // 会掐断 capture 事件流，曾表现为拖到一半卡死）；插入位按行中线判定，不用 elementFromPoint
+  // （指针落进行间隙或覆盖层时它返回容器，丢目标）。
+  const [dragOrder, setDragOrder] = useState<string[] | null>(null);
+  const [dragInfo, setDragInfo] = useState<{ code: string; offsetY: number } | null>(null);
+  const dragRef = useRef<{ code: string; startY: number; startScroll: number; lastOffset: number } | null>(null);
+  // dragOrder 的同步镜像：重排判定须以 ref 为准（state 可能还是上一帧的）
+  const dragOrderRef = useRef<string[] | null>(null);
+  const dragPosRef = useRef(0); // 最近一次指针 clientY，rAF 每帧读
+  const dragCleanupRef = useRef<(() => void) | null>(null);
+
+  /** 按指针位置重排 + 更新被拖卡片位移（pointermove 与 rAF 共用） */
+  const applyDrag = (clientY: number) => {
+    const d = dragRef.current;
+    const order = dragOrderRef.current;
+    if (!d || !order) return;
+    const from = order.indexOf(d.code);
+    // 插入位 = 首张「中线在指针下方」的卡片的槽位（换算成移除被拖卡后的下标；都没越线=排末尾）
+    let to = order.length - 1;
+    for (let i = 0; i < order.length; i++) {
+      if (order[i] === d.code) continue;
+      const r = document.querySelector(`[data-stock-code="${order[i]}"]`)?.getBoundingClientRect();
+      if (r && clientY < r.top + r.height / 2) { to = i > from ? i - 1 : i; break; }
+    }
+    if (from >= 0 && to !== from) {
+      // 换位后被拖卡片的布局位置平移了，须同步平移 startY 抵消，否则 translateY 与布局位移叠加跳行。
+      // 补偿量 = 被跨过卡片的真实高度之和（卡片高度不一：徽章换行/"加载中"单行等），
+      // 用被拖卡片自身高度×行数会累积误差 → 视觉位置与指针错开 → 两格间来回换锁死。
+      const GAP = 8; // space-y-2
+      const step = to > from ? 1 : -1;
+      let shift = 0;
+      for (let i = from + step; step > 0 ? i <= to : i >= to; i += step) {
+        shift += step * (GAP + (document.querySelector(`[data-stock-code="${order[i]}"]`)?.getBoundingClientRect().height ?? 0));
+      }
+      d.startY += shift;
+      const next = [...order];
+      next.splice(from, 1);
+      next.splice(to, 0, d.code);
+      dragOrderRef.current = next;
+      setDragOrder(next);
+    }
+    // 页面滚动也要计入位移（边缘自动滚动时指针不动但内容在动）
+    const offsetY = (clientY - d.startY) + (window.scrollY - d.startScroll);
+    if (offsetY !== d.lastOffset) {
+      d.lastOffset = offsetY;
+      setDragInfo({ code: d.code, offsetY });
+    }
+  };
+
+  const handleGripDown = (e: ReactPointerEvent<HTMLButtonElement>, code: string) => {
+    e.preventDefault();
+    e.stopPropagation();
+    dragCleanupRef.current?.(); // 上次未正常收尾（极端情况）先清掉
+    // 保留 pointer capture：松手在窗口外也能收到 pointerup；move/up 走 window 监听双保险
+    try { e.currentTarget.setPointerCapture(e.pointerId); } catch { /* 指针已失效时忽略 */ }
+    dragRef.current = { code, startY: e.clientY, startScroll: window.scrollY, lastOffset: 0 };
+    dragPosRef.current = e.clientY;
+    dragOrderRef.current = visibleWatchlist.map(s => s.code);
+    setDragOrder(dragOrderRef.current);
+    setDragInfo({ code, offsetY: 0 });
+
+    let raf = 0;
+    const tick = () => {
+      if (!dragRef.current) return;
+      // 指针贴近视口上下沿时自动滚动页面，长列表才能拖出屏幕外
+      const y = dragPosRef.current;
+      const EDGE = 72;
+      if (y < EDGE) window.scrollBy(0, -(EDGE - y) / 6);
+      else if (y > window.innerHeight - EDGE) window.scrollBy(0, (y - (window.innerHeight - EDGE)) / 6);
+      applyDrag(y);
+      raf = requestAnimationFrame(tick);
+    };
+    const onMove = (ev: PointerEvent) => { dragPosRef.current = ev.clientY; };
+    const onUp = () => {
+      cleanup();
+      if (dragOrderRef.current) {
+        reorderStocks(dragOrderRef.current, selectedGroupId === ALL_GROUP_ID ? undefined : selectedGroupId);
+      }
+      dragRef.current = null;
+      dragOrderRef.current = null;
+      setDragOrder(null);
+      setDragInfo(null);
+    };
+    const cleanup = () => {
+      cancelAnimationFrame(raf);
+      window.removeEventListener('pointermove', onMove);
+      window.removeEventListener('pointerup', onUp);
+      window.removeEventListener('pointercancel', onUp);
+      dragCleanupRef.current = null;
+    };
+    window.addEventListener('pointermove', onMove);
+    window.addEventListener('pointerup', onUp);
+    window.addEventListener('pointercancel', onUp);
+    dragCleanupRef.current = cleanup;
+    raf = requestAnimationFrame(tick);
+  };
+
+  // 卸载兜底：清掉 window 监听与 rAF
+  useEffect(() => () => dragCleanupRef.current?.(), []);
 
   // OCR 状态（支持多张截图：持仓超一屏时连选，逐张识别结果合并）
   const [showOcr, setShowOcr] = useState(false);
@@ -331,15 +452,15 @@ export default function WatchlistPage() {
     setCrossMap(cm);
   };
 
-  // 只在标的「增删」时重拉行情；position 占比、groupId 分组归属变化不触发
-  // （原实现依赖 [watchlist] 引用，导致持仓占比每敲一个数字就重拉全部行情）
-  const watchlistCodesKey = watchlist.map(s => s.code).join(',');
+  // 只在标的「增删」时重拉行情；position 占比、groupId 分组归属、排序变化不触发
+  // （排序后与排序前代码集合相同，故 key 排序后拼接，与顺序解耦）
+  const watchlistCodesKey = watchlist.map(s => s.code).sort().join(',');
   useEffect(() => {
     refreshQuotes();
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [watchlistCodesKey]);
 
-  // 分组派生：切换组只过滤展示，不重拉行情（多组映射：组内标的 = group.stockCodes）
+  // 分组派生：切换组只过滤展示，不重拉行情（多组映射：组内标的 = group.stockCodes，顺序即组内排序）
   const activeGroupName = selectedGroupId === ALL_GROUP_ID
     ? '全部'
     : groups.find(g => g.id === selectedGroupId)?.name ?? '全部';
@@ -348,7 +469,9 @@ export default function WatchlistPage() {
     : groups.find(g => g.id === selectedGroupId)?.stockCodes;
   const visibleWatchlist = selectedGroupId === ALL_GROUP_ID
     ? watchlist
-    : watchlist.filter(s => selectedGroupCodes?.includes(s.code));
+    : (selectedGroupCodes ?? [])
+        .map(c => watchlist.find(s => s.code === c))
+        .filter((s): s is NonNullable<typeof s> => !!s);
 
   // 选中组被删除时自动回退「全部」；切组时退出多选态
   useEffect(() => {
@@ -372,11 +495,33 @@ export default function WatchlistPage() {
   const exitMultiSelect = () => {
     setMultiSelect(false);
     setSelectedCodes(new Set());
+    dragCleanupRef.current?.();
+    dragRef.current = null;
+    dragOrderRef.current = null;
+    setDragOrder(null);
+    setDragInfo(null);
   };
   const handleBatchDelete = () => {
     if (selectedCodes.size === 0) return;
     removeStocks([...selectedCodes]);
     toast.success(`已删除 ${selectedCodes.size} 只标的`);
+    exitMultiSelect();
+  };
+
+  // 全选/全不选（只作用于当前组可见列表）
+  const allVisibleSelected = visibleWatchlist.length > 0 && visibleWatchlist.every(s => selectedCodes.has(s.code));
+  const toggleSelectAll = () => {
+    setSelectedCodes(allVisibleSelected ? new Set() : new Set(visibleWatchlist.map(s => s.code)));
+  };
+
+  // 多选移动分组：加入目标组，并从当前浏览组移出（「全部」下无移出来源，即纯加入）
+  const handleBatchMove = (targetId: string | null) => {
+    if (selectedCodes.size === 0) return;
+    const fromId = selectedGroupId === ALL_GROUP_ID ? undefined : selectedGroupId;
+    moveStocksToGroup([...selectedCodes], targetId, fromId);
+    const targetName = targetId ? groups.find(g => g.id === targetId)?.name ?? '' : '未分组';
+    toast.success(`已移动 ${selectedCodes.size} 只到「${targetName}」`);
+    setShowBatchMove(false);
     exitMultiSelect();
   };
 
@@ -690,9 +835,14 @@ export default function WatchlistPage() {
             <span className="text-sm text-gray-500">{activeGroupName} · {visibleWatchlist.length} 只</span>
             <div className="flex items-center gap-3">
               {multiSelect ? (
-                <button onClick={exitMultiSelect} className="text-sm text-gray-500 hover:text-gray-700 dark:hover:text-gray-300">
-                  完成
-                </button>
+                <>
+                  <button onClick={toggleSelectAll} className="text-sm text-[var(--color-accent)] hover:opacity-80">
+                    {allVisibleSelected ? '全不选' : '全选'}
+                  </button>
+                  <button onClick={exitMultiSelect} className="text-sm text-gray-500 hover:text-gray-700 dark:hover:text-gray-300">
+                    完成
+                  </button>
+                </>
               ) : (
                 <>
                   <button
@@ -711,15 +861,30 @@ export default function WatchlistPage() {
           </div>
 
           <div className="space-y-2">
-            {visibleWatchlist.map((stock) => {
+            {(dragOrder
+              ? dragOrder.map(c => visibleWatchlist.find(s => s.code === c)).filter((s): s is NonNullable<typeof s> => !!s)
+              : visibleWatchlist
+            ).map((stock) => {
               const quote = stockQuotes.get(stock.code);
               const cross = crossMap.get(stock.code);
               const rps60 = rpsMap[stock.code]?.rps60 ?? null;
+              const isDragging = dragInfo?.code === stock.code;
               return (
                 <Card
                   key={stock.code}
                   clickable
-                  onClick={() => (multiSelect ? toggleSelect(stock.code) : router.push(`/stock/${stock.code}`))}
+                  data-stock-code={stock.code}
+                  onClick={() => {
+                    // 长按刚触发多选时，松手伴随的 click 吞掉（否则会立刻反选掉长按选中的那只）
+                    if (longPressRef.current.fired) { longPressRef.current.fired = false; return; }
+                    if (multiSelect) toggleSelect(stock.code); else router.push(`/stock/${stock.code}`);
+                  }}
+                  onTouchStart={() => startLongPress(stock.code)}
+                  onTouchEnd={cancelLongPress}
+                  onTouchMove={cancelLongPress}
+                  onContextMenu={(e) => e.preventDefault()}
+                  className={cn('select-none', isDragging && 'relative z-10 shadow-lg opacity-90')}
+                  style={isDragging ? { transform: `translateY(${dragInfo.offsetY}px)`, pointerEvents: 'none' } : undefined}
                 >
                   <div className="flex items-center justify-between">
                     <div className="flex items-center gap-2 min-w-0">
@@ -811,6 +976,17 @@ export default function WatchlistPage() {
                     ) : (
                       <div className="text-gray-400 text-sm">加载中...</div>
                     )}
+                    {multiSelect && (
+                      <button
+                        onPointerDown={(e) => handleGripDown(e, stock.code)}
+                        onTouchStart={(e) => e.stopPropagation()}
+                        onClick={(e) => e.stopPropagation()}
+                        title="按住拖动排序"
+                        className="p-2 -mr-2 shrink-0 text-gray-300 dark:text-gray-600 hover:text-gray-500 cursor-grab active:cursor-grabbing touch-none"
+                      >
+                        <Menu className="w-4 h-4" />
+                      </button>
+                    )}
                   </div>
 
                   {quote && !multiSelect && (
@@ -846,6 +1022,15 @@ export default function WatchlistPage() {
       {multiSelect && (
         <div className="fixed bottom-20 left-1/2 -translate-x-1/2 z-40 flex items-center gap-3 px-4 py-2.5 rounded-full bg-gray-900 dark:bg-white text-white dark:text-gray-900 shadow-lg">
           <span className="text-sm whitespace-nowrap">已选 {selectedCodes.size} 只</span>
+          {groups.length > 0 && (
+            <button
+              onClick={() => setShowBatchMove(true)}
+              disabled={selectedCodes.size === 0}
+              className="px-3.5 py-1 rounded-full bg-[var(--color-accent)] text-white text-sm font-medium disabled:opacity-40"
+            >
+              移动分组
+            </button>
+          )}
           <button
             onClick={handleBatchDelete}
             disabled={selectedCodes.size === 0}
@@ -855,6 +1040,32 @@ export default function WatchlistPage() {
           </button>
           <button onClick={exitMultiSelect} className="text-sm opacity-70">取消</button>
         </div>
+      )}
+
+      {/* 多选移动分组弹窗：在「全部」下为加入目标组；在具体分组下为移出当前组并加入目标组 */}
+      {showBatchMove && (
+        <Modal title={`移动 ${selectedCodes.size} 只到分组`} onClose={() => setShowBatchMove(false)} variant="center" maxWidth="sm:max-w-sm">
+          <div className="p-4 space-y-1.5">
+            {selectedGroupId !== ALL_GROUP_ID && (
+              <button
+                onClick={() => handleBatchMove(null)}
+                className="w-full text-left px-3 py-2.5 rounded-lg text-sm hover:bg-gray-100 dark:hover:bg-gray-800 transition"
+              >
+                未分组<span className="text-xs text-gray-400 ml-1.5">（移出「{activeGroupName}」）</span>
+              </button>
+            )}
+            {groups.filter(g => g.id !== selectedGroupId).map(g => (
+              <button
+                key={g.id}
+                onClick={() => handleBatchMove(g.id)}
+                className="w-full text-left px-3 py-2.5 rounded-lg text-sm hover:bg-gray-100 dark:hover:bg-gray-800 transition"
+              >
+                {g.name}
+                <span className="text-xs text-gray-400 ml-1.5">{g.stockCodes.length} 只</span>
+              </button>
+            ))}
+          </div>
+        </Modal>
       )}
 
       {showGroupManage && <GroupManageModal onClose={() => setShowGroupManage(false)} />}

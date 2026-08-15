@@ -31,6 +31,7 @@ const PHASES: { value: ScanPhase; label: string }[] = [
   { value: 'startup', label: '启动期' },
   { value: 'uptrend', label: '上升期' },
   { value: 'pullback', label: '回踩整理' },
+  { value: 'box', label: '吸筹箱体' },
 ];
 
 const GC_PRESETS = [1, 3, 5];
@@ -116,6 +117,12 @@ function ManualScan() {
   const [expandedL1, setExpandedL1] = useState<string | null>(null);
   const [loading, setLoading] = useState(false);
   const [hasQueried, setHasQueried] = useState(false);
+  // 当前市场状态：防守期给趋势类条件一句警告（2026-08-15 回放：趋势条件防守期 T+20 均值为负）
+  const [regime, setRegime] = useState<string | null>(null);
+
+  useEffect(() => {
+    fetch('/api/market/regime').then(r => r.json()).then(d => setRegime(d.regime ?? null)).catch(() => {});
+  }, []);
 
   // 动态行业列表（从 DB 拉）：L1 平铺 + L2 手风琴子面板，均带标的数
   const [industries, setIndustries] = useState<{ name: string; count: number; l2: { name: string; count: number }[] }[]>([]);
@@ -259,7 +266,7 @@ function ManualScan() {
   if (filterBias55) condParts.push(`乖离${bias55Min}~${bias55Max}%`);
   if (filterPbMa13) condParts.push(`贴MA13(${pbMa13Min}~${pbMa13Max}%)`);
   if (volShrink) condParts.push('缩量整理');
-  if (boxMode) condParts.push(boxMode === 'breakout' ? '突破箱体' : '吸筹箱体');
+  if (boxMode) condParts.push('吸筹箱体');
   if (filterRps) condParts.push(`RPS(${rpsPeriods.join('/')})≥${rpsMin}`);
   if (filterRoe) condParts.push(`ROE≥${minRoe}%`);
   if (filterMv) condParts.push(`流通市值≥${minMv}亿`);
@@ -442,18 +449,16 @@ function ManualScan() {
       {/* 筛选条件 */}
       <Card className="p-4 mb-4">
         <div className="space-y-3">
-          {/* 阶段预设（一键套用下方趋势条件组，套用后仍可逐行改） */}
-          <div className="flex flex-wrap items-center gap-3">
+          {/* 阶段预设（一键套用下方趋势条件组，套用后仍可逐行改；折行全部可见，无隐藏） */}
+          <div className="flex flex-wrap items-center gap-2">
             <span className="text-sm font-medium">阶段</span>
-            <div className="flex gap-1">
-              {PHASES.map(p => (
-                <button key={p.value} onClick={() => applyPhase(p.value)}
-                  className={cn("px-3 py-1.5 rounded-lg text-sm transition",
-                    phase === p.value ? "bg-blue-600 text-white" : "bg-gray-100 dark:bg-gray-700 text-gray-600 dark:text-gray-400 hover:bg-gray-200")}>
-                  {p.label}
-                </button>
-              ))}
-            </div>
+            {PHASES.map(p => (
+              <button key={p.value} onClick={() => applyPhase(p.value)}
+                className={cn("px-3 py-1.5 rounded-lg text-sm whitespace-nowrap shrink-0 transition",
+                  phase === p.value ? "bg-blue-600 text-white" : "bg-gray-100 dark:bg-gray-700 text-gray-600 dark:text-gray-400 hover:bg-gray-200")}>
+                {p.label}
+              </button>
+            ))}
           </div>
 
           {/* RPS */}
@@ -606,20 +611,9 @@ function ManualScan() {
           {/* 吸筹箱体 */}
           <div className="flex flex-wrap items-center gap-3">
             <label className="flex items-center gap-2 text-sm font-medium cursor-pointer">
-              <input type="checkbox" checked={boxMode !== ''} onChange={e => setBoxMode(e.target.checked ? 'in' : '')} className="w-4 h-4 rounded accent-blue-600" />
+              <input type="checkbox" checked={boxMode === 'in'} onChange={e => setBoxMode(e.target.checked ? 'in' : '')} className="w-4 h-4 rounded accent-blue-600" />
               吸筹箱体
             </label>
-            {boxMode !== '' && (
-              <div className="flex gap-1">
-                {([['in', '箱体内'], ['breakout', '已突破']] as const).map(([v, label]) => (
-                  <button key={v} onClick={() => setBoxMode(v)}
-                    className={cn("px-3 py-1.5 rounded-lg text-sm transition",
-                      boxMode === v ? "bg-blue-600 text-white" : "bg-gray-100 dark:bg-gray-700 text-gray-600 dark:text-gray-400 hover:bg-gray-200")}>
-                    {label}
-                  </button>
-                ))}
-              </div>
-            )}
           </div>
 
           {/* ROE */}
@@ -708,6 +702,9 @@ function ManualScan() {
           {loading && <Loader2 className="w-4 h-4 animate-spin" />}
           {loading ? '查询中...' : '查询'}
         </button>
+        {regime === 'defense' && (filterMb || maRising || filterPbMa13 || volShrink) && (
+          <p className="mt-2 text-xs text-amber-600">当前市场防守期，趋势类条件历史表现偏差，谨慎参考</p>
+        )}
       </Card>
 
       {/* 结果表 */}

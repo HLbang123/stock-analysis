@@ -178,7 +178,7 @@ async function scanAiScreen() {
   sweepReport(wAccs, 'B1 RANK_WEIGHT 扫描（融合分排序 top-N 的 T+5，当前线上 0.4）', null);
 
   // 因子 IC（Spearman + 5 分位胜率，全候选）
-  const FACTOR_KEYS = ['trend', 'entry_timing', 'risk', 'quality', 'liquidity', 'theme_heat', 'chip'];
+  const FACTOR_KEYS = ['trend', 'entry_timing', 'risk', 'quality', 'liquidity', 'theme_heat', 'chip', 'box'];
   const rank = (xs: number[]) => {
     const idx = xs.map((v, i) => [v, i]).sort((a, b) => a[0] - b[0]);
     const r = new Array(xs.length).fill(0);

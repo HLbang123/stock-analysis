@@ -4,8 +4,8 @@ import { persist } from 'zustand/middleware';
 /** 板块过滤：all=全部 / main=主板 / gem=创业板 / star=科创板 / bjse=北交所 */
 export type Board = 'all' | 'main' | 'gem' | 'star' | 'bjse';
 
-/** 阶段预设：none=不限 / startup=启动期 / uptrend=上升期 / pullback=回踩整理（一键套用下方趋势条件组） */
-export type ScanPhase = 'none' | 'startup' | 'uptrend' | 'pullback';
+/** 阶段预设：none=不限 / startup=启动期 / uptrend=上升期 / pullback=回踩整理 / box=吸筹箱体（一键套用下方条件组） */
+export type ScanPhase = 'none' | 'startup' | 'uptrend' | 'pullback' | 'box';
 
 export interface RpsItem {
   tsCode: string;
@@ -53,7 +53,7 @@ interface ScannerState {
   pbMa13Min: number;
   pbMa13Max: number;
   volShrink: boolean;     // 近5日均量 < 前20日均量
-  boxMode: '' | 'in' | 'breakout'; // 吸筹箱体：''=关 / in=箱体内 / breakout=已突破(带量确认)
+  boxMode: '' | 'in';     // 吸筹箱体：''=关 / in=箱体内（突破模式已移除，双池回放为负）
   // 通用过滤（AND 组合）
   filterRps: boolean;
   filterRoe: boolean;
@@ -88,7 +88,7 @@ interface ScannerState {
   setPbMa13Min: (n: number) => void;
   setPbMa13Max: (n: number) => void;
   setVolShrink: (v: boolean) => void;
-  setBoxMode: (v: '' | 'in' | 'breakout') => void;
+  setBoxMode: (v: '' | 'in') => void;
   setFilterRps: (v: boolean) => void;
   setFilterRoe: (v: boolean) => void;
   setMinRoe: (n: number) => void;
@@ -124,7 +124,7 @@ export const useScannerStore = create<ScannerState>()(
       nearHigh250: null,
       filterBias55: false,
       bias55Min: 0,
-      bias55Max: 30,
+      bias55Max: 20, // 2026-08-15 回放：0~20% 优于 0~30%（+0.8pp vs +0.5pp）
       filterPbMa13: false,
       pbMa13Min: -3,
       pbMa13Max: 5,
@@ -152,17 +152,21 @@ export const useScannerStore = create<ScannerState>()(
         goldenCross: phase === 'startup',
         gcDaysList: phase === 'startup' ? [0, 5] : [5],
         ma55Up: phase === 'startup',
-        filterMb: phase === 'uptrend' || phase === 'pullback',
+        // 上升期不含多头排列：2026-08-15 回放证伪（热门票池内持续多头为反指，消融 -0.9pp 拖累）
+        // 回踩整理同样去多头：贴MA13 + 缩量 两者皆正，多头(-1.6pp)是唯一拖累
+        filterMb: false,
         mbDays: 10,
         maRising: phase === 'uptrend',
         nearHigh250: phase === 'uptrend' ? 25 : null,
         filterBias55: phase === 'uptrend',
         bias55Min: 0,
-        bias55Max: 30,
+        bias55Max: 20,
         filterPbMa13: phase === 'pullback',
         pbMa13Min: -3,
         pbMa13Max: 5,
         volShrink: phase === 'pullback',
+        // 吸筹箱体：回放全场最强单条件（+2.7~3.3pp），但与其他趋势条件互斥，单独成一档
+        boxMode: phase === 'box' ? 'in' : '',
       }),
       setGoldenCross: (goldenCross) => set({ goldenCross }),
       setGcDaysList: (updater) => set((s) => ({ gcDaysList: resolve(updater, s.gcDaysList) })),
