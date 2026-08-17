@@ -8,6 +8,11 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { getChipDistribution } from '@/lib/chip';
 
+// 进程内缓存：筹码分布只依赖 daily_bars（每日盘后同步一次），30min TTL 安全。
+// 预警检查对 400+ 自选逐只跑换手率转移模型（90 日窗口），不缓存就是 400 次重复计算。
+const CHIP_TTL = 30 * 60_000;
+const chipCache = new Map<string, { data: any; ts: number }>();
+
 export async function GET(request: NextRequest) {
   const { searchParams } = new URL(request.url);
   const code = searchParams.get('code');
@@ -17,11 +22,19 @@ export async function GET(request: NextRequest) {
     return NextResponse.json({ error: '缺少股票代码' }, { status: 400 });
   }
 
+  const key = `${code}:${days ?? 90}`;
+  const hit = chipCache.get(key);
+  if (hit && Date.now() - hit.ts < CHIP_TTL) {
+    return NextResponse.json(hit.data);
+  }
+
   try {
     const chip = await getChipDistribution(code, days ? Number(days) : 90);
     if (!chip) {
       return NextResponse.json({ error: '筹码数据不足（需≥5根含换手率的日线）' }, { status: 404 });
     }
+    if (chipCache.size > 3000) chipCache.clear(); // 超帽整体清，日内会重建
+    chipCache.set(key, { data: chip, ts: Date.now() });
     return NextResponse.json(chip);
   } catch (e: any) {
     return NextResponse.json({ error: e.message?.slice(0, 120) }, { status: 500 });

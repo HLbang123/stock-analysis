@@ -16,8 +16,8 @@ import { toast } from 'sonner';
 import { cn } from '@/lib/utils';
 import { useStockStore } from '@/store';
 import { useShareStore } from '@/store/share-store';
-import { enableShare, updateShare, disableShare, subscribeShare, refreshShare } from '@/services/share/engine';
-import { getRealtimeQuote, parseStockCode } from '@/services/stockApi';
+import { enableShare, updateShare, disableShare, subscribeShare, refreshShare, unsubscribeShare, fetchSubscriberCount } from '@/services/share/engine';
+import { getBatchQuotes, parseStockCode } from '@/services/stockApi';
 import type { RealtimeQuote } from '@/types';
 import { ArrowLeft, RefreshCw, Plus, Check, Trash2, Share2 } from 'lucide-react';
 
@@ -55,6 +55,8 @@ export function ShareModal({ open, onClose }: { open: boolean; onClose: () => vo
   const [selectedCodes, setSelectedCodes] = useState<Set<string>>(new Set());
   const [showPicker, setShowPicker] = useState(false);
   const [newGroupName, setNewGroupName] = useState('');
+  // 我的分享订阅人数（打开弹窗时拉一次）
+  const [subCount, setSubCount] = useState<number | null>(null);
 
   // 打开即重置视图状态
   useEffect(() => {
@@ -66,6 +68,10 @@ export function ShareModal({ open, onClose }: { open: boolean; onClose: () => vo
       setNameInput(share.shareDisplayName);
       setPickedGroupIds(null);
       setCodeInput('');
+      setSubCount(null);
+      if (useShareStore.getState().shareCode) {
+        fetchSubscriberCount().then(setSubCount);
+      }
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [open]);
@@ -136,12 +142,8 @@ export function ShareModal({ open, onClose }: { open: boolean; onClose: () => vo
     const codes = visibleStocks.map((s) => s.code);
     if (codes.length === 0) { setQuotes(new Map()); return; }
     setBusyQuotes(true);
-    const results = await Promise.all(codes.map(async (c) => {
-      const q = await getRealtimeQuote(c).catch(() => null);
-      return q ? ([c, q] as const) : null;
-    }));
-    const m = new Map<string, RealtimeQuote>();
-    for (const r of results) if (r) m.set(r[0], r[1]);
+    // 批量一次拉全（服务端腾讯多代码+5s 缓存），替代逐只请求
+    const m = await getBatchQuotes(codes);
     setQuotes(m);
     setBusyQuotes(false);
   };
@@ -223,7 +225,11 @@ export function ShareModal({ open, onClose }: { open: boolean; onClose: () => vo
                 <p className="text-xs text-gray-400">更新于 {fmtTime(viewSub.updatedAt)}</p>
               </div>
               <button
-                onClick={() => refreshShare(viewSub.code).then((ok) => { if (ok) { loadQuotes(); toast.success('已刷新'); } else toast.error('刷新失败'); })}
+                onClick={() => refreshShare(viewSub.code).then((ok) => {
+                  if (ok) { loadQuotes(); toast.success('已刷新'); return; }
+                  const dead = useShareStore.getState().subscriptions.find((x) => x.code === viewSub.code)?.dead;
+                  toast.error(dead ? '对方已撤销分享，显示最后快照' : '刷新失败');
+                })}
                 className="p-1.5 text-gray-400 hover:text-[var(--color-accent)] rounded-lg transition"
                 title="刷新"
               >
@@ -381,6 +387,9 @@ export function ShareModal({ open, onClose }: { open: boolean; onClose: () => vo
                 <div className="text-3xl font-bold tracking-[0.3em] text-gray-900 dark:text-white font-mono">
                   {share.shareCode.slice(0, 3)} {share.shareCode.slice(3)}
                 </div>
+                {subCount != null && (
+                  <p className="text-xs text-gray-400 mt-1.5">{subCount} 人订阅</p>
+                )}
               </div>
 
               <div>
@@ -395,7 +404,7 @@ export function ShareModal({ open, onClose }: { open: boolean; onClose: () => vo
 
               <div>
                 <p className="text-xs text-gray-400 mb-1.5">分享的分组</p>
-                <div className="space-y-1">
+                <div className="space-y-1 max-h-[40vh] overflow-y-auto">
                   {groups.map((g) => (
                     <label key={g.id} className="flex items-center gap-2 px-2 py-1.5 rounded-lg hover:bg-gray-50 dark:hover:bg-gray-800 cursor-pointer text-sm">
                       <input
@@ -487,7 +496,7 @@ export function ShareModal({ open, onClose }: { open: boolean; onClose: () => vo
                 {groups.length === 0 ? (
                   <p className="text-xs text-gray-400 text-center py-2">还没有分组，先在自选里建一个</p>
                 ) : (
-                  <div className="space-y-1">
+                  <div className="space-y-1 max-h-[40vh] overflow-y-auto">
                     {groups.map((g) => (
                       <label key={g.id} className="flex items-center gap-2 px-2 py-1.5 rounded-lg hover:bg-gray-50 dark:hover:bg-gray-800 cursor-pointer text-sm">
                         <input
@@ -549,16 +558,18 @@ export function ShareModal({ open, onClose }: { open: boolean; onClose: () => vo
                       onClick={() => setViewCode(s.code)}
                       className="flex-1 text-left min-w-0"
                     >
-                      <div className="text-sm font-medium text-gray-800 dark:text-gray-200 truncate">
+                      <div className={cn('text-sm font-medium truncate', s.dead ? 'text-gray-400 line-through' : 'text-gray-800 dark:text-gray-200')}>
                         {s.displayName}
                         <span className="ml-2 text-xs text-gray-400 font-normal">{s.code}</span>
                       </div>
                       <div className="text-xs text-gray-400">
-                        {s.snapshot?.groups.length ?? 0} 组 · 更新于 {fmtTime(s.updatedAt)}
+                        {s.dead
+                          ? '对方已撤销 · 显示最后快照'
+                          : `${s.snapshot?.groups.length ?? 0} 组 · 更新于 ${fmtTime(s.updatedAt)}`}
                       </div>
                     </button>
                     <button
-                      onClick={() => share.removeSubscription(s.code)}
+                      onClick={() => unsubscribeShare(s.code)}
                       className="p-1.5 text-gray-400 hover:text-[var(--color-danger)] rounded-lg transition shrink-0"
                       title="退订"
                     >

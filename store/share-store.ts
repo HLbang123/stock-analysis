@@ -12,13 +12,14 @@ export interface ShareSnapshotData {
   groups: ShareGroup[];
 }
 
-/** 一条订阅（码 + 显示名 + 缓存快照） */
+/** 一条订阅（码 + 显示名 + 缓存快照；dead=对方已撤销/码过期，仅保留最后快照展示） */
 export interface ShareSubscription {
   code: string;
   displayName: string;
   snapshot: ShareSnapshotData | null;
   fetchedAt: number | null; // 本地最近拉取时间
   updatedAt: number | null; // 服务器快照更新时间（拉取时记录）
+  dead?: boolean;
 }
 
 interface ShareState {
@@ -40,6 +41,7 @@ interface ShareState {
   clearShare: () => void;
   upsertSubscription: (sub: ShareSubscription) => void;
   removeSubscription: (code: string) => void;
+  markSubscriptionDead: (code: string) => void;
 }
 
 export const useShareStore = create<ShareState>()(
@@ -65,12 +67,17 @@ export const useShareStore = create<ShareState>()(
         set((s) => {
           const i = s.subscriptions.findIndex((x) => x.code === sub.code);
           const subscriptions = [...s.subscriptions];
-          if (i >= 0) subscriptions[i] = sub;
+          // 成功拉到新快照即复活（撤销后对方重新开同码分享的场景）
+          if (i >= 0) subscriptions[i] = { ...sub, dead: false };
           else subscriptions.push(sub);
           return { subscriptions };
         }),
       removeSubscription: (code) =>
         set((s) => ({ subscriptions: s.subscriptions.filter((x) => x.code !== code) })),
+      markSubscriptionDead: (code) =>
+        set((s) => ({
+          subscriptions: s.subscriptions.map((x) => (x.code === code ? { ...x, dead: true } : x)),
+        })),
     }),
     {
       name: 'stock-share-store',

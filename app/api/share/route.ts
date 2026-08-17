@@ -28,11 +28,34 @@ export async function GET(request: NextRequest) {
   try {
     const row = await prisma.shareSnapshot.findUnique({
       where: { code },
-      select: { displayName: true, snapshot: true, updatedAt: true, expiresAt: true },
+      select: { displayName: true, snapshot: true, updatedAt: true, expiresAt: true, ownerToken: true },
     });
     if (!row) return NextResponse.json({ error: '分享码不存在' }, { status: 404 });
     if (row.expiresAt && row.expiresAt.getTime() < Date.now()) {
       return NextResponse.json({ error: '分享已过期' }, { status: 404 });
+    }
+
+    // 分享方查询（带 ownerToken）：返回订阅人数，不给快照以外的东西
+    const ownerToken = request.nextUrl.searchParams.get('ownerToken') || '';
+    if (ownerToken && ownerToken === row.ownerToken) {
+      const subscriberCount = await prisma.shareSubscriber.count({ where: { code } });
+      return NextResponse.json({
+        displayName: row.displayName,
+        updatedAt: row.updatedAt.getTime(),
+        subscriberCount,
+      });
+    }
+
+    // 订阅方查询：可选 sid 登记订阅（设备 ID 去重，只统计人数）。
+    // 登记失败不阻断读取（统计是附属功能）。
+    const sid = request.nextUrl.searchParams.get('sid') || '';
+    if (/^[a-f0-9]{8,32}$/.test(sid)) {
+      const now = new Date();
+      await prisma.shareSubscriber.upsert({
+        where: { code_subscriberId: { code, subscriberId: sid } },
+        create: { code, subscriberId: sid },
+        update: { lastSeenAt: now },
+      }).catch((e) => console.warn('[api/share] 订阅登记失败:', e?.message));
     }
     return NextResponse.json({
       displayName: row.displayName,
@@ -121,8 +144,23 @@ export async function DELETE(request: NextRequest) {
   } catch {
     return NextResponse.json({ error: '参数错误' }, { status: 400 });
   }
-  const { code, ownerToken } = body ?? {};
-  if (typeof code !== 'string' || !/^\d{6}$/.test(code) || typeof ownerToken !== 'string') {
+  const { code, ownerToken, sid } = body ?? {};
+  if (typeof code !== 'string' || !/^\d{6}$/.test(code)) {
+    return NextResponse.json({ error: '参数错误' }, { status: 400 });
+  }
+
+  // 订阅方退订：删自己的订阅登记（sid 即凭证——随机不可猜，且最坏影响只是计数减一）
+  if (typeof sid === 'string' && /^[a-f0-9]{8,32}$/.test(sid)) {
+    try {
+      await prisma.shareSubscriber.deleteMany({ where: { code, subscriberId: sid } });
+      return NextResponse.json({ ok: true });
+    } catch (e: any) {
+      console.error('[api/share DELETE sid]', e);
+      return NextResponse.json({ error: e.message || '删除失败' }, { status: 500 });
+    }
+  }
+
+  if (typeof ownerToken !== 'string') {
     return NextResponse.json({ error: '参数错误' }, { status: 400 });
   }
   try {
@@ -135,6 +173,7 @@ export async function DELETE(request: NextRequest) {
       return NextResponse.json({ error: '鉴权失败' }, { status: 401 });
     }
     await prisma.shareSnapshot.delete({ where: { code } });
+    await prisma.shareSubscriber.deleteMany({ where: { code } }).catch(() => {});
     return NextResponse.json({ ok: true });
   } catch (e: any) {
     console.error('[api/share DELETE]', e);

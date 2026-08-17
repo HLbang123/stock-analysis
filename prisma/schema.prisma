@@ -562,3 +562,15 @@ model ShareSnapshot {
 
   @@map("share_snapshots")
 }
+
+/// 分享订阅登记（订阅端本地随机 ID 去重；只记人数不记身份，供分享方看订阅数）
+model ShareSubscriber {
+  code         String   @db.VarChar(6)
+  subscriberId String   @map("subscriber_id") @db.VarChar(32)
+  createdAt    DateTime @default(now()) @map("created_at")
+  lastSeenAt   DateTime @updatedAt @map("last_seen_at")
+
+  @@id([code, subscriberId])
+  @@index([code])
+  @@map("share_subscribers")
+}

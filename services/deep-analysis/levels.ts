@@ -118,9 +118,9 @@ function extractBoxHigh(engineResults: RuleCheckResult[]): number | null {
   return null;
 }
 
-/** 买入类规则触发数（仓位基准用） */
+/** 买入类规则触发数（仓位基准用）；R08/R11 08-17 移入参考级（十年回放负 alpha），不再计入 */
 function countBuySignals(engineResults: RuleCheckResult[]): number {
-  const buyIds = new Set(['R04', 'R05', 'R08', 'R09', 'R10', 'R11', 'R12']);
+  const buyIds = new Set(['R04', 'R05', 'R09', 'R10', 'R12']);
   return engineResults.filter(r => r.triggered && r.ruleId && buyIds.has(r.ruleId)).length;
 }
 

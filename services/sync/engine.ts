@@ -12,6 +12,7 @@
 
 import { useStockStore } from '@/store';
 import { useAiStore, type AiProfile, type AiAnalysisRecord } from '@/store/ai-store';
+import { useShareStore } from '@/store/share-store';
 import { useSyncStore, defaultDeviceName, type SyncDeviceEntry } from '@/store/sync-store';
 import type { Stock, WatchlistGroup } from '@/types';
 import { toast } from 'sonner';
@@ -20,7 +21,18 @@ import {
   isValidPairCode, sha256Hex, unwrapKeyWithCode, wrapKeyWithCode,
 } from '@/lib/sync-crypto';
 
-/** 快照信封（blob v3：多组映射，groups 带 stockCodes、标的无 groupId；v1/v2 兼容读取迁移）。加同步内容 → v4 + applyRemoteBlob 按 v 适配 */
+/** 我的分享状态（随 blob 走，多设备接管同一分享码，不再各开新码造孤儿）。
+ *  v3 软加字段：老版本客户端读 blob 忽略未知键，互不干扰；token 与 syncKey 同信任域 */
+export interface SyncShareState {
+  code: string;
+  token: string;
+  displayName: string;
+  groupIds: string[];
+  mode: 'manual' | 'auto';
+  expireDays: number | null;
+}
+
+/** 快照信封（blob v3：多组映射，groups 带 stockCodes、标的无 groupId；v1/v2 兼容读取迁移）。加同步内容 → v4 + applyRemoteBlob 按 v 适配（纯新增可选键可不升 v） */
 interface SyncBlobV3 {
   v: 1 | 2 | 3;
   packedAt: number;
@@ -31,6 +43,7 @@ interface SyncBlobV3 {
     currentProfileId: string;
     history: AiAnalysisRecord[];
     devices?: SyncDeviceEntry[];
+    share?: SyncShareState;
   };
 }
 
@@ -73,6 +86,7 @@ function upsertSelf(list: SyncDeviceEntry[], self: SyncDeviceEntry): SyncDeviceE
 export function packSnapshot(): string | null {
   const s = useStockStore.getState();
   const a = useAiStore.getState();
+  const sh = useShareStore.getState();
   const now = Date.now();
   const self = selfEntry();
   const devices = upsertSelf(useSyncStore.getState().devices, self);
@@ -88,6 +102,14 @@ export function packSnapshot(): string | null {
       currentProfileId: a.currentProfileId,
       history: a.history,
       devices,
+      share: {
+        code: sh.shareCode,
+        token: sh.shareToken,
+        displayName: sh.shareDisplayName,
+        groupIds: sh.shareGroupIds,
+        mode: sh.shareMode,
+        expireDays: sh.shareExpireDays,
+      },
     },
   };
   return JSON.stringify(blob);
@@ -142,6 +164,18 @@ function applyRemoteBlob(plain: string) {
       currentProfileId: typeof d.currentProfileId === 'string' ? d.currentProfileId : '',
       history: Array.isArray(d.history) ? d.history : [],
     });
+    // 分享状态（软加字段，旧 blob 无此键 → 不动本地；含撤销传播：对端 clearShare 后这里收到空串）
+    if (d.share && typeof d.share === 'object') {
+      const sh = d.share;
+      useShareStore.setState({
+        shareCode: typeof sh.code === 'string' ? sh.code : '',
+        shareToken: typeof sh.token === 'string' ? sh.token : '',
+        shareDisplayName: typeof sh.displayName === 'string' ? sh.displayName : '',
+        shareGroupIds: Array.isArray(sh.groupIds) ? sh.groupIds.filter((x): x is string => typeof x === 'string') : [],
+        shareMode: sh.mode === 'auto' ? 'auto' : 'manual',
+        shareExpireDays: typeof sh.expireDays === 'number' ? sh.expireDays : null,
+      });
+    }
     // 设备清单：远端为主，但本机永远可见；共享清单为名字事实源（被它端改名后本地跟随）
     if (Array.isArray(d.devices)) {
       const st = useSyncStore.getState();
@@ -349,6 +383,7 @@ export function initSyncEngine() {
 
   useStockStore.subscribe(scheduleUpload);
   useAiStore.subscribe(scheduleUpload);
+  useShareStore.subscribe(scheduleUpload); // 开/撤分享、改组改有效期也要随同步走
 
   const tick = () => {
     const st = useSyncStore.getState();

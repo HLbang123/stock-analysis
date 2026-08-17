@@ -42,6 +42,41 @@ export async function getKLineSina(
 }
 
 /**
+ * 批量实时行情（/api/quotes，腾讯多代码+服务端 5s 缓存）。
+ * 自选/分享详情等整页刷新用：400 只 = 1 次请求，替代逐只 getRealtimeQuote。
+ * 返回 code → quote；缺失即该票拉取失败（调用方按无行情处理）。
+ */
+export async function getBatchQuotes(codes: string[]): Promise<Map<string, RealtimeQuote>> {
+  if (codes.length === 0) return new Map();
+  try {
+    const res = await fetch(`/api/quotes?codes=${encodeURIComponent(codes.join(','))}`);
+    if (!res.ok) return new Map();
+    const json = await res.json();
+    return new Map<string, RealtimeQuote>(Object.entries(json.quotes ?? {}));
+  } catch (error) {
+    console.error('批量获取行情失败:', error);
+    return new Map();
+  }
+}
+
+/**
+ * 批量日K（/api/kline/batch，daily_bars 出数，前复权，不打上游）。
+ * DB 未覆盖的品种（ETF/北交所等）不在返回里，调用方对缺失代码回落 getKLineSina 逐只拉。
+ */
+export async function getBatchKLines(codes: string[], days = 120): Promise<Map<string, KLineData[]>> {
+  if (codes.length === 0) return new Map();
+  try {
+    const res = await fetch(`/api/kline/batch?codes=${encodeURIComponent(codes.join(','))}&days=${days}`);
+    if (!res.ok) return new Map();
+    const json = await res.json();
+    return new Map<string, KLineData[]>(Object.entries(json.klines ?? {}));
+  } catch (error) {
+    console.error('批量获取K线失败:', error);
+    return new Map();
+  }
+}
+
+/**
  * 获取分时数据（通过服务端代理）
  */
 export async function getMinuteData(code: string): Promise<{ time: string; price: number; volume: number; avgPrice: number }[]> {

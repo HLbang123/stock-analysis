@@ -1,11 +1,8 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { normalizeMarketCode } from '@/lib/api-helpers';
-import { withFallback } from '@/lib/data-sources/registry';
-import { fetchTencentQuote } from '@/lib/data-sources/quote/tencent';
-import { fetchSinaQuote } from '@/lib/data-sources/quote/sina';
-import { fetchEastmoneyQuote } from '@/lib/data-sources/quote/eastmoney';
+import { getQuoteCached } from '@/lib/server-quote-cache';
 
-/** 实时行情代理 — 腾讯→新浪→东方财富，hedged 降级（慢源 3s 后并发）+ 健康熔断 */
+/** 实时行情代理 — 腾讯→新浪→东方财富 hedged 降级，外加 5s 缓存 + 在途去重（与 /api/quotes 共用缓存） */
 export async function GET(request: NextRequest) {
   const code = request.nextUrl.searchParams.get('code');
   if (!code) {
@@ -19,11 +16,7 @@ export async function GET(request: NextRequest) {
   const symbol = `${parsed.market}${parsed.pureCode}`;
 
   try {
-    const quote = await withFallback([
-      { id: 'tencent',   fetch: (s) => fetchTencentQuote(symbol, s) },
-      { id: 'sina',      fetch: (s) => fetchSinaQuote(symbol, s) },
-      { id: 'eastmoney', fetch: (s) => fetchEastmoneyQuote(symbol, s) },
-    ]);
+    const quote = await getQuoteCached(symbol);
     if (quote) return NextResponse.json(quote);
 
     return NextResponse.json({ error: '获取行情失败' }, { status: 502 });

@@ -214,8 +214,8 @@ function priceCrossedAboveWithin(kLines: KLineData[], ma: number[], idx: number,
  * 把所有"见顶/过热/量能出逃"信号合并到一个阶梯，内部按严重度择优返回主信号，
  * extraData 列出全部命中的子信号（供 UI 展示）。这样同类信号在一个规则内统一力度，杜绝跨规则矛盾。
  *
- * 子信号严重度：对子顶(5) > 巨量见顶/第二波见顶/长上影+放量/涨停炸板(4) > 长上影/长下影见顶(3) > 涨停封板(2) > 巨量异动(1)
- * K线形态均要求"连续上涨后"上下文；长下影在连涨后=顶部承接乏力（R01），在下跌末段=底部锤子（R06），同形态靠位置分流。
+ * 子信号严重度：对子顶(5) > 巨量见顶(极端天量≥4x 升5)/第二波见顶/涨停炸板(4) > 巨量异动(1)
+ * 形态类见顶（长上影/长下影/跳空衰竭/纺锤线）与涨停封板已全部删除——生产胜率+十年全市场回放反复证伪。
  */
 function checkTopPattern(kLines: KLineData[], quote: RealtimeQuote | null, rule: AlertRule, limitMap?: LimitPriceMap | null): RuleCheckResult {
   if (kLines.length < 5) return { triggered: false };
@@ -273,7 +273,7 @@ function checkTopPattern(kLines: KLineData[], quote: RealtimeQuote | null, rule:
   const highMatch = Math.abs(today.high - prev1.high) / prev1.high < 0.001;
   const closeMatch = Math.abs(today.close - prev1.close) / prev1.close < 0.001;
   if ((highMatch || closeMatch) && shape.upperShadowPct > 2.5 && isHighVol) {
-    triggered.push([5, '对子顶', `🔴 对子顶：高点/收盘接近+上影 ${shape.upperShadowPct.toFixed(1)}% + 放量！双顶结构成型，止盈减仓`]);
+    triggered.push([5, '对子顶', `🔴 对子顶：高点/收盘接近+上影 ${shape.upperShadowPct.toFixed(1)}% + 放量，双顶结构成型`]);
   }
   // 巨量见顶 / 第二波见顶
   if (isPeak) {
@@ -281,38 +281,25 @@ function checkTopPattern(kLines: KLineData[], quote: RealtimeQuote | null, rule:
     if (stagnant) traces.push(`放量滞涨(涨跌幅 ${dayChgPct.toFixed(1)}%)`);
     if (bearishCandle) traces.push('阴线');
     if (rejection) traces.push(`上影 ${shape.upperShadowPct.toFixed(1)}%`);
-    triggered.push([4, '巨量见顶', `🔴 巨量见顶：高位天量(量比 ${volRatio20.toFixed(1)})+${traces.join('、')}，派发嫌疑，止盈减仓`]);
+    // 极端天量(≥4x)升最强档：10年全市场回放 量比≥4x 时 T+5 胜率仅33%、均值-2.34%（全表最狠）
+    triggered.push([volRatio20 >= 4 ? 5 : 4, '巨量见顶', `🔴 巨量见顶：高位天量(量比 ${volRatio20.toFixed(1)})+${traces.join('、')}，派发嫌疑`]);
   }
   if (secondWave) {
     const firstWaveMax = Math.max(...kLines.slice(0, -5).map(k => k.volume));
     const secondWaveMax = Math.max(...kLines.slice(-5, -1).map(k => k.volume));
-    triggered.push([4, '第二波见顶', `🔴 第二波见顶：近5日放量 ${secondWaveMax} 已达第一波高潮(${firstWaveMax})的 ${(secondWaveMax / firstWaveMax * 100).toFixed(0)}%，资金兑现出逃，止盈`]);
+    triggered.push([4, '第二波见顶', `🔴 第二波见顶：近5日放量 ${secondWaveMax} 已达第一波高潮(${firstWaveMax})的 ${(secondWaveMax / firstWaveMax * 100).toFixed(0)}%，资金兑现出逃`]);
   }
-  // K线形态（要求"连续上涨后"上下文）
-  // 08-05 回测（790票×500日）显示形态类见顶无预测力（胜率≈基准46.4%、均值微正），降级为弱提醒保留观察价值
-  if (uptrend) {
-    if (shape.isLongUpper) {
-      triggered.push([isHighVol ? 3 : 2, '长上影见顶', `${isHighVol ? '🔴' : '⚠️'} 长上影见顶：上影 ${shape.upperShadowPct.toFixed(1)}%（≥实体2倍）${isHighVol ? '+放量' : ''}，上方抛压沉重，止盈`]);
-    }
-    // 跳空衰竭 / 纺锤线见顶 — 已删（2026-08-15 生产胜率：T+5 均值 +0.09%/+0.06% 均为正=纯噪声，
-    // 触发后不但不跌反而微涨；形态类弱提醒只保留长上影/长下影）
-    if (shape.isLongLower) {
-      triggered.push([2, '长下影见顶', `⚠️ 长下影见顶：下影 ${shape.lowerShadowPct.toFixed(1)}%（≥实体2倍），连续上涨后多头承接无力，空头反扑，止盈`]);
-    }
-  }
-  // 涨停（触及涨停价，注意开板风险）
+  // 形态类见顶（长上影/长下影/跳空衰竭/纺锤线）— 已全部删除：08-05/08-15 生产胜率 +
+  // 08-17 十年全市场回放（长上影 T+5 +0.81% 反向、长下影 +0.14% 无效）反复证伪，
+  // 纯形态在连涨后无预测力，只保留有量能配合的见顶信号
+  // 涨停炸板（封板已删：08-17 十年全市场回放 T+5 均值 +1.48%——封板是强势延续，不是见顶）
   // 精确价优先（stk_limit 表，前端预取）；未命中回落板块规则推算（10%/20%/ST 5%）
   const prevClose = quote?.preClose ?? (idx >= 1 ? kLines[idx - 1].close : today.close);
   if (prevClose > 0) {
     const exactUp = limitMap?.[toTushareCode(quote?.code ?? '')]?.up;
     const limitPrice = exactUp && exactUp > 0 ? exactUp : Math.round(prevClose * (1 + limitUpPct(quote?.code ?? '', quote?.name ?? '')) * 100) / 100;
-    if (today.high >= limitPrice - 0.001) {
-      const sealed = today.close >= limitPrice - 0.001;
-      if (sealed) {
-        triggered.push([2, '涨停封板', `⚠️ 涨停封板：触及涨停(${limitPrice.toFixed(2)})并封住，注意明日开板风险，追高谨慎`]);
-      } else {
-        triggered.push([4, '涨停炸板', `🔴 涨停炸板：触及涨停(${limitPrice.toFixed(2)})后回落开板，追高风险大，止盈减仓`]);
-      }
+    if (today.high >= limitPrice - 0.001 && today.close < limitPrice - 0.001) {
+      triggered.push([4, '涨停炸板', `🔴 涨停炸板：触及涨停(${limitPrice.toFixed(2)})后回落开板，强势终结信号`]);
     }
   }
   // 巨量异动（最弱）
@@ -339,8 +326,8 @@ function checkTopPattern(kLines: KLineData[], quote: RealtimeQuote | null, rule:
  * 把所有"破位/离场"信号合并到一个阶梯，内部按严重度择优返回主信号，
  * extraData 列出全部命中的子信号。同类信号在一个规则内统一力度，杜绝"一条清仓一条减仓"的跨规则矛盾。
  *
- * 子信号严重度：急跌(5) > 5/10死叉/破趋势线+破MA60/5/13死叉+跌破55日线(4,清仓) > 有效跌破10日线(3,大减仓) > 跌破5日线/破趋势线/5/13死叉站上55日线(2,减仓) > 跌破10日线待确认(1,适当减仓)
- * 死叉清仓覆盖前序减仓；10日线为卖出主线（控回撤），买入仍看 5/13 金叉（R04）。
+ * 子信号严重度：急跌(5) > 5/10死叉/破趋势线+破MA60/5/13死叉+跌破55日线(4,强卖出) > 有效跌破10日线(3,卖出) > 跌破5日线/破趋势线/5/13死叉站上55日线(2,弱提醒) > 跌破10日线待确认(1,弱提醒)
+ * 2026-08-17 起全部信号只报方向与强度，不再给仓位建议（清仓/减仓等措辞已移除）。
  */
 function checkTieredExit(kLines: KLineData[], quote: RealtimeQuote | null, rule: AlertRule): RuleCheckResult {
   if (kLines.length < 6) return { triggered: false };
@@ -358,15 +345,15 @@ function checkTieredExit(kLines: KLineData[], quote: RealtimeQuote | null, rule:
   // [severity, label, message]
   const triggered: Array<[number, string, string]> = [];
 
-  // 急跌 — 先抛
+  // 急跌 — 强度最高的卖出信号
   const change = calculateChangePercent(today.close, prev1.close);
   if (change < -7.0) {
-    triggered.push([5, '急跌', `🔴 急跌：暴跌 ${change.toFixed(2)}%，先抛再说！`]);
+    triggered.push([5, '急跌', `🔴 急跌：暴跌 ${change.toFixed(2)}%，强度最高的卖出信号`]);
   }
 
   // 5/13 死叉 — 波段反转。2026-08-12 生产胜率复核：T+5 均值 +0.07%（全表少数为正）、胜率 48.5%——
-  // 上涨趋势里的假死叉（回调后收回）占多数，一律清仓割在低点。同步跌破 MA55（真下跌趋势）才清仓(4)；
-  // 站上 MA55 的假死叉降级减仓(2)，不再一票清仓（短均线数据不足 55 根时按降级处理，无法确认下跌中继）
+  // 上涨趋势里的假死叉（回调后收回）占多数，当强卖出会错杀在低点。同步跌破 MA55（真下跌趋势）才报强卖出(4)；
+  // 站上 MA55 的假死叉降级弱提醒(2)（短均线数据不足 55 根时按降级处理，无法确认下跌中继）
   if (kLines.length >= 14 && crossedBelowWithin(ma5, ma13, idx, 2)) {
     let belowMa55 = false; let ma55 = 0;
     if (kLines.length >= 55) {
@@ -375,44 +362,44 @@ function checkTieredExit(kLines: KLineData[], quote: RealtimeQuote | null, rule:
     }
     const sev = belowMa55 ? 4 : 2;
     const msg = belowMa55
-      ? `🔴 5/13死叉+跌破55日线，波段反转，清仓（MA5 ${ma5[idx].toFixed(2)} < MA13 ${ma13[idx].toFixed(2)}，55日线 ${ma55.toFixed(2)} 下方，下跌中继风险，规避）`
-      : `⚠️ 5/13死叉（站上55日线，回调型假死叉，减仓观察，暂不清仓）（MA5 ${ma5[idx].toFixed(2)} < MA13 ${ma13[idx].toFixed(2)}）`;
+      ? `🔴 5/13死叉+跌破55日线，波段反转，强卖出信号（MA5 ${ma5[idx].toFixed(2)} < MA13 ${ma13[idx].toFixed(2)}，55日线 ${ma55.toFixed(2)} 下方，下跌中继风险）`
+      : `⚠️ 5/13死叉（站上55日线，回调型假死叉，弱提醒）（MA5 ${ma5[idx].toFixed(2)} < MA13 ${ma13[idx].toFixed(2)}）`;
     triggered.push([sev, '5/13死叉', msg]);
   }
 
-  // 5/10 死叉 — 清仓，短期反转
+  // 5/10 死叉 — 短期反转，强卖出
   if (kLines.length >= 14 && crossedBelowWithin(ma5, ma10, idx, 2)) {
-    triggered.push([4, '5/10死叉', `🔴 5/10死叉，短期趋势反转，清仓（MA5 ${ma5[idx].toFixed(2)} < MA10 ${ma10[idx].toFixed(2)}）`]);
+    triggered.push([4, '5/10死叉', `🔴 5/10死叉，短期趋势反转，强卖出信号（MA5 ${ma5[idx].toFixed(2)} < MA10 ${ma10[idx].toFixed(2)}）`]);
   }
 
-  // 破趋势线+破MA60 — 清仓，牛熊分界
+  // 破趋势线+破MA60 — 牛熊分界，强卖出
   if (kLines.length >= 60) {
     const ma60 = calculateMA(kLines, 60)[idx];
     if (today.close < trendLine && prev1.close < trendLine && effVol > prev1.volume * 1.05 && ma60 > 0 && today.close < ma60) {
-      triggered.push([4, '破趋势线+破MA60', `🔴🔴 趋势破位+破MA60：收盘 ${today.close}，趋势支撑 ${trendLine.toFixed(2)}，MA60 ${ma60.toFixed(2)}——牛熊分界已破，清仓观望`]);
+      triggered.push([4, '破趋势线+破MA60', `🔴🔴 趋势破位+破MA60：收盘 ${today.close}，趋势支撑 ${trendLine.toFixed(2)}，MA60 ${ma60.toFixed(2)}——牛熊分界已破，强卖出信号`]);
     }
   }
 
-  // 有效跌破10日线 — 减仓70-80%
+  // 有效跌破10日线 — 卖出主线（连续两日未收回）
   if (!isNaN(ma10[idx]) && ma10[idx] > 0 && idx >= 2) {
     const belowNow = today.close < ma10[idx];
     const belowPrev = kLines[idx - 1].close < ma10[idx - 1];
     const abovePrev2 = kLines[idx - 2].close >= ma10[idx - 2];
     if (belowNow && belowPrev && abovePrev2) {
-      triggered.push([3, '有效跌破10日线', `🔴 有效跌破10日线，减仓70-80%（收盘 ${today.close} < MA10 ${ma10[idx].toFixed(2)}，连续两日未收回）`]);
+      triggered.push([3, '有效跌破10日线', `🔴 有效跌破10日线，卖出信号（收盘 ${today.close} < MA10 ${ma10[idx].toFixed(2)}，连续两日未收回）`]);
     } else if (belowNow && !belowPrev) {
-      triggered.push([1, '跌破10日线待确认', `⚠️ 跌破10日线（待确认，次日未收回方有效），适当减仓（收盘 ${today.close} < MA10 ${ma10[idx].toFixed(2)}）`]);
+      triggered.push([1, '跌破10日线待确认', `⚠️ 跌破10日线（待确认，次日未收回方有效），弱提醒（收盘 ${today.close} < MA10 ${ma10[idx].toFixed(2)}）`]);
     }
   }
 
   // 放量离场 — 已删（08-05 回测：无区分度，胜率45.3%≈基准46.4%、均值-0.01%；破趋势线+破MA60 已覆盖同类场景）
 
-  // 跌破5日线 — 减仓
+  // 跌破5日线 — 弱提醒
   if (!isNaN(ma5[idx]) && today.close < ma5[idx] && effVol > prev1.volume * 1.1) {
     triggered.push([2, '跌破5日线', `${volRatio > 2.0 ? '🔴 放量' : '⚠️ 带量'}跌破5日线：收盘 ${today.close}，MA5 ${ma5[idx].toFixed(2)}`]);
   }
 
-  // 破趋势线（未破MA60）— 减仓
+  // 破趋势线（未破MA60）— 弱提醒
   if (kLines.length >= 60 && today.close < trendLine && prev1.close < trendLine && effVol > prev1.volume * 1.05) {
     triggered.push([2, '破趋势线', `🔴 趋势破位：收盘 ${today.close}，趋势支撑 ${trendLine.toFixed(2)}，放量跌破`]);
   }
@@ -536,7 +523,7 @@ function checkBottomStabilize(kLines: KLineData[], quote: RealtimeQuote | null, 
   if (dropRange < 0.10) return { triggered: false };
 
   const shape = classifyCandle(today);
-  // 锤子线（底部承接）：下影≥实体×2 + 下影>2% + 上影<1%。与 R01 顶部"长下影见顶"靠位置上下文分流。
+  // 锤子线（底部承接）：下影≥实体×2 + 下影>2% + 上影<1%。（R01 顶部"长下影见顶"已删，底部锤子保留）
   const isHammer = shape.body > 0 && shape.lowerShadow >= shape.body * 2 && shape.lowerShadowPct > 2.0 && shape.upperShadowPct < 1.0;
 
   let sig = '';
@@ -727,8 +714,8 @@ function checkMaBullAlignment(kLines: KLineData[], quote: RealtimeQuote | null, 
 }
 
 /**
- * R12: 站稳五日线加仓 — 连续3日收盘站上MA5，且MA5上行、站稳刚刚形成
- * （站稳前一日在MA5之下，避免上行趋势中每日重复触发）。加仓信号。
+ * R12: 站稳五日线 — 连续3日收盘站上MA5，且MA5上行、站稳刚刚形成
+ * （站稳前一日在MA5之下，避免上行趋势中每日重复触发）。强势确立信号。
  */
 function checkHoldMa5(kLines: KLineData[], quote: RealtimeQuote | null, rule: AlertRule): RuleCheckResult {
   const holdDays = 3;
@@ -752,9 +739,9 @@ function checkHoldMa5(kLines: KLineData[], quote: RealtimeQuote | null, rule: Al
   const volConfirmed = volRatio >= 1.0 && volRatio <= 1.8;
   let message: string;
   if (volConfirmed) {
-    message = `🟢 站稳五日线：连续3日收盘站上MA5（${ma5[idx].toFixed(2)}），MA5上行，温和放量量价配合好，可考虑加仓`;
+    message = `🟢 站稳五日线：连续3日收盘站上MA5（${ma5[idx].toFixed(2)}），MA5上行，温和放量量价配合好，强势确立信号`;
   } else if (volRatio > 1.8) {
-    message = `⚠️ 站稳五日线：连续3日收盘站上MA5（${ma5[idx].toFixed(2)}），MA5上行，但暴量，注意赶顶/放量滞涨，谨慎加仓`;
+    message = `⚠️ 站稳五日线：连续3日收盘站上MA5（${ma5[idx].toFixed(2)}），MA5上行，但暴量，注意赶顶/放量滞涨`;
   } else {
     message = `ℹ️ 站稳五日线：连续3日收盘站上MA5（${ma5[idx].toFixed(2)}），MA5上行，但缩量，确认度一般`;
   }
@@ -825,20 +812,20 @@ export const ALERT_RULES: AlertRule[] = [
   {
     id: 'R01',
     name: '见顶阶梯',
-    description: '见顶/过热/量能出逃信号合并阶梯：对子顶/巨量见顶/第二波见顶/长上影/长下影见顶（弱提醒）/涨停封板/涨停炸板/巨量异动，按严重度择优只出一条预警',
+    description: '见顶/过热/量能出逃信号合并阶梯：对子顶/巨量见顶/第二波见顶/涨停炸板/巨量异动，按严重度择优只出一条预警',
     category: 'PATTERN' as any,
     level: 'CRITICAL' as any,
-    suggestion: '见顶信号，适当减仓；对子顶/巨量见顶等强信号应更果断',
+    suggestion: '见顶信号分级提示：对子顶/极端天量等强信号需高度重视',
     isEnabled: true,
     thresholdValue: 1.20
   },
   {
     id: 'R02',
     name: '离场阶梯',
-    description: '破位/离场信号合并阶梯：急跌/5/13死叉(破55日线才清仓)/5/10死叉/破趋势线+破MA60/有效跌破10日线/跌破5日线/破趋势线/跌破10日线待确认，按严重度择优只出一条预警',
+    description: '破位/离场信号合并阶梯：急跌/5/13死叉(破55日线为真死叉)/5/10死叉/破趋势线+破MA60/有效跌破10日线/跌破5日线/破趋势线/跌破10日线待确认，按严重度择优只出一条预警',
     category: 'MOVING_AVG' as any,
     level: 'CRITICAL' as any,
-    suggestion: '阶梯减仓控回撤：破5日线先减、有效破10日线大减、真死叉(破55日线)/急跌/破MA60清仓；10日线为卖出主线',
+    suggestion: '破位信号分级提示：5日线→10日线→55日线/MA60 逐级确认，10日线为主线',
     isEnabled: true
   },
   {
@@ -847,7 +834,7 @@ export const ALERT_RULES: AlertRule[] = [
     description: '收盘跌破MA55进入非多头区域，55日线定大势',
     category: 'MOVING_AVG' as any,
     level: 'WARNING' as any,
-    suggestion: '非多头区域不轻易做多，等待重新站上55日线',
+    suggestion: '非多头区域弱势信号，等待重新站上55日线',
     isEnabled: true
   },
   // -------- 买入 / 机会（9条） --------
@@ -911,7 +898,7 @@ export const ALERT_RULES: AlertRule[] = [
     description: '箱体突破(40日振幅<20%+突破>3%+放量)或箱体吸筹(60日箱体+放量小阳)，突破优先',
     category: 'OPPORTUNITY' as any,
     level: 'INFO' as any,
-    suggestion: '箱体突破是趋势启动信号，可试探性建仓',
+    suggestion: '箱体突破是趋势启动信号，顺势关注',
     isEnabled: true
   },
   {
@@ -925,11 +912,11 @@ export const ALERT_RULES: AlertRule[] = [
   },
   {
     id: 'R12',
-    name: '站稳五日线加仓',
-    description: '连续3日收盘站上MA5且MA5上行，站稳刚刚形成（站稳前一日在MA5之下），加仓信号',
+    name: '站稳五日线',
+    description: '连续3日收盘站上MA5且MA5上行，站稳刚刚形成（站稳前一日在MA5之下），强势确立信号',
     category: 'OPPORTUNITY' as any,
     level: 'INFO' as any,
-    suggestion: '反弹站稳五日线，强势确立可考虑加仓',
+    suggestion: '反弹站稳五日线，强势确立信号',
     isEnabled: true
   },
   // -------- 筹码峰弱提醒（2条，B级参考，不计入共振硬聚合） --------
@@ -964,7 +951,7 @@ export type LimitPriceMap = Record<string, { up: number; down: number }>;
 
 /**
  * 检查所有启用的规则
- * @param limitMap 可选：当日精确涨跌停价表（/api/stock-limit 预取），R01 涨停封板/炸板判定用
+ * @param limitMap 可选：当日精确涨跌停价表（/api/stock-limit 预取），R01 涨停炸板判定用
  * @param isETF 可选：标的为 ETF 时传 true。ETF 无打板/连板情绪生态（宽基几乎不可能涨停），
  *   且 R01 内部量比阈值按个股口径标定（跨境 T+0 品种量比 5x 是日常），故整体跳过 R01。
  *   P1 可回灌「对子顶/巨量见顶」子信号 + ETF 量比档（见 memory: etf-feature-notes）。
@@ -1019,11 +1006,11 @@ const RULE_RELIABILITY: Record<string, { level: string; role: string }> = {
   R03: { level: 'B', role: '技术分析师' },
   R04: { level: 'A', role: '技术分析师' },
   R05: { level: 'B', role: '技术分析师' },
-  R06: { level: 'A', role: '通用' },
+  R06: { level: 'B', role: '通用' },      // 08-17 降B：十年回放 T+5 均值 -0.24%，接飞刀实锤
   R07: { level: 'A', role: '技术分析师' },
   R08: { level: 'B', role: '技术分析师' },
   R09: { level: 'B', role: '技术分析师' },
-  R10: { level: 'B', role: '技术分析师' },
+  R10: { level: 'A', role: '技术分析师' }, // 08-17 升A：十年回放 T+5 +0.71%/T+20 +1.46%，与扫描器吸筹箱体互证
   R11: { level: 'B', role: '技术分析师' },
   R12: { level: 'B', role: '技术分析师' },
   R13: { level: 'B', role: '结构参考' },
@@ -1068,15 +1055,17 @@ export function formatTriggeredRulesForAI(results: RuleCheckResult[]): string {
  */
 export const SELL_RULE_IDS = new Set(['R01', 'R02', 'R03', 'R14']);
 
-/** 参考级弱提醒规则 ID（R13/R14）：从买入共振≥2 硬聚合计数剔除，仅作展示提示 */
-export const REFERENCE_RULE_IDS = new Set(['R13', 'R14']);
+/** 参考级弱提醒规则 ID：从买入共振≥2 硬聚合计数剔除，仅作展示提示。
+ *  R13/R14 筹码峰为原生参考级；R08 反包/R11 多头排列 08-17 移入（十年全市场回放双双负 alpha：
+ *  R08 T+5 胜率41.8%/均值-0.22%，R11 T+20 均值-0.66%——追涨/追趋势确立信号，不该给共振加分） */
+export const REFERENCE_RULE_IDS = new Set(['R08', 'R11', 'R13', 'R14']);
 
 /** 强卖出阈值：阶梯主信号 severity ≥ 3 才算强卖出（对子顶/巨量见顶/涨停炸板/死叉/急跌/有效跌破10日线…） */
 const STRONG_SELL_SEV = 3;
 
 /**
  * 是否强卖出信号 —— 预警页「整卡染绿 / 摘买入共振徽章」的门槛。
- * R01/R02 阶梯按主信号 severity 分级：≥3 强卖出；≤2 弱提醒（巨量异动/涨停封板/跌破5日线/站上55日线的5/13假死叉等）
+ * R01/R02 阶梯按主信号 severity 分级：≥3 强卖出；≤2 弱提醒（巨量异动/跌破5日线/站上55日线的5/13假死叉等）
  * 仅行内展示，不影响卡片方向——弱提醒不应对买入共振有一票否决权（有研新材 2026-08-10 案例：
  * 4 条买入共振被一条巨量异动整卡染绿、徽章被摘）。
  * R03 等单信号卖出规则恒强；旧记录 extraData 无 sev 字段 → 保守按强处理（与改动前行为一致）。

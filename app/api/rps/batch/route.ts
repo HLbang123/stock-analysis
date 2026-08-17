@@ -1,4 +1,6 @@
-/** GET /api/rps/batch?codes=sz000001,sh600519 — 批量最新 RPS60（自选页标签用，一次 SQL 查回全部） */
+/** GET /api/rps/batch?codes=sz000001,sh600519 — 批量最新 RPS60（自选页标签用，一次 SQL 查回全部）
+ *  2026-08-17 修复：改 DISTINCT ON 每票只取最新一条。旧写法拉全历史再 JS 去重，
+ *  10 年回补后 50 票×2350 天≈12 万行/请求，并发一多直接碾爆磁盘 IO（load 9 事故根因）。 */
 export async function GET(request: Request) {
   const codes = new URL(request.url).searchParams.get("codes");
   if (!codes) return Response.json({ error: "缺少 codes" }, { status: 400 });
@@ -14,17 +16,16 @@ export async function GET(request: Request) {
 
   try {
     const { prisma } = await import("@/lib/db");
+    // DISTINCT ON + (tsCode, calcDate) 索引：每票一次索引下探寻最新行，只回 1 行/票
     const rows: any[] = await prisma.$queryRawUnsafe(
-      `SELECT "tsCode", rps_60, "calcDate"
+      `SELECT DISTINCT ON ("tsCode") "tsCode", rps_60, "calcDate"
        FROM rps_scores
        WHERE "tsCode" = ANY($1::text[]) AND rps_60 IS NOT NULL
-       ORDER BY "calcDate" DESC`,
+       ORDER BY "tsCode", "calcDate" DESC`,
       [...codeToTs.values()]
     );
-    // 每只取最新一条（DESC 首见即最新）
     const latest = new Map<string, { rps60: number | null; calcDate: string }>();
     for (const r of rows) {
-      if (latest.has(r.tsCode)) continue;
       latest.set(r.tsCode, {
         rps60: r.rps_60 != null ? Number(r.rps_60) : null,
         calcDate: r.calcDate,

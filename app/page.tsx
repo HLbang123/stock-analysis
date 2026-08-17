@@ -3,7 +3,7 @@
 import { useEffect, useMemo, useState } from 'react';
 import { useRouter } from 'next/navigation';
 import { useStockStore } from '@/store';
-import { getRealtimeQuote, getKLineSina, getChipData } from '@/services/stockApi';
+import { getKLineSina, getBatchQuotes, getBatchKLines, getChipData } from '@/services/stockApi';
 import { ALERT_RULES, checkAllRules, isBuyRule, REFERENCE_RULE_IDS, buyRuleWeight, isStrongSellAlert, severityAlertLevel } from '@/services/alertRules';
 import { AlertRecord } from '@/types';
 import { formatTime, cn } from '@/lib/utils';
@@ -242,20 +242,41 @@ export default function HomePage() {
 
       const allNewAlerts: AlertRecord[] = [];
 
+      // 批量预取全自选行情+日K（1 次行情 + 1 次K线请求，替代逐只打上游；400+ 自选不再扇出）
+      const codes = watchlist.map(s => s.code);
+      const [quoteMap, klineMap] = await Promise.all([
+        getBatchQuotes(codes),
+        getBatchKLines(codes, 120),
+      ]);
+
+      // 筹码并发预取（8 并发；ETF 不适用直接跳过。服务端有 30min 缓存，二次检查近乎内存读）
+      const chipMap = new Map<string, Awaited<ReturnType<typeof getChipData>>>();
+      const chipCodes = codes.filter(c => !isETF(c));
+      let chipIdx = 0;
+      await Promise.all(Array.from({ length: Math.min(8, chipCodes.length) }, async () => {
+        while (chipIdx < chipCodes.length) {
+          const c = chipCodes[chipIdx++];
+          chipMap.set(c, await getChipData(c));
+        }
+      }));
+
       for (const stock of watchlist) {
         // 获取实时行情
-        const quote = await getRealtimeQuote(stock.code);
+        const quote = quoteMap.get(stock.code);
         if (!quote) continue;
 
-        // 获取K线数据
-        const kLines = await getKLineSina(stock.code, 240, 120);
+        // 获取K线数据（DB 批量未覆盖的品种如 ETF 回落上游逐只拉）
+        let kLines = klineMap.get(stock.code) ?? [];
+        if (kLines.length === 0) {
+          kLines = await getKLineSina(stock.code, 240, 120);
+        }
 
         if (kLines.length < 10) continue;
 
         const updatedKLines = buildUpdatedKLines(quote, kLines);
 
-        // 筹码分布（DB 取数，失败返回 null，R13/R14 不触发）
-        const chip = await getChipData(stock.code);
+        // 筹码分布（预取结果；null 时 R13/R14 不触发）
+        const chip = chipMap.get(stock.code) ?? null;
 
         // 检查规则
         const enabledRules = ALERT_RULES.filter(r => r.isEnabled);
@@ -446,16 +467,10 @@ export default function HomePage() {
         </div>
       )}
 
-        {/* 预警列表 */}
-        {groupedAlerts.length === 0 ? (
-          <div className="mt-12 text-center py-20 text-gray-400">
-            <AlertTriangle className="w-16 h-16 mx-auto mb-4 opacity-20" />
-            <p className="text-lg">暂无预警</p>
-            <p className="text-sm mt-2">添加自选后点击上方按钮开始检测</p>
-          </div>
-        ) : (
-          <div className="mt-[var(--space-section)] space-y-3">
-            {/* 清除全部：移出顶部 header（手机端头部太挤），与预警计数并列放列表上方 */}
+        {/* 预警列表：分组栏常驻（预警清空也能切组） */}
+        <div className="mt-[var(--space-section)] space-y-3">
+          {/* 清除全部：移出顶部 header（手机端头部太挤），与预警计数并列放列表上方；无预警时隐藏 */}
+          {groupedAlerts.length > 0 && (
             <div className="flex items-center justify-between px-1">
               <span className="text-xs text-gray-400">
                 {groupedAlerts.reduce((s, g) => s + g.alerts.length, 0)} 条预警
@@ -468,9 +483,10 @@ export default function HomePage() {
                 清除全部
               </button>
             </div>
+          )}
 
-            {/* 分组过滤栏（有分组才显示；计数=该组下有预警的标的数） */}
-            {groups.length > 0 && (
+          {/* 分组过滤栏（有分组就显示，预警清空也可切组；计数=该组下有预警的标的数） */}
+          {groups.length > 0 && (
               <div className="bg-white dark:bg-gray-900 rounded-xl p-2 shadow-sm flex items-center gap-1.5 overflow-x-auto">
                 {[ALL_GROUP_ID, ...groups.map(g => g.id)].map(id => (
                   <button
@@ -492,9 +508,15 @@ export default function HomePage() {
               </div>
             )}
 
-            {visibleAlerts.length === 0 ? (
-              <div className="text-center py-12 text-gray-400 text-sm">该分组暂无预警</div>
-            ) : visibleAlerts.map((group) => (
+          {groupedAlerts.length === 0 ? (
+            <div className="text-center py-20 text-gray-400">
+              <AlertTriangle className="w-16 h-16 mx-auto mb-4 opacity-20" />
+              <p className="text-lg">暂无预警</p>
+              <p className="text-sm mt-2">添加自选后点击上方按钮开始检测</p>
+            </div>
+          ) : visibleAlerts.length === 0 ? (
+            <div className="text-center py-12 text-gray-400 text-sm">该分组暂无预警</div>
+          ) : visibleAlerts.map((group) => (
               <div
                 key={group.stockCode}
                 onClick={() => router.push(`/stock/${group.stockCode}`)}
@@ -574,8 +596,7 @@ export default function HomePage() {
                 </div>
               </div>
             ))}
-          </div>
-        )}
+        </div>
 
       {showRules && <AlertRulesModal onClose={() => setShowRules(false)} />}
       {showReview && <ReviewModal open={showReview} onClose={() => setShowReview(false)} />}
