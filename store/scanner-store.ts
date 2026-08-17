@@ -42,7 +42,8 @@ interface ScannerState {
   goldenCross: boolean;
   gcDaysList: number[];   // 金叉窗口多选（OR 并集；0=即将金叉，正数=近N日上穿）
   ma55Up: boolean;
-  filterMb: boolean;      // 均线多头排列（MA5>MA13>MA55 持续 mbDays 日）
+  filterMb: boolean;      // 均线多头排列（短>中>长 持续 mbDays 日）
+  mbSet: '51013' | '51020'; // 多头排列均线组合：5/10/13 或 5/10/20
   mbDays: number;
   maRising: boolean;      // 三线上行（MA5/13/55 均 > 5 交易日前）
   nearHigh250: number | null; // 距250日新高 ≤X%（null=不启用）
@@ -78,6 +79,7 @@ interface ScannerState {
   setGcDaysList: (updater: number[] | ((prev: number[]) => number[])) => void;
   setMa55Up: (v: boolean) => void;
   setFilterMb: (v: boolean) => void;
+  setMbSet: (v: '51013' | '51020') => void;
   setMbDays: (n: number) => void;
   setMaRising: (v: boolean) => void;
   setNearHigh250: (v: number | null) => void;
@@ -119,6 +121,7 @@ export const useScannerStore = create<ScannerState>()(
       gcDaysList: [5],
       ma55Up: false,
       filterMb: false,
+      mbSet: '51013',
       mbDays: 10,
       maRising: false,
       nearHigh250: null,
@@ -172,6 +175,7 @@ export const useScannerStore = create<ScannerState>()(
       setGcDaysList: (updater) => set((s) => ({ gcDaysList: resolve(updater, s.gcDaysList) })),
       setMa55Up: (ma55Up) => set({ ma55Up }),
       setFilterMb: (filterMb) => set({ filterMb }),
+      setMbSet: (mbSet) => set({ mbSet }),
       setMbDays: (mbDays) => set({ mbDays }),
       setMaRising: (maRising) => set({ maRising }),
       setNearHigh250: (nearHigh250) => set({ nearHigh250 }),
@@ -210,6 +214,7 @@ export const useScannerStore = create<ScannerState>()(
         gcDaysList: s.gcDaysList,
         ma55Up: s.ma55Up,
         filterMb: s.filterMb,
+        mbSet: s.mbSet,
         mbDays: s.mbDays,
         maRising: s.maRising,
         nearHigh250: s.nearHigh250,

@@ -18,7 +18,9 @@
  *   gcDaysList - 金叉窗口多选，逗号分隔（0=即将金叉；正整数=最近N日内上穿，多值取并集）
  *   gcDays    - legacy 单窗口（0=即将金叉；>0=最近N日内上穿，默认 5）；gcDaysList 存在时忽略
  *   ma55Up    - 是否启用 55日线朝上过滤（默认 false）
- *   mbDays    - 均线多头排列持续≥N日（MA5>MA13>MA55 连续 N 日，0/不传=关闭）
+ *   mbDays    - 均线多头排列持续≥N日（短>中>长 连续 N 日，0/不传=关闭）
+ *   mbSet     - 多头排列均线组合：51013（5>10>13）/ 51020（5>10>20），默认 51013；
+ *               兼容 51355（旧口径 5>13>55）
  *   maRising  - 三线上行：MA5/MA13/MA55 今日均 > 5 交易日前（默认 false）
  *   nearHigh250 - 距250日新高 ≤X%（如 25；启用时历史窗口扩到 400 日历日）
  *   bias55Min / bias55Max - 相对 MA55 乖离率 % 区间（如 0~30：在趋势内但未过热）
@@ -76,6 +78,9 @@ export async function GET(request: Request) {
   // 趋势结构过滤（阶段预设用；各自独立可组合，全部缺省=不启用零成本）
   const mbDaysRaw = parseInt(searchParams.get("mbDays") || "0");
   const mbDays = Number.isFinite(mbDaysRaw) ? Math.min(Math.max(Math.floor(mbDaysRaw), 0), 60) : 0;
+  // 多头排列均线组合：5/10/13 或 5/10/20（保留 51355 兼容旧口径）
+  const MB_SETS: Record<string, [number, number, number]> = { '51013': [5, 10, 13], '51020': [5, 10, 20], '51355': [5, 13, 55] };
+  const mbTriple = MB_SETS[searchParams.get("mbSet") || "51013"] ?? MB_SETS['51013'];
   const maRising = searchParams.get("maRising") === "true";
   const nearHigh250Raw = parseFloat(searchParams.get("nearHigh250") || "");
   const nearHigh250 = Number.isFinite(nearHigh250Raw) ? nearHigh250Raw : null;
@@ -251,9 +256,12 @@ export async function GET(request: Request) {
     const volSigCols = volShrink ? `,
           MAX(CASE WHEN rn = 1 THEN vol5 END) AS vol5_now,
           MAX(CASE WHEN rn = 1 THEN vol20p END) AS vol20p_now` : "";
-    // 多头排列持续≥N日：近 N 日每日 MA5>MA13>MA55（且历史不少于 N 日，防新股误判）
+    // 多头排列持续≥N日：近 N 日每日 短>中>长（且历史不少于 N 日，防新股误判）
+    // 均线列映射：5→ma5 10→ma10 13→ma13 20→ma20 55→ma55（ma10/ma20 仅在开启时计算）
+    const mbCol = (n: number) => n === 5 ? 'ma5' : n === 10 ? 'ma10' : n === 13 ? 'ma13' : n === 20 ? 'ma20' : 'ma55';
+    const mbCond = `${mbCol(mbTriple[0])} > ${mbCol(mbTriple[1])} AND ${mbCol(mbTriple[1])} > ${mbCol(mbTriple[2])}`;
     const mbSigCol = mbDays > 0 ? `,
-          (MIN(CASE WHEN rn <= ${mbDays} THEN CASE WHEN ma5 > ma13 AND ma13 > ma55 THEN 1 ELSE 0 END END) = 1
+          (MIN(CASE WHEN rn <= ${mbDays} THEN CASE WHEN ${mbCond} THEN 1 ELSE 0 END END) = 1
            AND MAX(rn) >= ${mbDays}) AS mb_ok` : "";
     // 三线上行：MA5/MA13/MA55 今日均 > 5 交易日前（rn=6 不存在则 null → 自动排除）
     const maRisingSigCol = maRising ? `,
@@ -270,7 +278,9 @@ export async function GET(request: Request) {
         SELECT "tsCode", "tradeDate", close,
           AVG(close) OVER w5  AS ma5,
           AVG(close) OVER w13 AS ma13,
-          AVG(close) OVER w55 AS ma55${rsiRecentCols}${volRecentCols},
+          AVG(close) OVER w55 AS ma55${mbDays > 0 ? `,
+          AVG(close) OVER w10 AS ma10,
+          AVG(close) OVER w20 AS ma20` : ""}${rsiRecentCols}${volRecentCols},
           ROW_NUMBER() OVER (PARTITION BY "tsCode" ORDER BY "tradeDate" DESC) AS rn
         FROM (
           -- 前复权口径：close × adj_factor / 窗口内最新因子。除权日的假跳空会让 MA/金叉/RSI 失真；
@@ -286,10 +296,12 @@ export async function GET(request: Request) {
         WINDOW
           w5  AS (PARTITION BY "tsCode" ORDER BY "tradeDate" ROWS BETWEEN 4 PRECEDING AND CURRENT ROW),
           w13 AS (PARTITION BY "tsCode" ORDER BY "tradeDate" ROWS BETWEEN 12 PRECEDING AND CURRENT ROW),
-          w55 AS (PARTITION BY "tsCode" ORDER BY "tradeDate" ROWS BETWEEN 54 PRECEDING AND CURRENT ROW)
+          w55 AS (PARTITION BY "tsCode" ORDER BY "tradeDate" ROWS BETWEEN 54 PRECEDING AND CURRENT ROW)${mbDays > 0 ? `,
+          w10 AS (PARTITION BY "tsCode" ORDER BY "tradeDate" ROWS BETWEEN 9 PRECEDING AND CURRENT ROW),
+          w20 AS (PARTITION BY "tsCode" ORDER BY "tradeDate" ROWS BETWEEN 19 PRECEDING AND CURRENT ROW)` : ""}
       ),
       mas AS (
-        SELECT "tsCode", rn, ma5, ma13, ma55, "tradeDate", close,
+        SELECT "tsCode", rn, ma5, ma13, ma55${mbDays > 0 ? ", ma10, ma20" : ""}, "tradeDate", close,
           LAG(ma5)  OVER (PARTITION BY "tsCode" ORDER BY "tradeDate") AS ma5_prev,
           LAG(ma13) OVER (PARTITION BY "tsCode" ORDER BY "tradeDate") AS ma13_prev${rsiMasCols}${volMasCols}
         FROM recent

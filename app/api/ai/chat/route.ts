@@ -12,7 +12,7 @@ import { CHAT_SYSTEM_PROMPT } from '@/lib/chat-system-prompt';
 export async function POST(request: NextRequest) {
   try {
     const body = await request.json();
-    const { messages, stockContext, baseUrl, apiKey, model } = body;
+    const { messages, stockContext, baseUrl, apiKey, model, watchlistContext, alertsContext } = body;
 
     if (!baseUrl || !model) {
       return NextResponse.json({ error: '缺少必要参数: baseUrl, model' }, { status: 400 });
@@ -114,7 +114,7 @@ export async function POST(request: NextRequest) {
             allMessages.push({ role: 'assistant', content: content || null, tool_calls: toolCalls });
             for (const tc of toolCalls) {
               const args = JSON.parse(tc.function?.arguments || '{}');
-              const result = await executeTool(tc.function.name, args, origin);
+              const result = await executeTool(tc.function.name, args, origin, { watchlistContext, alertsContext });
               allMessages.push({ role: 'tool', tool_call_id: tc.id, content: result });
             }
             // 继续下一轮（LLM 拿到工具结果后可能再调工具，或给出最终答案）

@@ -2,6 +2,7 @@
 
 import { useState, useRef, useEffect } from 'react';
 import { AiProfile, useAiStore, type ChatMessage } from '@/store/ai-store';
+import { useStockStore } from '@/store';
 import { Stock } from '@/types';
 import { cn } from '@/lib/utils';
 import { Send, Trash } from 'lucide-react';
@@ -9,6 +10,7 @@ import { ReasoningPanel } from '@/components/ai/ReasoningPanel';
 import { Input } from '@/components/ui/input';
 import { streamChatDirectChat } from '@/services/chat/browser-chat';
 import { isDirectConnectionError } from '@/services/llm/browser-client';
+import { formatWatchlistContext, formatAlertsContext } from '@/lib/chat-tools-defs';
 import type { TScorePanelResult } from '@/components/ai/TScorePanel';
 import type { DeepStructured } from '@/services/deep-analysis/types';
 
@@ -20,10 +22,13 @@ interface Props {
   deepStructured: DeepStructured | null;
 }
 
-/** 降级路径：服务器中转 SSE（直连不可达时的兜底，原实现保留） */
+/** 降级路径：服务器中转 SSE（直连不可达时的兜底，原实现保留）
+ *  watchlistContext / alertsContext：自选与预警数据只在浏览器本地，服务器执行对应工具时回这份快照 */
 async function chatViaServer(
   messages: { role: string; content: string }[],
   stockContext: string,
+  watchlistContext: string,
+  alertsContext: string,
   cfg: { baseUrl: string; apiKey?: string; model: string },
   signal: AbortSignal,
   onDelta: (d: { content?: string; reasoning?: string }) => void,
@@ -34,6 +39,8 @@ async function chatViaServer(
     body: JSON.stringify({
       messages,
       stockContext: stockContext || undefined,
+      watchlistContext: watchlistContext || undefined,
+      alertsContext: alertsContext || undefined,
       baseUrl: cfg.baseUrl,
       apiKey: cfg.apiKey,
       model: cfg.model,
@@ -160,6 +167,10 @@ export function AiChat({ currentProfile, selectedCode, watchlist, result, deepSt
     try {
       // 只注入当前选中标的身份（一行，数据由 AI 通过工具按需取）；分析结论（页面内存状态）仍注入
       let stockContext = '';
+      // 自选/预警快照：服务器中转时 executeTool 无法读浏览器本地 store，随请求体捎过去（直连用不到，成本极低恒带）
+      const wlState = useStockStore.getState();
+      const watchlistContext = formatWatchlistContext(wlState.watchlist, wlState.groups);
+      const alertsContext = formatAlertsContext(wlState.alerts);
       if (selectedCode) {
         const name = watchlist.find(s => s.code === selectedCode)?.name || selectedCode;
         stockContext = `当前选中标的：${name} (${selectedCode})`;
@@ -204,7 +215,7 @@ export function AiChat({ currentProfile, selectedCode, watchlist, result, deepSt
         if (isDirectConnectionError(e)) {
           console.warn('[AiChat] 直连失败，降级服务器中转:', e.message);
           try {
-            await chatViaServer(allMessages, stockContext, cfg, abortController.signal, appendDelta);
+            await chatViaServer(allMessages, stockContext, watchlistContext, alertsContext, cfg, abortController.signal, appendDelta);
             flushStreamingMsg();
           } catch (err2) {
             const e2 = err2 as Error;

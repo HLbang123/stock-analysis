@@ -167,13 +167,21 @@ export function ShareModal({ open, onClose }: { open: boolean; onClose: () => vo
       return next;
     });
   };
+  // 全选/全不选（作用于当前分组过滤范围；「全部」下跨组重复的标的由 Set 去重）
+  const allVisibleSelected = visibleStocks.length > 0 && visibleStocks.every((s) => selectedCodes.has(s.code));
+  const toggleSelectAll = () => {
+    setSelectedCodes(allVisibleSelected ? new Set() : new Set(visibleStocks.map((s) => s.code)));
+  };
   const exitMulti = () => {
     setMultiSelect(false);
     setSelectedCodes(new Set());
   };
 
   const moveSelected = (groupId?: string) => {
-    const stocks = visibleStocks.filter((s) => selectedCodes.has(s.code));
+    // 按选中码去重取标的（「全部」视图同一标的可能跨组重复出现，防计数虚高/重复添加）
+    const stocks = [...selectedCodes]
+      .map((code) => visibleStocks.find((s) => s.code === code))
+      .filter((s): s is NonNullable<typeof s> => !!s);
     if (stocks.length === 0) return;
     for (const s of stocks) {
       const parsed = parseStockCode(s.code);
@@ -273,7 +281,12 @@ export function ShareModal({ open, onClose }: { open: boolean; onClose: () => vo
                 <div className="flex items-center justify-between mb-2">
                   <span className="text-xs text-gray-400">{activeGroup?.name ?? '全部'} · {visibleStocks.length} 只</span>
                   {multiSelect ? (
-                    <button onClick={exitMulti} className="text-xs text-gray-500">完成</button>
+                    <div className="flex items-center gap-3">
+                      <button onClick={toggleSelectAll} className="text-xs text-[var(--color-accent)]">
+                        {allVisibleSelected ? '全不选' : '全选'}
+                      </button>
+                      <button onClick={exitMulti} className="text-xs text-gray-500">完成</button>
+                    </div>
                   ) : (
                     <button onClick={() => setMultiSelect(true)} className="text-xs text-[var(--color-accent)]">多选</button>
                   )}

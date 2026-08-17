@@ -171,7 +171,7 @@ function ScanDoc() {
       <DocSection title="趋势条件口径">
         <DocItem name="5/13 金叉" desc="MA5 上穿 MA13 发生在近 N 日内（窗口多选取并集）。「即将金叉」=MA5 仍低于 MA13 但差距 &lt;2% 且 MA5 上行中。" />
         <DocItem name="站上 55 日线" desc="现价高于 55 日均线（MA55）。" />
-        <DocItem name="均线多头排列" desc="MA5 &gt; MA13 &gt; MA55 连续保持 ≥N 日。" />
+        <DocItem name="均线多头排列" desc="短 &gt; 中 &gt; 长均线连续保持 ≥N 日；组合可选 5&gt;10&gt;13 或 5&gt;10&gt;20。" />
         <DocItem name="三线上行" desc="MA5 / MA13 / MA55 三条线今日均高于 5 个交易日前。" />
         <DocItem name="距一年新高" desc="现价距离 250 日最高价 ≤X%，越强越接近新高。" />
         <DocItem name="缩量整理" desc="近 5 日均量 &lt; 前 20 日均量，回调中筹码沉淀。" />

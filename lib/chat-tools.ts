@@ -5,8 +5,14 @@
  */
 export { CHAT_TOOLS } from '@/lib/chat-tools-defs';
 
-/** 执行工具调用，返回简洁文本结果（给 LLM 处理） */
-export async function executeTool(name: string, args: any, origin: string): Promise<string> {
+/** 执行工具调用，返回简洁文本结果（给 LLM 处理）
+ *  userContext：自选/预警等只存在浏览器本地的数据，服务器中转时由客户端随请求体捎来的快照文本 */
+export async function executeTool(
+  name: string,
+  args: any,
+  origin: string,
+  userContext?: { watchlistContext?: string; alertsContext?: string },
+): Promise<string> {
   try {
     switch (name) {
       case "search_stock": {
@@ -178,6 +184,44 @@ export async function executeTool(name: string, args: any, origin: string): Prom
         const chip = await getChipDistribution(args.code);
         if (!chip) return `无 ${args.code} 的筹码数据（需≥5根含换手率的日线，可能历史未回补）`;
         return `${args.code} 筹码分布：\n${formatChipSummary(chip)}`;
+      }
+      case "get_watchlist": {
+        // 数据在浏览器本地，只能回客户端捎来的快照（无快照=老版本客户端/非对话入口）
+        return userContext?.watchlistContext || "用户自选数据不可用（请升级到支持自选快照的客户端或使用浏览器直连模式）";
+      }
+      case "get_my_alerts": {
+        return userContext?.alertsContext || "用户预警数据不可用（请升级到支持预警快照的客户端或使用浏览器直连模式）";
+      }
+      case "get_moneyflow": {
+        const r = await fetch(`${origin}/api/tushare/stock-data?code=${encodeURIComponent(args.code)}`);
+        const d = await r.json();
+        const mf = d.data?.moneyflow || [];
+        if (!mf.length) return `${args.code} 无主力资金数据`;
+        const fmt = (v?: number) => (v == null ? '--' : `${v > 0 ? '+' : ''}${v.toFixed(0)}`);
+        return `主力资金(近${mf.length}日,万元):\n` + mf.slice(0, 10).map((m: any) =>
+          `${m.tradeDate} 净流入${fmt(m.netAmount)} 超大单${fmt(m.buyElgAmount)}(占${m.buyElgRate ?? 0}%) 大单${fmt(m.buyLgAmount)}(占${m.buyLgRate ?? 0}%)`
+        ).join('\n');
+      }
+      case "get_holder_number": {
+        const r = await fetch(`${origin}/api/tushare/stock-data?code=${encodeURIComponent(args.code)}`);
+        const d = await r.json();
+        const hn = d.data?.holderNumber || [];
+        if (!hn.length) return `${args.code} 无股东户数数据`;
+        return `股东户数(近${hn.length}期):\n` + hn.map((h: any) =>
+          `${h.end_date} 户数${h.holder_num ?? '--'} 环比${h.holder_num_ratio != null ? `${h.holder_num_ratio > 0 ? '+' : ''}${h.holder_num_ratio}%` : '--'}`
+        ).join('\n');
+      }
+      case "get_stock_box": {
+        const r = await fetch(`${origin}/api/stock/box?code=${encodeURIComponent(args.code)}`);
+        const d = await r.json();
+        if (d.error) return `箱体查询失败: ${d.error}`;
+        const b = d.row;
+        if (!b) return `${args.code} 当前不在吸筹箱体中（且无最新突破记录）`;
+        const parts: string[] = [`数据日${b.tradeDate}`];
+        if (b.breakout) parts.push('已突破箱顶(放量突破)');
+        else if (b.inBox) parts.push(`在箱体内 位置${b.boxPos != null ? (b.boxPos * 100).toFixed(0) + '%' : '--'} 质量${b.boxQuality != null ? b.boxQuality.toFixed(0) : '--'}`);
+        parts.push(`箱顶${b.boxTop?.toFixed(2)} 箱底${b.boxBottom?.toFixed(2)}`);
+        return `${args.code} 吸筹箱体：${parts.join(' ')}`;
       }
       default:
         return `未知工具: ${name}`;

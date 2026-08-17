@@ -36,6 +36,10 @@ const PHASES: { value: ScanPhase; label: string }[] = [
 
 const GC_PRESETS = [1, 3, 5];
 const MB_DAYS = [3, 5, 10, 15, 20];
+const MB_SETS: { value: '51013' | '51020'; label: string }[] = [
+  { value: '51013', label: '5>10>13' },
+  { value: '51020', label: '5>10>20' },
+];
 const NEAR_HIGH_OPTS = [10, 15, 20, 25, 30, 40];
 
 export default function ScannerPage() {
@@ -83,6 +87,7 @@ function ManualScan() {
     gcDaysList, setGcDaysList,
     ma55Up, setMa55Up,
     filterMb, setFilterMb,
+    mbSet, setMbSet,
     mbDays, setMbDays,
     maRising, setMaRising,
     nearHigh250, setNearHigh250,
@@ -161,7 +166,7 @@ function ManualScan() {
       // 趋势/阶段条件（阶段预设就是这组条件的一键套用，逐行可改）
       if (st.goldenCross) { params.set('goldenCross', 'true'); params.set('gcDaysList', st.gcDaysList.join(',')); }
       if (st.ma55Up) params.set('ma55Up', 'true');
-      if (st.filterMb) params.set('mbDays', String(st.mbDays));
+      if (st.filterMb) { params.set('mbDays', String(st.mbDays)); params.set('mbSet', st.mbSet); }
       if (st.maRising) params.set('maRising', 'true');
       if (st.nearHigh250 != null) params.set('nearHigh250', String(st.nearHigh250));
       if (st.filterBias55) { params.set('bias55Min', String(st.bias55Min)); params.set('bias55Max', String(st.bias55Max)); }
@@ -260,7 +265,7 @@ function ManualScan() {
   const condParts: string[] = [];
   if (goldenCross) condParts.push(`5/13金叉(${gcDaysList.map((d) => (d === 0 ? '即将' : `近${d}日`)).join('/')})`);
   if (ma55Up) condParts.push('站上55日线');
-  if (filterMb) condParts.push(`多头排列≥${mbDays}日`);
+  if (filterMb) condParts.push(`多头排列${mbSet === '51020' ? '5>10>20' : '5>10>13'}≥${mbDays}日`);
   if (maRising) condParts.push('三线上行');
   if (nearHigh250 != null) condParts.push(`距年新高≤${nearHigh250}%`);
   if (filterBias55) condParts.push(`乖离${bias55Min}~${bias55Max}%`);
@@ -536,6 +541,10 @@ function ManualScan() {
             </label>
             {filterMb && (
               <>
+                <select value={mbSet} onChange={e => setMbSet(e.target.value as '51013' | '51020')}
+                  className="px-3 py-1.5 border border-gray-200 dark:border-gray-700 rounded-lg bg-white dark:bg-gray-800 text-sm">
+                  {MB_SETS.map(o => <option key={o.value} value={o.value}>{o.label}</option>)}
+                </select>
                 <span className="text-sm text-gray-500">持续 ≥</span>
                 <select value={mbDays} onChange={e => setMbDays(Number(e.target.value))}
                   className="px-3 py-1.5 border border-gray-200 dark:border-gray-700 rounded-lg bg-white dark:bg-gray-800 text-sm">
