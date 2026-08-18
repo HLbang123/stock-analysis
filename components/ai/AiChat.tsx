@@ -175,6 +175,7 @@ export function AiChat({ currentProfile, selectedCode, watchlist, result, deepSt
         const name = watchlist.find(s => s.code === selectedCode)?.name || selectedCode;
         stockContext = `当前选中标的：${name} (${selectedCode})`;
       }
+      // 附带分析结论（波段评分/深度结论是页面内存状态，工具调不到只能注入）；用户可在标题栏关掉
       if (attachAnalysisResult) {
         const analysis = buildAnalysisBlock();
         if (analysis) stockContext += `\n\n## 附带分析结论（对当前选中标的 ${selectedCode || ''}）\n${analysis}`;
@@ -252,8 +253,9 @@ export function AiChat({ currentProfile, selectedCode, watchlist, result, deepSt
   };
 
   return (
-    <div className="bg-white dark:bg-gray-900 rounded-xl p-4 shadow-sm mb-6">
-      <div className="flex items-center justify-between mb-3">
+    // 独立对话视图：整卡撑满可视高度（扣除页头/tab/底栏），消息区内部滚动，输入框钉在底部
+    <div className="bg-white dark:bg-gray-900 rounded-xl p-4 shadow-sm mb-6 flex flex-col h-[calc(100dvh-13.5rem)] md:h-[calc(100dvh-10.5rem)] min-h-[24rem]">
+      <div className="flex items-center justify-between mb-3 shrink-0">
         <h3 className="font-semibold text-sm flex items-center gap-2">
           <Send className="w-4 h-4 text-blue-500" />
           AI 对话
@@ -283,9 +285,13 @@ export function AiChat({ currentProfile, selectedCode, watchlist, result, deepSt
         </div>
       </div>
 
-      {(chatMessages.length > 0 || isChatStreaming) && (
-        <div className="max-h-80 overflow-y-auto space-y-3 mb-3">
-          {chatMessages.map((msg, i) => (
+      <div className="flex-1 min-h-0 overflow-y-auto space-y-3 mb-3">
+        {chatMessages.length === 0 && !streamingMsg && (
+          <div className="h-full flex items-center justify-center px-6">
+            <p className="text-sm text-gray-400 text-center">可问当前标的、自选、预警、资金流向等，直接输入问题</p>
+          </div>
+        )}
+        {chatMessages.map((msg, i) => (
             <div
               key={i}
               className={cn("flex", msg.role === 'user' ? "justify-end" : "justify-start")}
@@ -328,10 +334,9 @@ export function AiChat({ currentProfile, selectedCode, watchlist, result, deepSt
             </div>
           )}
           <div ref={chatEndRef} />
-        </div>
-      )}
+      </div>
 
-      <div className="flex gap-2">
+      <div className="flex gap-2 shrink-0">
         <Input
           id="chat-input"
           type="text"

@@ -5,10 +5,10 @@ import { useParams, useRouter } from 'next/navigation';
 import { useStockStore } from '@/store';
 import { getRealtimeQuote, getKLineSina, getMinuteData, getChipData } from '@/services/stockApi';
 import { isETF, parseCode } from '@/lib/identify';
-import { ALERT_RULES, checkAllRules } from '@/services/alertRules';
+import { ALERT_RULES, checkAllRules, isBuyRule, REFERENCE_RULE_IDS } from '@/services/alertRules';
 import { computeSupportResistance, type SupportResistance } from '@/services/deep-analysis/levels';
 import { RealtimeQuote, KLineData, RuleCheckResult } from '@/types';
-import { formatPrice, formatChange, formatVolume, cn, getAlertLevelColor } from '@/lib/utils';
+import { formatPrice, formatChange, formatVolume, cn } from '@/lib/utils';
 import { buildUpdatedKLines } from '@/lib/stock-helpers';
 import { getJSON, getJSONOr } from '@/services/api';
 import type { StockRpsResp, FuyaoAnomalyResp, FuyaoFundResp, TushareStockDataResp } from '@/types/api';
@@ -22,6 +22,14 @@ import { Card } from '@/components/ui/card';
 import { Tabs } from '@/components/ui/tabs';
 import { Badge } from '@/components/ui/badge';
 import { Spinner } from '@/components/ui/spinner';
+
+// 预警方向着色（与首页一致：买=红 / 卖=绿 / 参考=黄）
+const dirTone = (ruleId?: string) =>
+  REFERENCE_RULE_IDS.has(ruleId ?? '')
+    ? 'bg-[var(--color-warning)]'
+    : isBuyRule(ruleId)
+      ? 'bg-[var(--color-up)]'
+      : 'bg-[var(--color-down)]';
 
 interface AnomalyItem {
   tag_name?: string;
@@ -50,6 +58,7 @@ export default function StockDetailPage() {
   const [thsTags, setThsTags] = useState<{ industries: string[]; concepts: string[] } | null>(null);
   const [fundInfo, setFundInfo] = useState<FuyaoFundResp | null>(null);
   const [fundBars, setFundBars] = useState<{ tradeDate: string; close: number; changePct: number | null }[]>([]);
+  const [premium, setPremium] = useState<{ premiumPct: number; navDate: string } | null>(null);
   const [srData, setSrData] = useState<SupportResistance | null>(null);
 
   const stock = watchlist.find(s => s.code === code);
@@ -131,6 +140,15 @@ export default function StockDetailPage() {
     }
   }, [code]);
 
+  // ETF 折溢价（服务端按品种过滤，只有跨境/商品类返回值；净值缓存，现价变化时重算）
+  useEffect(() => {
+    if (!code || !isETF(code) || !quote?.price) return;
+    getJSONOr<{ premiumPct: number | null; navDate?: string } | null>(`/api/fund/premium?code=${code}&price=${quote.price}`, null)
+      .then(d => {
+        if (d && d.premiumPct != null) setPremium({ premiumPct: d.premiumPct, navDate: d.navDate ?? '' });
+      });
+  }, [code, quote?.price]);
+
   // 趋势状态（MA5/13/55 从 K 线 + 当前价算）
   const trendStatus = useMemo(() => {
     if (kLines.length < 55 || !quote) return null;
@@ -174,6 +192,12 @@ export default function StockDetailPage() {
       </div>
     );
   }
+
+  // 日K叠加的支撑/压力线：每侧只画离现价最近的 3 条（完整列表在下方「支撑压力位」卡片）
+  const chartLevels: { price: number; label: string; color: string }[] = srData ? [
+    ...srData.resistances.slice(0, 3).map(l => ({ price: l.price, label: l.label, color: '#dc2626' })),
+    ...srData.supports.slice(0, 3).map(l => ({ price: l.price, label: l.label, color: '#16a34a' })),
+  ] : [];
 
   return (
     <div>
@@ -280,6 +304,15 @@ export default function StockDetailPage() {
             </Card>
             );
           })()}
+
+          {/* ETF 折溢价提醒（跨境/商品类；|溢价|≥2% 提示，≥5% 强提示） */}
+          {premium && Math.abs(premium.premiumPct) >= 2 && (
+            <Card variant={Math.abs(premium.premiumPct) >= 5 ? 'down' : 'warning'} className="p-3 mb-4 text-sm">
+              {premium.premiumPct >= 0
+                ? `溢价 ${premium.premiumPct.toFixed(1)}%（净值日期 ${premium.navDate}），买入即多付这部分，别追`
+                : `折价 ${Math.abs(premium.premiumPct).toFixed(1)}%（净值日期 ${premium.navDate}）`}
+            </Card>
+          )}
 
           {/* RPS + 趋势状态 */}
           <div className="flex flex-wrap items-center gap-2 mb-4">
@@ -388,14 +421,18 @@ export default function StockDetailPage() {
           {/* K线图 */}
           {chartTab === 'kline' && (
             <Card className="mb-4">
-              <KLineChart
-                data={kLines}
-                height={400}
-                levels={srData ? [
-                  ...srData.supports.map(l => ({ price: l.price, color: '#16a34a', title: `支撑·${l.label}` })),
-                  ...srData.resistances.map(l => ({ price: l.price, color: '#dc2626', title: `压力·${l.label}` })),
-                ] : []}
-              />
+              {/* 线的名称/价格图例（只列图上实际画的线；文字不进图，避免遮挡K线） */}
+              {chartLevels.length > 0 && (
+                <div className="flex flex-wrap gap-x-3 gap-y-1 mb-2">
+                  {chartLevels.map(l => (
+                    <span key={`${l.label}-${l.price}`} className="flex items-center gap-1 text-xs text-gray-500 dark:text-gray-400">
+                      <span className="w-2 h-2 rounded-full shrink-0" style={{ background: l.color }} />
+                      {l.label} <span className="font-mono">{l.price.toFixed(2)}</span>
+                    </span>
+                  ))}
+                </div>
+              )}
+              <KLineChart data={kLines} height={400} levels={chartLevels} />
             </Card>
           )}
 
@@ -538,29 +575,25 @@ export default function StockDetailPage() {
                   return (
                     <div
                       key={i}
-                      className={cn(
-                        "p-3 rounded-lg border-l-4",
-                        getAlertLevelColor(rule?.level || 'INFO')
-                      )}
+                      className="flex items-stretch gap-2.5 p-3 rounded-lg bg-gray-50 dark:bg-gray-800"
                     >
-                      <div className="flex items-center gap-2 mb-1">
-                        <span className={cn(
-                          "w-2 h-2 rounded-full shrink-0",
-                          rule?.level === 'CRITICAL' ? "bg-[var(--color-danger)]" : rule?.level === 'WARNING' ? "bg-[var(--color-warning)]" : "bg-[var(--color-accent)]"
-                        )} />
-                        <span className="font-medium">{rule?.name || result.ruleId}</span>
-                        {rule && (
-                          <Badge variant={rule.level}>{rule.level}</Badge>
+                      <span className={cn("w-1 rounded-full shrink-0", dirTone(rule?.id))} />
+                      <div className="flex-1 min-w-0">
+                        <div className="flex items-center gap-2 mb-1">
+                          <span className="font-medium">{rule?.name || result.ruleId}</span>
+                          {rule && (
+                            <Badge variant={rule.level}>{rule.level}</Badge>
+                          )}
+                        </div>
+                        <p className="text-sm text-gray-600 dark:text-gray-400">
+                          {result.message}
+                        </p>
+                        {rule?.suggestion && (
+                          <p className="text-xs text-gray-500 mt-1">
+                            建议: {rule.suggestion}
+                          </p>
                         )}
                       </div>
-                      <p className="text-sm text-gray-600 dark:text-gray-400 ml-4">
-                        {result.message}
-                      </p>
-                      {rule?.suggestion && (
-                        <p className="text-xs text-gray-500 mt-1 ml-4">
-                          建议: {rule.suggestion}
-                        </p>
-                      )}
                     </div>
                   );
                 })}
@@ -578,17 +611,20 @@ export default function StockDetailPage() {
                 {stockAlerts.map(alert => (
                   <div
                     key={alert.id}
-                    className="p-3 bg-gray-50 dark:bg-gray-800 rounded-lg"
+                    className="flex items-stretch gap-2.5 p-3 bg-gray-50 dark:bg-gray-800 rounded-lg"
                   >
-                    <div className="flex items-center gap-2 mb-1">
-                      <span className="text-xs text-gray-500">
-                        {new Date(alert.triggeredAt).toLocaleString('zh-CN')}
-                      </span>
-                      <span className="text-sm font-medium">{alert.ruleName}</span>
+                    <span className={cn("w-1 rounded-full shrink-0", dirTone(alert.ruleId))} />
+                    <div className="flex-1 min-w-0">
+                      <div className="flex items-center gap-2 mb-1">
+                        <span className="text-xs text-gray-500">
+                          {new Date(alert.triggeredAt).toLocaleString('zh-CN')}
+                        </span>
+                        <span className="text-sm font-medium">{alert.ruleName}</span>
+                      </div>
+                      <p className="text-sm text-gray-600 dark:text-gray-400">
+                        {alert.alertMessage}
+                      </p>
                     </div>
-                    <p className="text-sm text-gray-600 dark:text-gray-400">
-                      {alert.alertMessage}
-                    </p>
                   </div>
                 ))}
               </div>

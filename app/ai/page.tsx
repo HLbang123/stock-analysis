@@ -13,9 +13,10 @@ import { computeTScore } from '@/services/t-score/scorer';
 import { finetuneTScore } from '@/services/t-score/browser-finetune';
 import { calculateIndicators } from '@/lib/indicators';
 import { isETF } from '@/lib/identify';
+import { getVolScale } from '@/lib/volatility-regime';
 import { cn } from '@/lib/utils';
 import { buildUpdatedKLines } from '@/lib/stock-helpers';
-import { Brain, Settings, Loader2, Sparkles, Send, History, Search } from 'lucide-react';
+import { Brain, Settings, Loader2, Sparkles, Send, Search } from 'lucide-react';
 import { postJSON } from '@/services/api';
 import { toast } from 'sonner';
 import { Button } from '@/components/ui/button';
@@ -73,9 +74,9 @@ export default function AiPage() {
   const [showSettings, setShowSettings] = useState(false);
   const [showAddProfile, setShowAddProfile] = useState(false);
   const [mode, setMode] = useState<'analyze'>('analyze');
-  // 底部平级切换：AI 对话 / 历史分析（胜率复盘已迁至首页「复盘」弹窗）；位置存 ui-store 防重挂载丢失
-  const deepTab = useUiStore(s => s.aiDeepTab);
-  const setDeepTab = useUiStore(s => s.setAiDeepTab);
+  // 页面级主视图：分析 / AI 对话（整页互斥切换，对话是独立大界面）；位置存 ui-store 防重挂载丢失
+  const mainTab = useUiStore(s => s.aiMainTab);
+  const setMainTab = useUiStore(s => s.setAiMainTab);
   const [editingProfile, setEditingProfile] = useState<AiProfile | null>(null);
   const [selectedCode, setSelectedCode] = useState<string>(aiStore.lastSession?.selectedCode ?? '');
   // 搜索选中的非自选标的（自选内标的为 null）；随 lastSession 持久化
@@ -158,6 +159,9 @@ export default function AiPage() {
     setShowSearchList(false);
     setError(null);
     setResult(null);
+    // 深度结论随标的走：换标的必须清掉，否则残留上一只的结论（AI 对话注入会张冠李戴）
+    setDeepResult(null);
+    aiStore.updateLastSession({ deepResult: null });
   };
 
   // 波段评分 result 非流式（一次性算完），直接 useEffect 同步，覆盖 set 与清空
@@ -232,8 +236,11 @@ export default function AiPage() {
         return;
       }
 
-      // 确定性因子分
-      const t = computeTScore({ intraday, engineResults, chip, kLines: updatedKLines });
+      // 确定性因子分（ETF 按波动档缩放幅度类参数）
+      const t = computeTScore(
+        { intraday, engineResults, chip, kLines: updatedKLines },
+        isETF(selectedCode) ? getVolScale(updatedKLines) : 1
+      );
       // 因子分在线落库（做T信号回测样本，静默失败不阻断；同票同日同时刻覆盖）
       try {
         const todayStr = new Date().toLocaleDateString('sv-SE', { timeZone: 'Asia/Shanghai' }).replace(/-/g, '');
@@ -478,6 +485,20 @@ export default function AiPage() {
         }
       />
 
+      {/* 页面级主视图切换：分析 / AI 对话 */}
+      <Tabs
+        variant="segment"
+        className="mb-4"
+        items={[
+          { value: 'analysis', label: '分析', icon: <Brain className="w-3.5 h-3.5" /> },
+          { value: 'chat', label: 'AI 对话', icon: <Send className="w-3.5 h-3.5" /> },
+        ]}
+        value={mainTab}
+        onChange={setMainTab}
+      />
+
+      {mainTab === 'analysis' && (
+      <>
       {/* 操作区：配置 + 模式切换 */}
       {currentProfile ? (
         <Card variant="bordered" className="mb-4 py-3 flex items-center justify-between">
@@ -515,6 +536,9 @@ export default function AiPage() {
             setSelectedCode(v);
             if (v !== extraStock?.code) setExtraStock(null);
             setError(null); setResult(null);
+            // 深度结论随标的走：换标的必须清掉（同 pickSearchedStock）
+            setDeepResult(null);
+            aiStore.updateLastSession({ deepResult: null });
           }}
           className="mb-2"
         >
@@ -994,45 +1018,30 @@ export default function AiPage() {
         </div>
       )}
 
-      {/* 底部平级切换：AI 对话 / 历史分析 */}
-      <div className="flex gap-1 p-1 bg-gray-100 dark:bg-gray-800/50 rounded-lg w-fit mb-4">
-        <button
-          onClick={() => setDeepTab('chat')}
-          className={cn(
-            'px-3 py-1.5 rounded-md text-sm font-medium flex items-center gap-1 transition',
-            deepTab === 'chat' ? 'bg-white dark:bg-gray-900 text-blue-600 shadow-sm' : 'text-gray-500 hover:text-gray-700'
-          )}
-        >
-          <Send className="w-3.5 h-3.5" /> AI 对话
-        </button>
-        <button
-          onClick={() => setDeepTab('history')}
-          className={cn(
-            'px-3 py-1.5 rounded-md text-sm font-medium flex items-center gap-1 transition',
-            deepTab === 'history' ? 'bg-white dark:bg-gray-900 text-purple-600 shadow-sm' : 'text-gray-500 hover:text-gray-700'
-          )}
-        >
-          <History className="w-3.5 h-3.5" /> 历史分析
-        </button>
-      </div>
-
-      {/* AI 对话 */}
-      {deepTab === 'chat' && currentProfile && (
-        <AiChat
-          currentProfile={currentProfile}
-          selectedCode={selectedCode}
-          watchlist={effectiveWatchlist}
-          result={result}
-          deepStructured={deepResult?.structured ?? null}
-        />
-      )}
-
-      {/* 历史记录 */}
-      {deepTab === 'history' && (
-        <AnalysisHistory history={history} />
-      )}
+      {/* 历史分析：组件内部自持折叠态，默认折叠 */}
+      <AnalysisHistory history={history} />
 
       </>
+      )}
+      </>
+      )}
+
+      {/* ===== AI 对话视图（独立大界面，分析结论由 AiChat 恒注入） ===== */}
+      {mainTab === 'chat' && (
+        currentProfile ? (
+          <AiChat
+            currentProfile={currentProfile}
+            selectedCode={selectedCode}
+            watchlist={effectiveWatchlist}
+            result={result}
+            deepStructured={deepResult?.structured ?? null}
+          />
+        ) : (
+          <Card variant="accent" className="mb-4 text-center">
+            <p className="text-sm text-[var(--color-brand)] mb-2">尚未配置AI服务</p>
+            <Button onClick={() => setShowSettings(true)}>添加API配置</Button>
+          </Card>
+        )
       )}
 
       {/* 设置弹窗 */}

@@ -21,9 +21,10 @@ function isWin(action: string, returnPct: number): boolean {
   return Math.abs(returnPct) < 5;
 }
 
-/** 历史分析列表（胜率复盘已拆到页面级平级 tab） */
+/** 历史分析列表（胜率复盘已拆到页面级平级 tab）；整卡默认折叠，分析页底部收口 */
 export function AnalysisHistory({ history }: Props) {
   const aiStore = useAiStore();
+  const [listOpen, setListOpen] = useState(false);
   const [expandedHistory, setExpandedHistory] = useState<Set<string>>(new Set());
   const [evalMap, setEvalMap] = useState<Record<string, RecordRow[]>>({});
 
@@ -43,11 +44,19 @@ export function AnalysisHistory({ history }: Props) {
 
   return (
     <div className="bg-white dark:bg-gray-900 rounded-xl p-4 shadow-sm">
-      <div className="flex items-center justify-between mb-2">
-        <h3 className="font-semibold">历史分析 ({history.length})</h3>
-        {history.length > 0 && (
+      <div
+        className="flex items-center justify-between cursor-pointer select-none"
+        onClick={() => setListOpen(v => !v)}
+      >
+        <h3 className="font-semibold flex items-center gap-1.5">
+          {listOpen
+            ? <ChevronDown className="w-4 h-4 text-gray-400" />
+            : <ChevronRight className="w-4 h-4 text-gray-400" />}
+          历史分析 ({history.length})
+        </h3>
+        {listOpen && history.length > 0 && (
           <button
-            onClick={() => { aiStore.clearHistory(); toast.success('已清空全部历史'); }}
+            onClick={(e) => { e.stopPropagation(); aiStore.clearHistory(); toast.success('已清空全部历史'); }}
             className="text-xs text-red-500 hover:text-red-600 px-2 py-1 hover:bg-red-50 dark:hover:bg-red-950 rounded transition"
           >
             清空全部
@@ -55,10 +64,10 @@ export function AnalysisHistory({ history }: Props) {
         )}
       </div>
 
-      {history.length === 0 ? (
+      {!listOpen ? null : history.length === 0 ? (
         <p className="text-center text-gray-400 text-sm py-6">暂无历史分析，跑一次深度分析后这里会列出</p>
       ) : (
-        <div className="space-y-2">
+        <div className="space-y-2 mt-2">
           {history.slice(0, 20).map(record => {
             const isExpanded = expandedHistory.has(record.id);
             const evalKey = `${record.stockCode}|${record.entryDate}`;

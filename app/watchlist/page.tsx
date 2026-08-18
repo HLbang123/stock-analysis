@@ -314,10 +314,10 @@ export default function WatchlistPage() {
             <div className="flex items-center gap-3">
               {multiSelect ? (
                 <>
-                  <button onClick={toggleSelectAll} className="text-sm text-[var(--color-accent)] hover:opacity-80">
+                  <button onClick={toggleSelectAll} className="text-sm whitespace-nowrap text-[var(--color-accent)] hover:opacity-80">
                     {allVisibleSelected ? '全不选' : '全选'}
                   </button>
-                  <button onClick={exitMultiSelect} className="text-sm text-gray-500 hover:text-gray-700 dark:hover:text-gray-300">
+                  <button onClick={exitMultiSelect} className="text-sm whitespace-nowrap text-gray-500 hover:text-gray-700 dark:hover:text-gray-300">
                     完成
                   </button>
                 </>
@@ -325,12 +325,12 @@ export default function WatchlistPage() {
                 <>
                   <button
                     onClick={refreshQuotes}
-                    className="text-sm text-[var(--color-accent)] hover:opacity-80 flex items-center gap-1"
+                    className="text-sm whitespace-nowrap text-[var(--color-accent)] hover:opacity-80 flex items-center gap-1"
                   >
                     <TrendingUp className="w-4 h-4" />
                     刷新行情
                   </button>
-                  <button onClick={() => setMultiSelect(true)} className="text-sm text-[var(--color-accent)] hover:opacity-80">
+                  <button onClick={() => setMultiSelect(true)} className="text-sm whitespace-nowrap text-[var(--color-accent)] hover:opacity-80">
                     多选
                   </button>
                 </>
@@ -555,7 +555,7 @@ export default function WatchlistPage() {
             <button
               onClick={() => setShowBatchMove(true)}
               disabled={selectedCodes.size === 0}
-              className="px-3.5 py-1 rounded-full bg-[var(--color-accent)] text-white text-sm font-medium disabled:opacity-40"
+              className="px-3.5 py-1 rounded-full bg-[var(--color-accent)] text-white text-sm font-medium whitespace-nowrap disabled:opacity-40"
             >
               移动分组
             </button>
@@ -563,11 +563,11 @@ export default function WatchlistPage() {
           <button
             onClick={handleBatchDelete}
             disabled={selectedCodes.size === 0}
-            className="px-3.5 py-1 rounded-full bg-[var(--color-danger)] text-white text-sm font-medium disabled:opacity-40"
+            className="px-3.5 py-1 rounded-full bg-[var(--color-danger)] text-white text-sm font-medium whitespace-nowrap disabled:opacity-40"
           >
             删除
           </button>
-          <button onClick={exitMultiSelect} className="text-sm opacity-70">取消</button>
+          <button onClick={exitMultiSelect} className="text-sm whitespace-nowrap opacity-70">取消</button>
         </div>
       )}
 

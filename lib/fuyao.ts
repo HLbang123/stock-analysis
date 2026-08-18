@@ -252,3 +252,22 @@ export async function getFundProfile(fundType: string, thscode: string): Promise
 export async function getFundHoldings(fundType: string, thscode: string): Promise<{ timestamp: number; item: FundHolding[] }> {
   return fuyaoGet("/api/fund/portfolio/holdings", { fund_type: fundType, thscode });
 }
+
+// ===== 基金净值（折溢价计算用，2026-08-18 实测） =====
+export interface FundNav {
+  nav_date: number;   // 净值日期(毫秒时间戳；QDII 可能滞后 1-2 个交易日)
+  unit_nav: number;   // 单位净值
+  adj_nav: number;    // 复权净值
+}
+
+/**
+ * 基金最新净值。fund_type: exchange(交易所 ETF/LOF) / otc(场外 .OF)。
+ * 实测返回最新一条；接口有限流(429)，调用方必须缓存。
+ */
+export async function getFundNav(thscode: string, fundType: "exchange" | "otc" = "exchange"): Promise<FundNav | null> {
+  const data = await fuyaoGet<{ timestamp: number; item: FundNav[] }>("/api/fund/performance/nav", {
+    fund_type: fundType,
+    thscode,
+  });
+  return data.item?.[0] ?? null;
+}

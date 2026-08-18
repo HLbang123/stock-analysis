@@ -16,7 +16,6 @@ import { useTheme } from '@/components/providers/theme-provider';
 interface PriceLine {
   price: number;
   color?: string;
-  title?: string;
 }
 
 interface KLineChartProps {
@@ -115,7 +114,8 @@ export function KLineChart({
 
     candleSeries.setData(candleData);
 
-    // 支撑/压力水平线（createPriceLine 虚线）
+    // 支撑/压力水平线（createPriceLine 虚线）。名称不进图（title 会画在 canvas 上遮挡 K 线），
+    // 由调用方在图外渲染图例；这里只留右侧价格轴标签
     levels.forEach(lv => {
       candleSeries.createPriceLine({
         price: lv.price,
@@ -123,7 +123,6 @@ export function KLineChart({
         lineWidth: 1,
         lineStyle: LineStyle.Dashed,
         axisLabelVisible: true,
-        title: lv.title ?? '',
       });
     });
 
@@ -163,9 +162,9 @@ export function KLineChart({
       });
     }
 
-    // 默认只展示最近 20 根 K 线（rightOffset 3 格留白），更早的左右滑动查看
+    // 默认只展示最近 30 根 K 线（rightOffset 3 格留白），更早的左右滑动查看
     const to = candleData.length - 1 + 3;
-    const from = Math.max(0, candleData.length - 20);
+    const from = Math.max(0, candleData.length - 30);
     chart.timeScale().setVisibleLogicalRange({ from, to });
     chartRef.current = chart;
     return chart;

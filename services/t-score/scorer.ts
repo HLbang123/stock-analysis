@@ -212,6 +212,27 @@ const SELL_WEIGHTS: Record<string, number> = {
 
 const clip = (v: number, lo = 0, hi = 100) => Math.max(lo, Math.min(hi, v));
 
+/**
+ * 价格幅度敏感的参数键 —— ETF 波动档缩放时按比例收窄（lib/volatility-regime）。
+ * 低波 ETF 的 VWAP 偏离/动量/回撤幅度天然比个股小，不缩放则因子常年打中性分。
+ * 区间位置(0-100)/RSI/量能类参数不在此列。
+ */
+const SCALED_KEYS = [
+  'buy_vwap_ideal', 'buy_vwap_collapse_start',
+  'sell_vwap_ideal', 'sell_vwap_overext_start',
+  'buy_mom_ideal', 'buy_mom_collapse_start',
+  'sell_mom_ideal', 'sell_mom_collapse_start',
+  'buy_daily_pullback_ideal', 'buy_daily_pullback_breakdown',
+] as const;
+
+/** scale=1 直接返回默认 profile（零开销）；否则返回幅度参数 × scale 的副本 */
+function scaledProfile(scale: number): typeof DEFAULT_TSCORE_PROFILE {
+  if (scale === 1) return DEFAULT_TSCORE_PROFILE;
+  const p = { ...DEFAULT_TSCORE_PROFILE };
+  for (const k of SCALED_KEYS) p[k] = DEFAULT_TSCORE_PROFILE[k] * scale;
+  return p;
+}
+
 export interface TFactorScore {
   name: string;
   score: number;
@@ -446,10 +467,11 @@ function sellSellOff(ctx: IntradayContext, trend: 'up' | 'down' | 'sideways', p:
   return clip(s);
 }
 
-/** 主入口：算买入分 + 卖出分（均恒算；仓位信息仅作 LLM 上下文，不影响是否算卖点）。分时不足 → degraded。 */
-export function computeTScore(input: TScoreInput): TScoreResult {
+/** 主入口：算买入分 + 卖出分（均恒算；仓位信息仅作 LLM 上下文，不影响是否算卖点）。分时不足 → degraded。
+ *  scale：波动档缩放（ETF 传 getVolScale(kLines)，股票恒 1），幅度类参数按比例收窄。 */
+export function computeTScore(input: TScoreInput, scale = 1): TScoreResult {
   const { intraday: ctx, engineResults, chip, kLines } = input;
-  const p = DEFAULT_TSCORE_PROFILE;
+  const p = scaledProfile(scale);
   const degradation: string[] = [];
 
   if (!ctx.sufficient) {

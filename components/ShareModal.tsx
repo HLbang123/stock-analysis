@@ -55,6 +55,9 @@ export function ShareModal({ open, onClose }: { open: boolean; onClose: () => vo
   const [selectedCodes, setSelectedCodes] = useState<Set<string>>(new Set());
   const [showPicker, setShowPicker] = useState(false);
   const [newGroupName, setNewGroupName] = useState('');
+  // 整组添加（多选对方分组）
+  const [showGroupPicker, setShowGroupPicker] = useState(false);
+  const [pickedShareGroups, setPickedShareGroups] = useState<Set<string>>(new Set());
   // 我的分享订阅人数（打开弹窗时拉一次）
   const [subCount, setSubCount] = useState<number | null>(null);
 
@@ -153,6 +156,8 @@ export function ShareModal({ open, onClose }: { open: boolean; onClose: () => vo
       setDetailGroupId(ALL);
       setMultiSelect(false);
       setSelectedCodes(new Set());
+      setShowGroupPicker(false);
+      setPickedShareGroups(new Set());
       setQuotes(new Map());
       loadQuotes();
     }
@@ -202,6 +207,42 @@ export function ShareModal({ open, onClose }: { open: boolean; onClose: () => vo
     const g = useStockStore.getState().groups.find((g) => g.name === name);
     setNewGroupName('');
     moveSelected(g?.id);
+  };
+
+  // ---- 整组添加 ----
+  const togglePickShareGroup = (name: string) => {
+    setPickedShareGroups((prev) => {
+      const next = new Set(prev);
+      if (next.has(name)) next.delete(name);
+      else next.add(name);
+      return next;
+    });
+  };
+
+  const importPickedGroups = () => {
+    const picked = detailGroups.filter((g) => pickedShareGroups.has(g.name));
+    if (picked.length === 0) return;
+    let stockCount = 0;
+    for (const g of picked) {
+      // 同名分组已存在则合并进去，否则新建
+      let target = useStockStore.getState().groups.find((x) => x.name === g.name);
+      if (!target) {
+        if (!addGroup(g.name)) continue; // 名称超限等异常，跳过该组
+        target = useStockStore.getState().groups.find((x) => x.name === g.name);
+      }
+      if (!target) continue;
+      for (const s of g.stocks) {
+        const parsed = parseStockCode(s.code);
+        addToWatchlist(
+          { code: s.code, name: s.name, market: parsed.market, pureCode: parsed.pureCode },
+          target.id
+        );
+        stockCount++;
+      }
+    }
+    toast.success(`已添加 ${picked.length} 个分组（${stockCount} 只）`);
+    setShowGroupPicker(false);
+    setPickedShareGroups(new Set());
   };
 
   return (
@@ -282,13 +323,21 @@ export function ShareModal({ open, onClose }: { open: boolean; onClose: () => vo
                   <span className="text-xs text-gray-400">{activeGroup?.name ?? '全部'} · {visibleStocks.length} 只</span>
                   {multiSelect ? (
                     <div className="flex items-center gap-3">
-                      <button onClick={toggleSelectAll} className="text-xs text-[var(--color-accent)]">
+                      <button onClick={toggleSelectAll} className="text-xs whitespace-nowrap text-[var(--color-accent)]">
                         {allVisibleSelected ? '全不选' : '全选'}
                       </button>
-                      <button onClick={exitMulti} className="text-xs text-gray-500">完成</button>
+                      <button onClick={exitMulti} className="text-xs whitespace-nowrap text-gray-500">完成</button>
                     </div>
                   ) : (
-                    <button onClick={() => setMultiSelect(true)} className="text-xs text-[var(--color-accent)]">多选</button>
+                    <div className="flex items-center gap-3">
+                      <button
+                        onClick={() => { setPickedShareGroups(new Set()); setShowGroupPicker(true); }}
+                        className="text-xs whitespace-nowrap text-[var(--color-accent)]"
+                      >
+                        添加分组
+                      </button>
+                      <button onClick={() => setMultiSelect(true)} className="text-xs whitespace-nowrap text-[var(--color-accent)]">多选</button>
+                    </div>
                   )}
                 </div>
 
@@ -344,12 +393,69 @@ export function ShareModal({ open, onClose }: { open: boolean; onClose: () => vo
                     <button
                       onClick={() => { if (selectedCodes.size > 0) setShowPicker(true); }}
                       disabled={selectedCodes.size === 0}
-                      className="px-3.5 py-1 rounded-full bg-[var(--color-accent)] text-white text-sm font-medium disabled:opacity-40"
+                      className="px-3.5 py-1 rounded-full bg-[var(--color-accent)] text-white text-sm font-medium whitespace-nowrap disabled:opacity-40"
                     >
                       移入分组
                     </button>
-                    <button onClick={exitMulti} className="text-sm opacity-70">取消</button>
+                    <button onClick={exitMulti} className="text-sm whitespace-nowrap opacity-70">取消</button>
                   </div>
+                )}
+
+                {showGroupPicker && (
+                  <Modal title="添加分组到自选" onClose={() => setShowGroupPicker(false)} variant="center" maxWidth="sm:max-w-sm">
+                    <div className="p-4">
+                      <div className="flex items-center justify-between mb-2">
+                        <span className="text-xs text-gray-400">已选 {pickedShareGroups.size} 个</span>
+                        <button
+                          onClick={() =>
+                            setPickedShareGroups(
+                              pickedShareGroups.size === detailGroups.length
+                                ? new Set()
+                                : new Set(detailGroups.map((g) => g.name))
+                            )
+                          }
+                          className="text-xs text-[var(--color-accent)]"
+                        >
+                          {pickedShareGroups.size === detailGroups.length ? '全不选' : '全选'}
+                        </button>
+                      </div>
+                      <div className="max-h-[50vh] overflow-y-auto space-y-1">
+                        {detailGroups.map((g) => {
+                          const picked = pickedShareGroups.has(g.name);
+                          const exists = groups.some((x) => x.name === g.name);
+                          return (
+                            <button
+                              key={g.name}
+                              onClick={() => togglePickShareGroup(g.name)}
+                              className="w-full flex items-center gap-2 px-3 py-2 rounded-lg text-sm hover:bg-gray-50 dark:hover:bg-gray-800 transition"
+                            >
+                              <span
+                                className={cn(
+                                  'w-5 h-5 rounded border shrink-0 flex items-center justify-center transition',
+                                  picked
+                                    ? 'bg-[var(--color-accent)] border-[var(--color-accent)]'
+                                    : 'border-gray-300 dark:border-gray-600'
+                                )}
+                              >
+                                {picked && <Check className="w-3.5 h-3.5 text-white" />}
+                              </span>
+                              <span className="flex-1 text-left text-gray-700 dark:text-gray-300 truncate">{g.name}</span>
+                              <span className="text-xs text-gray-400">
+                                {g.stocks.length} 只{exists ? ' · 同名将合并' : ''}
+                              </span>
+                            </button>
+                          );
+                        })}
+                      </div>
+                      <button
+                        onClick={importPickedGroups}
+                        disabled={pickedShareGroups.size === 0}
+                        className="w-full mt-3 py-2.5 rounded-lg text-sm font-medium bg-[var(--color-accent)] text-white hover:opacity-90 disabled:opacity-40"
+                      >
+                        添加（{pickedShareGroups.size}）
+                      </button>
+                    </div>
+                  </Modal>
                 )}
 
                 {showPicker && (
@@ -381,7 +487,7 @@ export function ShareModal({ open, onClose }: { open: boolean; onClose: () => vo
                           maxLength={12}
                           className="flex-1"
                         />
-                        <button onClick={createGroupAndMove} className="px-3 py-2 rounded-lg text-sm bg-[var(--color-accent)] text-white">
+                        <button onClick={createGroupAndMove} className="px-3 py-2 rounded-lg text-sm whitespace-nowrap bg-[var(--color-accent)] text-white">
                           确定
                         </button>
                       </div>

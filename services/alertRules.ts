@@ -1,6 +1,7 @@
 import { KLineData, RealtimeQuote, AlertRule, AlertLevel, RuleCheckResult } from '@/types';
 import { calculateMA as calcMAValues, calcRSISeries } from '@/lib/indicators';
 import { splitKLines, beijingTodayStr, intradayVolumePace } from '@/lib/stock-helpers';
+import { getVolScale } from '@/lib/volatility-regime';
 import type { ChipDistribution } from '@/lib/chip';
 
 /**
@@ -329,7 +330,7 @@ function checkTopPattern(kLines: KLineData[], quote: RealtimeQuote | null, rule:
  * 子信号严重度：急跌(5) > 5/10死叉/破趋势线+破MA60/5/13死叉+跌破55日线(4,强卖出) > 有效跌破10日线(3,卖出) > 跌破5日线/破趋势线/5/13死叉站上55日线(2,弱提醒) > 跌破10日线待确认(1,弱提醒)
  * 2026-08-17 起全部信号只报方向与强度，不再给仓位建议（清仓/减仓等措辞已移除）。
  */
-function checkTieredExit(kLines: KLineData[], quote: RealtimeQuote | null, rule: AlertRule): RuleCheckResult {
+function checkTieredExit(kLines: KLineData[], quote: RealtimeQuote | null, rule: AlertRule, volScale = 1): RuleCheckResult {
   if (kLines.length < 6) return { triggered: false };
   const idx = kLines.length - 1;
   const today = kLines[idx];
@@ -345,9 +346,9 @@ function checkTieredExit(kLines: KLineData[], quote: RealtimeQuote | null, rule:
   // [severity, label, message]
   const triggered: Array<[number, string, string]> = [];
 
-  // 急跌 — 强度最高的卖出信号
+  // 急跌 — 强度最高的卖出信号（价格幅度阈值按波动档缩放：低波 ETF -7% 永不触发，高波品种 -7% 太迟钝）
   const change = calculateChangePercent(today.close, prev1.close);
-  if (change < -7.0) {
+  if (change < -7.0 * volScale) {
     triggered.push([5, '急跌', `急跌：暴跌 ${change.toFixed(2)}%，强度最高的卖出信号`]);
   }
 
@@ -605,7 +606,7 @@ function checkReboundEntry(kLines: KLineData[], quote: RealtimeQuote | null, rul
 /**
  * R09: 黄金位反弹 — 回调至黄金位(38.2%-61.8%)放量反弹
  */
-function checkGoldenRebound(kLines: KLineData[], quote: RealtimeQuote | null, rule: AlertRule): RuleCheckResult {
+function checkGoldenRebound(kLines: KLineData[], quote: RealtimeQuote | null, rule: AlertRule, volScale = 1): RuleCheckResult {
   if (kLines.length < 30) return { triggered: false };
   const idx = kLines.length - 1;
 
@@ -619,7 +620,7 @@ function checkGoldenRebound(kLines: KLineData[], quote: RealtimeQuote | null, ru
   const ratio = (today.close - low) / (high - low);
   const change = calculateChangePercent(today.close, prev1.close);
 
-  if (ratio >= 0.382 && ratio <= 0.618 && change > 3.0 && effectiveTodayVolume(kLines, quote) > prev1.volume * 1.2) {
+  if (ratio >= 0.382 && ratio <= 0.618 && change > 3.0 * volScale && effectiveTodayVolume(kLines, quote) > prev1.volume * 1.2) {
     return {
       triggered: true,
       ruleId: 'R09',
@@ -635,7 +636,7 @@ function checkGoldenRebound(kLines: KLineData[], quote: RealtimeQuote | null, ru
  * R10: 箱体信号 — 突破(40日箱体上沿>3%+放量)优先；否则 吸筹(60日箱体+放量小阳)
  * 突破(40日箱体上沿>3%+放量)优先；否则 吸筹(60日箱体+放量小阳)
  */
-function checkBoxSignal(kLines: KLineData[], quote: RealtimeQuote | null, rule: AlertRule): RuleCheckResult {
+function checkBoxSignal(kLines: KLineData[], quote: RealtimeQuote | null, rule: AlertRule, volScale = 1): RuleCheckResult {
   if (kLines.length < 42) return { triggered: false };
   const idx = kLines.length - 1;
   const today = kLines[idx];
@@ -647,7 +648,7 @@ function checkBoxSignal(kLines: KLineData[], quote: RealtimeQuote | null, rule: 
   const { high: boxHigh40, range: range40 } = getBoxRange(kLines.slice(0, -1), 40);
   if (range40 <= 0.20) {
     const breakoutPct = (today.close - boxHigh40) / boxHigh40 * 100;
-    if (breakoutPct >= 3.0 && avgVol20 > 0 && effVol >= avgVol20 * 1.2) {
+    if (breakoutPct >= 3.0 * volScale && avgVol20 > 0 && effVol >= avgVol20 * 1.2) {
       return {
         triggered: true,
         ruleId: 'R10',
@@ -666,7 +667,8 @@ function checkBoxSignal(kLines: KLineData[], quote: RealtimeQuote | null, rule: 
     const boxRange = (boxHigh - boxLow) / boxLow;
     if (boxRange <= 0.20) {
       const change = calculateChangePercent(today.close, prev1.close);
-      if (change >= 1.0 && change <= 4.0 && avgVol20 > 0 && effVol > avgVol20 * 1.3) {
+      // 下限按波动档缩放（低波 ETF 的"放量小阳线"幅度本就小）；上限 4.0 是"小阳线不能太大"的硬约束，不缩放
+      if (change >= 1.0 * volScale && change <= 4.0 && avgVol20 > 0 && effVol > avgVol20 * 1.3) {
         return {
           triggered: true,
           ruleId: 'R10',
@@ -960,6 +962,7 @@ export type LimitPriceMap = Record<string, { up: number; down: number }>;
  *   且 R01 内部量比阈值按个股口径标定（跨境 T+0 品种量比 5x 是日常），故整体跳过 R01。
  *   P1 可回灌「对子顶/巨量见顶」子信号 + ETF 量比档（见 memory: etf-feature-notes）。
  *   R13/R14 筹码规则无需在此禁用——ETF 无 daily_bars 换手率，chip 恒为 null，规则内部自跳过。
+ *   ETF 价格幅度阈值（急跌/反弹阳线/箱体突破）按波动档缩放（lib/volatility-regime，ATR 比率换算）。
  */
 export function checkAllRules(
   kLines: KLineData[],
@@ -970,21 +973,23 @@ export function checkAllRules(
   isETF = false
 ): RuleCheckResult[] {
   const results: RuleCheckResult[] = [];
+  // ETF 价格幅度阈值按波动档缩放（急跌/反弹阳线/箱体突破的幅度类阈值；量比类不动）。股票恒 1。
+  const volScale = isETF ? getVolScale(kLines) : 1;
 
   for (const rule of enabledRules) {
     if (isETF && rule.id === 'R01') continue;
     let result: RuleCheckResult;
     switch (rule.id) {
       case 'R01': result = checkTopPattern(kLines, quote, rule, limitMap); break;
-      case 'R02': result = checkTieredExit(kLines, quote, rule); break;
+      case 'R02': result = checkTieredExit(kLines, quote, rule, volScale); break;
       case 'R03': result = checkBreakMa55(kLines, quote, rule); break;
       case 'R04': result = checkMa5Cross13Golden(kLines, quote, rule); break;
       case 'R05': result = checkMa5Cross10Golden(kLines, quote, rule); break;
       case 'R06': result = checkBottomStabilize(kLines, quote, rule); break;
       case 'R07': result = checkRsiBottom(kLines, quote, rule); break;
       case 'R08': result = checkReboundEntry(kLines, quote, rule); break;
-      case 'R09': result = checkGoldenRebound(kLines, quote, rule); break;
-      case 'R10': result = checkBoxSignal(kLines, quote, rule); break;
+      case 'R09': result = checkGoldenRebound(kLines, quote, rule, volScale); break;
+      case 'R10': result = checkBoxSignal(kLines, quote, rule, volScale); break;
       case 'R11': result = checkMaBullAlignment(kLines, quote, rule); break;
       case 'R12': result = checkHoldMa5(kLines, quote, rule); break;
       case 'R13': result = checkChipLowConcentrate(kLines, quote, rule, chip); break;

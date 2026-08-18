@@ -94,7 +94,7 @@ function AlertDoc() {
         />
         <DocItem
           name="品种适配"
-          desc="ETF 不适用涨停/打板类信号（R01 自动跳过）；无换手数据的品种筹码规则（R13/R14）自动不触发。"
+          desc="ETF 不适用涨停/打板类信号（R01 自动跳过）；无换手数据的品种筹码规则（R13/R14）自动不触发；ETF 的急跌/突破类幅度阈值按自身波动率自动缩放。"
         />
       </DocSection>
       <RuleGroup title="卖出 / 风险信号" hint="破位·见顶·离场" rules={sell} />

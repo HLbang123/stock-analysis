@@ -55,6 +55,11 @@ interface Props {
 
 export function AddStockPanel({ targetGroupId, variant = 'card' }: Props) {
   const { groups, addToWatchlist, isInWatchlist, addGroup } = useStockStore();
+  // 「已添加」判定跟随目标组视角：组内添加时，在自选但不在本组的标的仍应可加入本组
+  const isAdded = (code: string) =>
+    targetGroupId
+      ? !!groups.find((g) => g.id === targetGroupId)?.stockCodes.includes(code)
+      : isInWatchlist(code);
   const [searchQuery, setSearchQuery] = useState('');
   const [searchResults, setSearchResults] = useState<RealtimeQuote[]>([]);
   const [isSearching, setIsSearching] = useState(false);
@@ -134,7 +139,7 @@ export function AddStockPanel({ targetGroupId, variant = 'card' }: Props) {
       const vdata = vr.ok ? await vr.json() : { items: [] };
       validResults = (vdata.items ?? []).map((it: { code: string; name: string }) => ({
         ...it,
-        added: isInWatchlist(it.code),
+        added: isAdded(it.code),
       }));
     } catch { /* 名录服务异常 → 走行情兜底 */ }
 
@@ -149,7 +154,7 @@ export function AddStockPanel({ targetGroupId, variant = 'card' }: Props) {
       const fallback = await Promise.all(
         missCodes.map(async (fc) => {
           const quote = await getRealtimeQuote(fc);
-          return quote?.name ? { code: fc, name: quote.name, added: isInWatchlist(fc) } : null;
+          return quote?.name ? { code: fc, name: quote.name, added: isAdded(fc) } : null;
         })
       );
       validResults = [...validResults, ...fallback.filter((r): r is NonNullable<typeof r> => r !== null)];
@@ -190,7 +195,7 @@ export function AddStockPanel({ targetGroupId, variant = 'card' }: Props) {
         const full = `${detectMarket(code) ?? 'sh'}${code}`;
         if (seen.has(full)) continue;
         seen.add(full);
-        merged.push({ code: full, name, added: isInWatchlist(full) });
+        merged.push({ code: full, name, added: isAdded(full) });
       }
 
       if (merged.length > 0) {
@@ -521,7 +526,7 @@ export function AddStockPanel({ targetGroupId, variant = 'card' }: Props) {
                     placeholder="新建分组"
                     className="flex-1 min-w-0 px-2 py-1 text-xs border border-gray-200 dark:border-gray-700 rounded bg-transparent"
                   />
-                  <button onClick={createGroupAndAddAll} className="px-2 py-1 text-xs bg-blue-600 text-white rounded hover:bg-blue-700 transition">
+                  <button onClick={createGroupAndAddAll} className="px-2 py-1 text-xs whitespace-nowrap bg-blue-600 text-white rounded hover:bg-blue-700 transition">
                     确定
                   </button>
                 </div>
@@ -545,8 +550,8 @@ export function AddStockPanel({ targetGroupId, variant = 'card' }: Props) {
                   <span className="font-medium text-sm">{quote.name}</span>
                   <span className="text-xs text-gray-500 ml-2">{quote.code}</span>
                 </div>
-                {isInWatchlist(quote.code) ? (
-                  <span className="p-1.5 text-[var(--color-down)]" title="已在自选中">
+                {isAdded(quote.code) ? (
+                  <span className="p-1.5 text-[var(--color-down)]" title={targetGroupId ? '已在该分组' : '已在自选中'}>
                     <Check className="w-4 h-4" />
                   </span>
                 ) : (

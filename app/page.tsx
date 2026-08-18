@@ -191,6 +191,14 @@ export default function HomePage() {
       : isBuyRule(alert.ruleId)
         ? 'bg-[var(--color-up)]'
         : 'bg-[var(--color-down)]';
+    // 阶梯弱提醒（sev≤2，如巨量异动）色条半透明：与强卖出（实心）拉开视觉区分度
+    let weakLadder = false;
+    if (alert.ruleId === 'R01' || alert.ruleId === 'R02') {
+      try {
+        const sev = JSON.parse(alert.extraData ?? '{}')?.sev;
+        weakLadder = typeof sev === 'number' && sev < 3;
+      } catch { /* 旧数据无 sev：按强处理，保持实心 */ }
+    }
     // 文案里烘焙的方向 emoji（🔴/🟢/🟡/⚠️）与左侧色条、整卡着色重复，渲染时剥掉
     const message = alert.alertMessage.replace(/^(🔴|🟢|🟡|🔵|⚠️)\s*/, '');
     return (
@@ -198,7 +206,7 @@ export default function HomePage() {
         key={alert.id}
         className="flex items-stretch gap-2.5 text-sm py-2 px-2.5 rounded-[var(--radius-md)] bg-white/70 dark:bg-gray-900/50"
       >
-        <span className={cn("w-1 rounded-full shrink-0", toneBar)} />
+        <span className={cn("w-1 rounded-full shrink-0", toneBar, weakLadder && 'opacity-40')} />
         <div className="flex-1 min-w-0">
           <p className="text-gray-800 dark:text-gray-200">{message}</p>
           <p className="text-xs text-gray-500 dark:text-gray-400 mt-0.5">建议：{alert.suggestion}</p>
@@ -477,7 +485,7 @@ export default function HomePage() {
               </span>
               <button
                 onClick={() => clearAllAlerts()}
-                className="flex items-center gap-1 text-xs text-[var(--color-danger)] hover:bg-[var(--color-danger-soft)] px-2 py-1 rounded-[var(--radius-sm)] transition"
+                className="flex items-center gap-1 text-xs whitespace-nowrap text-[var(--color-danger)] hover:bg-[var(--color-danger-soft)] px-2 py-1 rounded-[var(--radius-sm)] transition"
               >
                 <Trash2 className="w-3.5 h-3.5" />
                 清除全部

@@ -16,8 +16,8 @@ interface UiStoreState {
   scannerTab: 'ai' | 'manual';
   /** AI 筛选 tab 当前策略 */
   aiScreenStrategy: string;
-  /** AI 页分析结果区 tab */
-  aiDeepTab: 'chat' | 'history';
+  /** AI 页主视图切换（分析 / AI 对话，页面级互斥） */
+  aiMainTab: 'analysis' | 'chat';
   /** 大盘页指数估值选中的指数 */
   marketIdxCode: string;
 
@@ -25,7 +25,7 @@ interface UiStoreState {
   setWatchlistGroupId: (v: string) => void;
   setScannerTab: (v: 'ai' | 'manual') => void;
   setAiScreenStrategy: (v: string) => void;
-  setAiDeepTab: (v: 'chat' | 'history') => void;
+  setAiMainTab: (v: 'analysis' | 'chat') => void;
   setMarketIdxCode: (v: string) => void;
 }
 
@@ -36,14 +36,14 @@ export const useUiStore = create<UiStoreState>()(
       watchlistGroupId: 'all',
       scannerTab: 'ai',
       aiScreenStrategy: 'momentum',
-      aiDeepTab: 'chat',
+      aiMainTab: 'analysis',
       marketIdxCode: '000001.SH',
 
       setHomeAlertGroupId: (homeAlertGroupId) => set({ homeAlertGroupId }),
       setWatchlistGroupId: (watchlistGroupId) => set({ watchlistGroupId }),
       setScannerTab: (scannerTab) => set({ scannerTab }),
       setAiScreenStrategy: (aiScreenStrategy) => set({ aiScreenStrategy }),
-      setAiDeepTab: (aiDeepTab) => set({ aiDeepTab }),
+      setAiMainTab: (aiMainTab) => set({ aiMainTab }),
       setMarketIdxCode: (marketIdxCode) => set({ marketIdxCode }),
     }),
     { name: 'ui-store' }

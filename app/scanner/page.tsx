@@ -853,7 +853,7 @@ function ManualScan() {
                 placeholder="新建分组"
                 className="flex-1 min-w-0 px-2 py-1 text-xs border border-gray-200 dark:border-gray-700 rounded bg-transparent"
               />
-              <button onClick={createGroupAndAdd} className="px-2 py-1 text-xs bg-blue-600 text-white rounded hover:bg-blue-700 transition">
+              <button onClick={createGroupAndAdd} className="px-2 py-1 text-xs whitespace-nowrap bg-blue-600 text-white rounded hover:bg-blue-700 transition">
                 确定
               </button>
             </div>
