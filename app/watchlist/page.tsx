@@ -9,7 +9,7 @@ import { isETF } from '@/lib/identify';
 import { computeMaCross, type MaCrossState } from '@/lib/stock-helpers';
 import { RealtimeQuote } from '@/types';
 import { formatPrice, formatChange, cn } from '@/lib/utils';
-import { Plus, Trash2, TrendingUp, Check, FolderInput, Menu } from 'lucide-react';
+import { Plus, Trash2, TrendingUp, Check, FolderInput, Menu, FolderCog } from 'lucide-react';
 import { toast } from 'sonner';
 import { Card } from '@/components/ui/card';
 import { Input } from '@/components/ui/input';
@@ -19,14 +19,51 @@ import { GroupBar, ALL_GROUP_ID } from '@/components/GroupBar';
 import { GroupManageModal } from '@/components/GroupManageModal';
 import { MoveToGroupMenu } from '@/components/MoveToGroupMenu';
 
+// RPS60 本地缓存：DB 每天预计算，前端缓存到 localStorage，进页面先显缓存、后台再刷，
+// 避免「行情慢/请求失败 → 标签消失」（RPS 本就不该依赖行情请求）。
+const RPS_CACHE_KEY = 'watchlist:rps60';
+type RpsMap = Record<string, { rps60: number | null; calcDate: string }>;
+
+function readRpsCache(): RpsMap {
+  try {
+    const raw = localStorage.getItem(RPS_CACHE_KEY);
+    if (!raw) return {};
+    const parsed = JSON.parse(raw);
+    return parsed && typeof parsed === 'object' && parsed.map ? (parsed.map as RpsMap) : {};
+  } catch {
+    return {};
+  }
+}
+
+function writeRpsCache(map: RpsMap): void {
+  try {
+    localStorage.setItem(RPS_CACHE_KEY, JSON.stringify({ map }));
+  } catch {
+    // localStorage 满/禁用时静默，不影响展示
+  }
+}
+
+/** 批量拉 RPS60（DB 一次查询）；失败返回 null，由调用方保留旧值 */
+async function fetchRpsBatch(codes: string[]): Promise<RpsMap | null> {
+  if (codes.length === 0) return {};
+  try {
+    const res = await fetch(`/api/rps/batch?codes=${encodeURIComponent(codes.join(','))}`);
+    if (!res.ok) return null;
+    const data = await res.json();
+    return (data.rps ?? {}) as RpsMap;
+  } catch {
+    return null;
+  }
+}
+
 export default function WatchlistPage() {
   const router = useRouter();
   const { watchlist, groups, removeFromWatchlist, toggleStockGroup, removeStocks, moveStocksToGroup, reorderStocks } = useStockStore();
   const [stockQuotes, setStockQuotes] = useState<Map<string, RealtimeQuote>>(new Map());
   // MA5/13 交叉状态徽标（金叉/死叉/即将金叉），随行情刷新一起算
   const [crossMap, setCrossMap] = useState<Map<string, MaCrossState>>(new Map());
-  // RPS60 徽标（DB rps_scores，随行情刷新一起批量拉）
-  const [rpsMap, setRpsMap] = useState<Record<string, { rps60: number | null; calcDate: string }>>({});
+  // RPS60 徽标（DB rps_scores，随行情刷新一起批量拉；本地缓存先显，后台刷新覆盖）
+  const [rpsMap, setRpsMap] = useState<RpsMap>({});
 
   // 分组状态（位置存 ui-store：钻详情返回后仍在原分组）
   const selectedGroupId = useUiStore(s => s.watchlistGroupId);
@@ -160,27 +197,23 @@ export default function WatchlistPage() {
   // 卸载兜底：清掉 window 监听与 rAF
   useEffect(() => () => dragCleanupRef.current?.(), []);
 
-  // 刷新自选股行情（批量：400+ 自选 = 1 次行情 + 1 次日K 请求）；顺带算 MA5/13 交叉徽标
+  // 刷新自选股行情：行情 / RPS / 日K 三路并行（互不阻塞，行情慢不再拖没 RPS 标签）
   const refreshQuotes = async () => {
     const codes = watchlist.map(s => s.code);
-    const quotes = await getBatchQuotes(codes);
+    const [quotes, rps, klineMap] = await Promise.all([
+      getBatchQuotes(codes),
+      fetchRpsBatch(codes),
+      getBatchKLines(codes, 20),
+    ]);
     setStockQuotes(quotes);
 
-    // 批量拉 RPS60（DB 数据，一次请求全自选）
-    if (watchlist.length > 0) {
-      try {
-        const res = await fetch(`/api/rps/batch?codes=${encodeURIComponent(watchlist.map(s => s.code).join(','))}`);
-        if (res.ok) {
-          const data = await res.json();
-          setRpsMap(data.rps ?? {});
-        }
-      } catch { /* RPS 失败不影响行情展示 */ }
-    } else {
-      setRpsMap({});
+    // RPS：成功则更新 + 写缓存；失败保留旧值（含本地缓存读入的），不清空
+    if (rps) {
+      setRpsMap(rps);
+      writeRpsCache(rps);
     }
 
     // 日K批量（daily_bars 出数）；DB 未覆盖的品种（ETF 等）逐只回落上游
-    const klineMap = await getBatchKLines(codes, 20);
     const missing = codes.filter(c => !(klineMap.get(c)?.length));
     if (missing.length > 0) {
       const fallback = await Promise.all(
@@ -206,6 +239,11 @@ export default function WatchlistPage() {
     }
     setCrossMap(cm);
   };
+
+  // 进页面先显本地缓存的 RPS60（RPS 每天预计算，缓存即最新可用值），后台刷新再覆盖
+  useEffect(() => {
+    setRpsMap(readRpsCache());
+  }, []);
 
   // 只在标的「增删」时重拉行情；position 占比、groupId 分组归属、排序变化不触发
   // （排序后与排序前代码集合相同，故 key 排序后拼接，与顺序解耦）
@@ -291,8 +329,44 @@ export default function WatchlistPage() {
       <GroupBar
         selectedId={selectedGroupId}
         onSelect={setSelectedGroupId}
-        onManage={() => setShowGroupManage(true)}
       />
+
+      {/* 列表头行：管理入口任何状态（含空态）都可达；刷新/多选仅在有标的时显示 */}
+      <div className="flex items-center justify-between mb-4">
+        <span className="text-sm text-gray-500">{activeGroupName} · {visibleWatchlist.length} 只</span>
+        <div className="flex items-center gap-3">
+          <button
+            onClick={() => setShowGroupManage(true)}
+            className="text-sm whitespace-nowrap text-[var(--color-accent)] hover:opacity-80 flex items-center gap-1"
+          >
+            <FolderCog className="w-4 h-4" />
+            管理分组
+          </button>
+          {watchlist.length > 0 && (multiSelect ? (
+            <>
+              <button onClick={toggleSelectAll} className="text-sm whitespace-nowrap text-[var(--color-accent)] hover:opacity-80">
+                {allVisibleSelected ? '全不选' : '全选'}
+              </button>
+              <button onClick={exitMultiSelect} className="text-sm whitespace-nowrap text-gray-500 hover:text-gray-700 dark:hover:text-gray-300">
+                完成
+              </button>
+            </>
+          ) : (
+            <>
+              <button
+                onClick={refreshQuotes}
+                className="text-sm whitespace-nowrap text-[var(--color-accent)] hover:opacity-80 flex items-center gap-1"
+              >
+                <TrendingUp className="w-4 h-4" />
+                刷新行情
+              </button>
+              <button onClick={() => setMultiSelect(true)} className="text-sm whitespace-nowrap text-[var(--color-accent)] hover:opacity-80">
+                多选
+              </button>
+            </>
+          ))}
+        </div>
+      </div>
 
       {/* 自选列表 */}
       {watchlist.length === 0 ? (
@@ -309,35 +383,6 @@ export default function WatchlistPage() {
         </Card>
       ) : (
         <>
-          <div className="flex items-center justify-between mb-4">
-            <span className="text-sm text-gray-500">{activeGroupName} · {visibleWatchlist.length} 只</span>
-            <div className="flex items-center gap-3">
-              {multiSelect ? (
-                <>
-                  <button onClick={toggleSelectAll} className="text-sm whitespace-nowrap text-[var(--color-accent)] hover:opacity-80">
-                    {allVisibleSelected ? '全不选' : '全选'}
-                  </button>
-                  <button onClick={exitMultiSelect} className="text-sm whitespace-nowrap text-gray-500 hover:text-gray-700 dark:hover:text-gray-300">
-                    完成
-                  </button>
-                </>
-              ) : (
-                <>
-                  <button
-                    onClick={refreshQuotes}
-                    className="text-sm whitespace-nowrap text-[var(--color-accent)] hover:opacity-80 flex items-center gap-1"
-                  >
-                    <TrendingUp className="w-4 h-4" />
-                    刷新行情
-                  </button>
-                  <button onClick={() => setMultiSelect(true)} className="text-sm whitespace-nowrap text-[var(--color-accent)] hover:opacity-80">
-                    多选
-                  </button>
-                </>
-              )}
-            </div>
-          </div>
-
           <div className="space-y-2">
             {(dragOrder
               ? dragOrder.map(c => visibleWatchlist.find(s => s.code === c)).filter((s): s is NonNullable<typeof s> => !!s)

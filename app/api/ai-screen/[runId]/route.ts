@@ -11,6 +11,7 @@
 
 import { NextRequest, NextResponse } from 'next/server';
 import { prisma } from '@/lib/db';
+import { getPreset, DEFAULT_MIN_SCREEN_SCORE } from '@/services/ai-screen/strategies';
 
 /** ts_code 形如 "600000.SH"/"000001.SZ"/"830799.BJ",按市场板过滤 */
 function matchBoard(tsCode: string, board: string): boolean {
@@ -66,8 +67,10 @@ export async function GET(request: NextRequest, { params }: { params: Promise<{ 
       }
       picks = picks.filter((p) => (sectorCodes ? sectorCodes.has(p.tsCode) : true)).filter((p) => matchBoard(p.tsCode, board));
     }
-    // 按 finalScore 重切 limit(默认 limit=入选数时等价于 selected top-N)
+    // 按 finalScore 重切 limit(默认 limit=入选数时等价于 selected top-N)；同样先过该策略的规则分门槛
+    const minScore = getPreset(run.strategyId)?.minScreenScore ?? DEFAULT_MIN_SCREEN_SCORE;
     picks = picks
+      .filter((p) => (p.screenScore ?? 0) >= minScore)
       .sort((a, b) => (b.finalScore ?? 0) - (a.finalScore ?? 0))
       .slice(0, limit);
 

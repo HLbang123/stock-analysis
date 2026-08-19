@@ -183,64 +183,6 @@ export async function GET(_request: NextRequest) {
       }));
     });
 
-    // ⑤ 优质买入建议榜（P5）：「买入」建议 + 该票历史买入胜率背书 + 本次 T+5 结果
-    // 高胜率 = 该票历史买入建议 T+5 胜率 ≥50%（样本≥2）；非常建议 = 高置信度
-    const perStockBuy = new Map<string, { count: number; wins: number }>();
-    for (const r of records) {
-      if (r.action !== '买入') continue;
-      const e5 = r.evals.find((e) => e.nDays === 5 && e.returnPct != null);
-      if (!e5) continue;
-      const g = perStockBuy.get(r.stockCode) ?? { count: 0, wins: 0 };
-      g.count++;
-      if (e5.returnPct! > 0) g.wins++;
-      perStockBuy.set(r.stockCode, g);
-    }
-    // 按股票合并：一只票只出现一次（取最近一次买入分析的信息），避免同一票刷屏
-    const perStockPick = new Map<string, {
-      last: (typeof records)[number];
-      buyCount: number;
-      track: { count: number; wins: number };
-    }>();
-    for (const r of records) {
-      if (r.action !== '买入') continue;
-      const g = perStockPick.get(r.stockCode) ?? { last: r, buyCount: 0, track: perStockBuy.get(r.stockCode) ?? { count: 0, wins: 0 } };
-      g.buyCount++;
-      if (r.entryDate > g.last.entryDate) g.last = r;
-      perStockPick.set(r.stockCode, g);
-    }
-    const pickOf = (g: { last: (typeof records)[number]; buyCount: number; track: { count: number; wins: number } }) => {
-      const r = g.last;
-      const e5 = r.evals.find((e) => e.nDays === 5);
-      return {
-        stockCode: r.stockCode,
-        stockName: r.stockName,
-        entryDate: r.entryDate,
-        entryPrice: r.entryPrice,
-        confidence: r.confidence,
-        position: r.position,
-        targetHigh: r.targetHigh,
-        stopLoss: r.stopLoss,
-        marketRegime: r.marketRegime,
-        reasoning: r.reasoning?.slice(0, 80) ?? null,
-        buyCount: g.buyCount,
-        trackCount: g.track.count,
-        trackWinRate: g.track.count > 0 ? Math.round((g.track.wins / g.track.count) * 1000) / 10 : null,
-        t5Return: e5?.returnPct ?? null,
-      };
-    };
-    const picks = Array.from(perStockPick.values()).map(pickOf);
-    // ① 高胜率背书：该票历史买入建议 T+5 胜率 ≥50% 且样本 ≥2，按胜率排
-    const backed = picks
-      .filter((p) => p.trackCount >= 2 && (p.trackWinRate ?? 0) >= 50)
-      .sort((a, b) => (b.trackWinRate ?? 0) - (a.trackWinRate ?? 0) || b.entryDate.localeCompare(a.entryDate));
-    // ② 近期高信心：近 30 天、本次置信度 ≥70，按信心→日期排（剔除已入背书组的票，避免重复）
-    const cutoff = Date.now() - 30 * 24 * 3600 * 1000;
-    const backedSet = new Set(backed.map((p) => p.stockCode));
-    const highConf = picks
-      .filter((p) => !backedSet.has(p.stockCode) && (p.confidence ?? 0) >= 70 && new Date(`${p.entryDate.slice(0, 4)}-${p.entryDate.slice(4, 6)}-${p.entryDate.slice(6, 8)}T00:00:00+08:00`).getTime() >= cutoff)
-      .sort((a, b) => (b.confidence ?? 0) - (a.confidence ?? 0) || b.entryDate.localeCompare(a.entryDate));
-    const topPicks = { backed: backed.slice(0, 15), highConf: highConf.slice(0, 15) };
-
     // ⑥ 月度趋势：按 entryDate 月份聚合 T+5（验证 P2 校准注入是否逐步起效）
     const monthMap = new Map<string, { count: number; wins: number; sumReturn: number }>();
     for (const r of records) {
@@ -288,7 +230,6 @@ export async function GET(_request: NextRequest) {
       positionBuckets,
       byRegime,
       byMonth,
-      topPicks,
     });
   } catch (e: any) {
     console.error('[api/ai/deep-eval/stats]', e);

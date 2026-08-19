@@ -13,6 +13,7 @@
  */
 
 import { prisma } from '../lib/db';
+import { DELETED_SUB_LABELS } from '../services/alertRules';
 
 /** 东八区 YYYYMMDD */
 const shDate = (d: Date) => d.toLocaleDateString('sv-SE', { timeZone: 'Asia/Shanghai' }).replace(/-/g, '');
@@ -178,6 +179,7 @@ async function main() {
   const ruleCount = new Map<string, number>();
   const stockCount = new Map<string, { name: string; n: number }>();
   for (const t of triggers) {
+    if (DELETED_SUB_LABELS.has(t.subLabel)) continue; // 已删子信号的历史记录，过滤
     ruleCount.set(t.subLabel, (ruleCount.get(t.subLabel) ?? 0) + 1);
     let s = stockCount.get(t.tsCode);
     if (!s) { s = { name: t.stockName ?? t.tsCode, n: 0 }; stockCount.set(t.tsCode, s); }

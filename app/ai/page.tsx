@@ -485,41 +485,54 @@ export default function AiPage() {
         }
       />
 
-      {/* 页面级主视图切换：分析 / AI 对话 */}
-      <Tabs
-        variant="segment"
-        className="mb-4"
-        items={[
-          { value: 'analysis', label: '分析', icon: <Brain className="w-3.5 h-3.5" /> },
-          { value: 'chat', label: 'AI 对话', icon: <Send className="w-3.5 h-3.5" /> },
-        ]}
-        value={mainTab}
-        onChange={setMainTab}
-      />
-
-      {mainTab === 'analysis' && (
-      <>
-      {/* 操作区：配置 + 模式切换 */}
+      {/* 大模型 API 配置框：分析 / 对话共用，恒显顶部 */}
       {currentProfile ? (
         <Card variant="bordered" className="mb-4 py-3 flex items-center justify-between">
-          <div>
-            <p className="text-sm font-medium">{currentProfile.name}</p>
-            <p className="text-xs text-gray-500">{currentProfile.model}</p>
+          <div className="min-w-0">
+            <p className="text-sm font-medium truncate">{currentProfile.name}</p>
+            <p className="text-xs text-gray-500 truncate">{currentProfile.model}</p>
           </div>
           <button
             onClick={() => setShowSettings(true)}
-            className="text-xs text-[var(--color-accent)] hover:opacity-80"
+            className="text-xs text-[var(--color-accent)] hover:opacity-80 shrink-0 ml-3"
           >
             切换
           </button>
         </Card>
       ) : (
         <Card variant="accent" className="mb-4 text-center">
-          <p className="text-sm text-[var(--color-brand)] mb-2">尚未配置AI服务</p>
+          <p className="text-sm text-[var(--color-brand)] mb-2">尚未配置API</p>
           <Button onClick={() => setShowSettings(true)}>添加API配置</Button>
         </Card>
       )}
 
+      {/* 页面级主视图切换：分析 / AI 对话（API 框下方，样式对齐扫描页）；未配置 API 时置灰但可点 */}
+      <div className={cn('mb-4', !currentProfile && 'opacity-60')}>
+        <Tabs
+          variant="segment"
+          size="md"
+          fullWidth
+          items={[
+            { value: 'analysis', label: '分析', icon: <Brain className="w-4 h-4" /> },
+            { value: 'chat', label: 'AI 对话', icon: <Send className="w-4 h-4" /> },
+          ]}
+          value={mainTab}
+          onChange={(v) => {
+            if (!currentProfile) toast.error('请先配置 API');
+            setMainTab(v);
+          }}
+        />
+      </div>
+
+      {/* 门禁：未配置 API 时禁用全部 AI 功能 */}
+      {!currentProfile && (
+        <div className="text-center py-20 text-gray-400">
+          <Brain className="w-16 h-16 mx-auto mb-4 opacity-20" />
+          <p className="text-base">请先添加 API 配置后使用 AI 功能</p>
+        </div>
+      )}
+      {currentProfile && mainTab === 'analysis' && (
+      <>
       {/* ===== 个股分析模式 ===== */}
       {mode === 'analyze' && (
       <>
@@ -1025,23 +1038,14 @@ export default function AiPage() {
       )}
       </>
       )}
-
-      {/* ===== AI 对话视图（独立大界面，分析结论由 AiChat 恒注入） ===== */}
-      {mainTab === 'chat' && (
-        currentProfile ? (
-          <AiChat
-            currentProfile={currentProfile}
-            selectedCode={selectedCode}
-            watchlist={effectiveWatchlist}
-            result={result}
-            deepStructured={deepResult?.structured ?? null}
-          />
-        ) : (
-          <Card variant="accent" className="mb-4 text-center">
-            <p className="text-sm text-[var(--color-brand)] mb-2">尚未配置AI服务</p>
-            <Button onClick={() => setShowSettings(true)}>添加API配置</Button>
-          </Card>
-        )
+      {currentProfile && mainTab === 'chat' && (
+        <AiChat
+          currentProfile={currentProfile}
+          selectedCode={selectedCode}
+          watchlist={effectiveWatchlist}
+          result={result}
+          deepStructured={deepResult?.structured ?? null}
+        />
       )}
 
       {/* 设置弹窗 */}

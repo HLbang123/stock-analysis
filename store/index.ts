@@ -27,6 +27,8 @@ interface StockState {
   moveStocksToGroup: (codes: string[], targetId: string | null, fromId?: string) => void;
   /** 拖动排序：orderedCodes 为完整新顺序。groupId 缺省=排「全部」(watchlist 数组)；给了=排该组 stockCodes */
   reorderStocks: (orderedCodes: string[], groupId?: string) => void;
+  /** 拖动排序分组：orderedIds 为完整新顺序（分组 tab 展示顺序） */
+  reorderGroups: (orderedIds: string[]) => void;
   addGroup: (name: string) => boolean;
   renameGroup: (groupId: string, name: string) => boolean;
   /** 删除分组；withStocks=true 时同时删除该组独有标的（其他组也有的保留） */
@@ -134,6 +136,14 @@ export const useStockStore = create<StockState>()(
             ),
           });
         }
+      },
+      reorderGroups: (orderedIds) => {
+        const rank = new Map(orderedIds.map((id, i) => [id, i]));
+        set({
+          groups: [...get().groups].sort(
+            (a, b) => (rank.get(a.id) ?? Number.MAX_SAFE_INTEGER) - (rank.get(b.id) ?? Number.MAX_SAFE_INTEGER)
+          ),
+        });
       },
       addGroup: (name) => {
         const trimmed = name.trim();

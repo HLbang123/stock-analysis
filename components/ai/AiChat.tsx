@@ -91,7 +91,9 @@ export function AiChat({ currentProfile, selectedCode, watchlist, result, deepSt
   const [isChatStreaming, setIsChatStreaming] = useState(false);
   const [attachAnalysisResult, setAttachAnalysisResult] = useState(true);
   const chatAbortRef = useRef<AbortController | null>(null);
-  const chatEndRef = useRef<HTMLDivElement>(null);
+  const chatScrollRef = useRef<HTMLDivElement>(null);
+  // 是否“钉在底部”：流式输出时默认跟随最新；用户向上滚动打断后停止跟随，滚回底部恢复
+  const stickToBottomRef = useRef(true);
   // 流式回复本地累积：每 token 只 set 本地 state 触发渲染，不写 store（避免每 token 写 localStorage）；
   // 消息结束/取消/报错时才一次性并入 store，store 仍是跨路由恢复的事实源
   const [streamingMsg, setStreamingMsg] = useState<{ content: string; reasoning?: string } | null>(null);
@@ -105,8 +107,18 @@ export function AiChat({ currentProfile, selectedCode, watchlist, result, deepSt
       scrollMountedRef.current = true;
       return;
     }
-    chatEndRef.current?.scrollIntoView({ behavior: 'smooth' });
+    // 仅当用户仍钉在底部时跟随最新输出（向上滚动打断后不再强行拽回）
+    if (stickToBottomRef.current && chatScrollRef.current) {
+      chatScrollRef.current.scrollTop = chatScrollRef.current.scrollHeight;
+    }
   }, [chatMessages, streamingMsg]);
+
+  const handleChatScroll = () => {
+    const el = chatScrollRef.current;
+    if (!el) return;
+    const nearBottom = el.scrollHeight - el.scrollTop - el.clientHeight < 48;
+    stickToBottomRef.current = nearBottom;
+  };
 
   const cancelChat = () => {
     if (chatAbortRef.current) {
@@ -157,6 +169,7 @@ export function AiChat({ currentProfile, selectedCode, watchlist, result, deepSt
     setChatInput('');
     const userMsg = { role: 'user' as const, content: msg };
     setChatMessages(prev => [...prev, userMsg]);
+    stickToBottomRef.current = true;
     setIsChatStreaming(true);
     streamBufRef.current = { content: '', reasoning: '' };
     setStreamingMsg({ content: '', reasoning: '' });
@@ -285,7 +298,7 @@ export function AiChat({ currentProfile, selectedCode, watchlist, result, deepSt
         </div>
       </div>
 
-      <div className="flex-1 min-h-0 overflow-y-auto space-y-3 mb-3">
+      <div ref={chatScrollRef} onScroll={handleChatScroll} className="flex-1 min-h-0 overflow-y-auto space-y-3 mb-3">
         {chatMessages.length === 0 && !streamingMsg && (
           <div className="h-full flex items-center justify-center px-6">
             <p className="text-sm text-gray-400 text-center">可问当前标的、自选、预警、资金流向等，直接输入问题</p>
@@ -333,7 +346,7 @@ export function AiChat({ currentProfile, selectedCode, watchlist, result, deepSt
               </div>
             </div>
           )}
-          <div ref={chatEndRef} />
+          <div />
       </div>
 
       <div className="flex gap-2 shrink-0">
@@ -350,7 +363,7 @@ export function AiChat({ currentProfile, selectedCode, watchlist, result, deepSt
         {isChatStreaming ? (
           <button
             onClick={cancelChat}
-            className="px-4 py-2.5 bg-red-500 text-white rounded-xl text-sm font-medium hover:bg-red-600 transition"
+            className="px-4 py-2.5 bg-red-500 text-white rounded-xl text-sm font-medium hover:bg-red-600 transition whitespace-nowrap shrink-0"
           >
             停止
           </button>

@@ -7,11 +7,10 @@
  */
 
 import { useState, useEffect, useCallback } from 'react';
-import Link from 'next/link';
 import { Card } from '@/components/ui/card';
-import { Activity, Target, Trophy } from 'lucide-react';
+import { Activity, Target } from 'lucide-react';
 import { cn } from '@/lib/utils';
-import { pct, signed, Metric, StatsHeader, StatsEmpty, TuningDetails } from './stats-primitives';
+import { pct, signed, Metric, StatsEmpty, TuningDetails } from './stats-primitives';
 
 interface Stats {
   summary: {
@@ -31,22 +30,11 @@ interface Stats {
   positionBuckets: { bucket: string; count: number; winRate: number | null; avgReturn: number | null }[];
   byRegime: { regime: string; action: string; count: number; winRate: number | null; avgReturn: number | null }[];
   byMonth: { month: string; count: number; winRate: number | null; avgReturn: number | null }[];
-  topPicks: {
-    backed: TopPick[];
-    highConf: TopPick[];
-  };
 }
 
 /** 低样本阈值：胜率/命中率等百分比在样本过少时灰显，避免个别样本被当成统计 */
 const weak = (count: number, min = 5) => count < min;
 const weakCls = (count: number, min = 5) => (weak(count, min) ? 'text-gray-400 dark:text-gray-500' : '');
-
-interface TopPick {
-  stockCode: string; stockName: string; entryDate: string; entryPrice: number;
-  confidence: number | null; position: number | null; targetHigh: number | null; stopLoss: number | null;
-  marketRegime: string | null; reasoning: string | null;
-  buyCount: number; trackCount: number; trackWinRate: number | null; t5Return: number | null;
-}
 
 const ACTION_TONE: Record<string, string> = {
   '买入': 'text-[var(--color-up)]',
@@ -89,12 +77,6 @@ export function DeepAnalysisStats() {
 
   return (
     <div className="space-y-4">
-      <StatsHeader
-        note={<>T+{stats?.summary.primaryN ?? 5} 胜率，样本不足显示 --</>}
-        onRefresh={load}
-        loading={loading}
-      />
-
       {!stats && !loading && !error && <StatsEmpty>暂无回测数据（深度分析落库后按日回填）</StatsEmpty>}
       {error && (
         <div className="text-center py-10">
@@ -121,16 +103,8 @@ export function DeepAnalysisStats() {
             )}
           </Card>
 
-          {/* ①.5 优质买入建议榜（P5）：按股票合并，每票一行；高胜率背书 / 近期高信心两组 */}
-          {stats.topPicks.backed.length + stats.topPicks.highConf.length > 0 && (
-            <Card className="p-4">
-              <div className="text-sm font-medium mb-1 flex items-center gap-1"><Trophy className="w-4 h-4 text-[var(--color-warning)]" /> 优质买入建议榜</div>
-              <p className="text-xs text-gray-400 mb-2">按标的合并，取最近一次分析。点击行看标的详情。</p>
-              <TopPickGroup title="高胜率背书" rows={stats.topPicks.backed} />
-              <div className="h-2" />
-              <TopPickGroup title="近期高信心" rows={stats.topPicks.highConf} />
-            </Card>
-          )}
+          {/* 校准失效报警（决策层）：高信心档胜率反而低于中/低档 = AI 过度自信，提前暴露不藏在折叠区 */}
+          <ConfidenceViolation buckets={stats.confidenceBuckets} />
 
           {/* ② 建议方向胜率榜 */}
           <Card className="p-4">
@@ -147,6 +121,7 @@ export function DeepAnalysisStats() {
                     <th className="px-2 py-1.5 text-right">T+5均值</th>
                     <th className="px-2 py-1.5 text-right">盈亏比</th>
                     <th className="px-2 py-1.5 text-right">最大回撤</th>
+                    <th className="px-2 py-1.5 text-right">最大上涨</th>
                   </tr>
                 </thead>
                 <tbody>
@@ -172,6 +147,7 @@ export function DeepAnalysisStats() {
                         ) : <span className="text-gray-300 dark:text-gray-600">--</span>}
                       </td>
                       <td className="px-2 py-1.5 text-right font-mono text-gray-500">{pct(a.byN.find(n => n.nDays === 5)?.avgMaxDrawdown, 1)}%</td>
+                      <td className="px-2 py-1.5 text-right font-mono text-gray-500">{pct(a.byN.find(n => n.nDays === 5)?.avgMaxRunup, 1)}%</td>
                     </tr>
                   ))}
                 </tbody>
@@ -272,7 +248,6 @@ export function DeepAnalysisStats() {
             <Card className="p-4">
               <div className="text-sm font-medium mb-1">置信度校准</div>
               <CalibTable rows={stats.confidenceBuckets} />
-              <ConfidenceViolation buckets={stats.confidenceBuckets} />
             </Card>
             <Card className="p-4">
               <div className="text-sm font-medium mb-1">仓位校准</div>
@@ -299,38 +274,6 @@ function ConfidenceViolation({ buckets }: { buckets: { bucket: string; count: nu
   return (
     <div className="mt-2 px-2 py-1.5 rounded-[var(--radius-md)] bg-[var(--color-danger-soft)] border border-[var(--color-danger)]/30 text-xs text-[var(--color-danger)]">
       校准失效：高信心档胜率（{pct(h?.winRate, 0)}%）低于{(m && h!.winRate! < m.winRate!) ? `中信心档（${pct(m.winRate, 0)}%）` : ''}{l && h!.winRate! < l.winRate! ? `低信心档（${pct(l.winRate, 0)}%）` : ''}——AI 在过度自信
-    </div>
-  );
-}
-
-function TopPickGroup({ title, rows }: { title: string; rows: TopPick[] }) {
-  if (rows.length === 0) return null;
-  return (
-    <div>
-      <div className="text-xs font-medium text-gray-500 mb-1.5">{title}（{rows.length}）</div>
-      <div className="space-y-1 max-h-48 overflow-y-auto">
-        {rows.map((p) => (
-          <Link key={p.stockCode} href={`/stock/${p.stockCode}`} className="flex items-center gap-2 text-xs px-2 py-1.5 rounded-[var(--radius-sm)] bg-gray-50 dark:bg-gray-800/40 hover:bg-gray-100 dark:hover:bg-gray-800 transition">
-            <span className="font-medium text-gray-900 dark:text-gray-100 whitespace-nowrap">{p.stockName}</span>
-            <span className="text-gray-400 text-[10px]">{p.entryDate.slice(4, 6)}-{p.entryDate.slice(6, 8)}</span>
-            {p.trackCount >= 2 && p.trackWinRate != null && (
-              <span className="px-1 py-0.5 rounded text-[10px] bg-[var(--color-up-soft)] text-[var(--color-up)] whitespace-nowrap">胜率 {pct(p.trackWinRate, 0)}%·{p.trackCount}次</span>
-            )}
-            {p.confidence != null && (
-              <span className={cn('px-1 py-0.5 rounded text-[10px] whitespace-nowrap', p.confidence >= 70 ? 'bg-[var(--color-warning-soft)] text-[var(--color-warning)]' : 'bg-gray-100 dark:bg-gray-700 text-gray-500')}>
-                信心 {p.confidence}
-              </span>
-            )}
-            {p.buyCount > 1 && <span className="text-gray-400 text-[10px] whitespace-nowrap">建议{p.buyCount}次</span>}
-            <span className="flex-1" />
-            {p.t5Return != null ? (
-              <span className={cn('font-mono font-medium', p.t5Return >= 0 ? 'text-[var(--color-up)]' : 'text-[var(--color-down)]')}>{signed(p.t5Return)}</span>
-            ) : (
-              <span className="text-gray-400">待回填</span>
-            )}
-          </Link>
-        ))}
-      </div>
     </div>
   );
 }

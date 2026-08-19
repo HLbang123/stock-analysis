@@ -6,7 +6,7 @@
  */
 
 import { useState, type ReactNode } from 'react';
-import { ChevronDown, ChevronUp, Loader2, RefreshCw, Wrench } from 'lucide-react';
+import { ChevronDown, ChevronUp, Wrench } from 'lucide-react';
 import { cn } from '@/lib/utils';
 
 export const pct = (v: number | null | undefined, d = 1) => (v == null ? '--' : v.toFixed(d));
@@ -21,18 +21,6 @@ export function Metric({ label, value, tone }: { label: string; value: string; t
     <div>
       <div className="text-xs text-gray-400">{label}</div>
       <div className={cn('text-lg font-semibold mt-0.5', tone === 'up' ? 'text-[var(--color-up)]' : tone === 'down' ? 'text-[var(--color-down)]' : 'text-gray-900 dark:text-white')}>{value}</div>
-    </div>
-  );
-}
-
-/** 面板头部：说明文案 + 刷新按钮 */
-export function StatsHeader({ note, onRefresh, loading }: { note: ReactNode; onRefresh: () => void; loading: boolean }) {
-  return (
-    <div className="flex items-center justify-between">
-      <p className="text-xs text-gray-500 dark:text-gray-400">{note}</p>
-      <button onClick={onRefresh} disabled={loading} className="text-xs text-[var(--color-brand)] flex items-center gap-1 disabled:opacity-50">
-        {loading ? <Loader2 className="w-3.5 h-3.5 animate-spin" /> : <RefreshCw className="w-3.5 h-3.5" />} 刷新
-      </button>
     </div>
   );
 }

@@ -395,8 +395,8 @@ function checkTieredExit(kLines: KLineData[], quote: RealtimeQuote | null, rule:
 
   // 放量离场 — 已删（08-05 回测：无区分度，胜率45.3%≈基准46.4%、均值-0.01%；破趋势线+破MA60 已覆盖同类场景）
 
-  // 跌破5日线 — 弱提醒
-  if (!isNaN(ma5[idx]) && today.close < ma5[idx] && effVol > prev1.volume * 1.1) {
+  // 跌破5日线 — 弱提醒（近2根内下穿MA5才算跌破，避免从低位反弹未站上MA5时误报）
+  if (priceCrossedBelowWithin(kLines, ma5, idx, 2) && effVol > prev1.volume * 1.1) {
     triggered.push([2, '跌破5日线', `${volRatio > 2.0 ? '放量' : '带量'}跌破5日线：收盘 ${today.close}，MA5 ${ma5[idx].toFixed(2)}`]);
   }
 
@@ -721,7 +721,8 @@ function checkMaBullAlignment(kLines: KLineData[], quote: RealtimeQuote | null, 
 
 /**
  * R12: 站稳五日线 — 连续3日收盘站上MA5，且MA5上行、站稳刚刚形成
- * （站稳前一日在MA5之下，避免上行趋势中每日重复触发）。强势确立信号。
+ * （站稳前一日在MA5之下，避免上行趋势中每日重复触发；且站稳前数日非大幅高于MA5，
+ *   过滤从高位跌回五日线的假站稳）。强势确立信号。
  */
 function checkHoldMa5(kLines: KLineData[], quote: RealtimeQuote | null, rule: AlertRule): RuleCheckResult {
   const holdDays = 3;
@@ -738,6 +739,15 @@ function checkHoldMa5(kLines: KLineData[], quote: RealtimeQuote | null, rule: Al
   if (!(ma5[idx - holdDays] > 0 && kLines[idx - holdDays].close <= ma5[idx - holdDays])) return { triggered: false };
   // MA5上行确认，过滤横盘假站稳
   if (!(ma5[idx] > ma5[idx - holdDays])) return { triggered: false };
+
+  // 过滤「从高位跌回五日线」的假站稳：站稳应在均线附近从下方新形成（反弹站稳），
+  // 若站稳前数日曾大幅高于MA5，说明是高位回落，属回踩/跌破而非反弹站稳，不报积极信号。
+  const MAX_PREV_BIAS = 0.05; // 站稳前收盘较MA5偏离超5%即视为高位跌落
+  for (let i = holdDays + 1; i <= holdDays + 5; i++) {
+    if (idx - i < 0) break;
+    const m = ma5[idx - i];
+    if (m > 0 && kLines[idx - i].close > m * (1 + MAX_PREV_BIAS)) return { triggered: false };
+  }
 
   // 量价配合：温和放量(1.0~1.8)量价配合好；暴量(>1.8)注意赶顶/放量滞涨；缩量确认度一般
   const avg5 = calculateAvgVolume(kLines.slice(0, -1), 5);
@@ -919,7 +929,7 @@ export const ALERT_RULES: AlertRule[] = [
   {
     id: 'R12',
     name: '站稳五日线',
-    description: '连续3日收盘站上MA5且MA5上行，站稳刚刚形成（站稳前一日在MA5之下），强势确立信号',
+    description: '连续3日收盘站上MA5且MA5上行，站稳刚刚形成（站稳前一日在MA5之下、非从高位跌落），强势确立信号',
     category: 'OPPORTUNITY' as any,
     level: 'INFO' as any,
     suggestion: '反弹站稳五日线，强势确立信号',
@@ -951,6 +961,18 @@ export function toTushareCode(c: string): string {
   const m = c.match(/^([a-z]{2})(\d{6})$/i);
   return m ? `${m[2]}.${m[1].toUpperCase()}` : c;
 }
+
+/**
+ * 已删除子信号的 subLabel 集合（历史触发记录仍残留在 alert_rule_triggers）。
+ * 规则代码已删这些信号，但落库记录未清理，统计/周报聚合时按此过滤，避免污染健康面板与周报口径。
+ * 清单来源 docs/rule-optimization-20260812.md 生产表 + docs/alert-rules.md 变更历史：
+ *  R01 见顶阶梯删：跳空衰竭/纺锤线见顶(08-15)、长上影见顶/长下影见顶/涨停封板(08-17)
+ *  R02 离场阶梯删：放量离场/缩量破位(08-05)、MA5拐头(08-10)
+ */
+export const DELETED_SUB_LABELS = new Set([
+  '跳空衰竭', '纺锤线见顶', '长上影见顶', '长下影见顶', '涨停封板',
+  '放量离场', '缩量破位', 'MA5拐头',
+]);
 
 /** 当日全市场涨跌停价表（stk_limit，前端预取传入）：Tushare code → { up, down }。未传入/未命中回落规则推算 */
 export type LimitPriceMap = Record<string, { up: number; down: number }>;

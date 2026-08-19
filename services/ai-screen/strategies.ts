@@ -20,6 +20,10 @@
 
 import type { StrategyPreset } from './types';
 
+/** 规则分门槛默认值：未显式配置 minScreenScore 的预设（旧预设 quality/defensive）回退到此。
+ *  门槛是「质量地板」而非择时——momentum=45（其分数自带市场信号，天然兼做择时）、balanced=40（其分数不随市场走，仅去尾巴）。 */
+export const DEFAULT_MIN_SCREEN_SCORE = 50;
+
 export const STRATEGY_PRESETS: StrategyPreset[] = [
   {
     id: 'balanced',
@@ -62,8 +66,10 @@ export const STRATEGY_PRESETS: StrategyPreset[] = [
     rulesText: [
       '硬筛：RPS(60日)70~95 · 成交额≥5千万 · 单日±7% · 60日涨幅≤60% · 量比≤2.5 · 波动率≤45% · 回撤≥-15%',
       '因子侧重：入场点50% · 质量25% · 波动20% · 箱体5%',
+      '规则分门槛：≥40（低于门槛不入选）',
     ].join('\n'),
-    maxOutput: 30,
+    maxOutput: 20,
+    minScreenScore: 40,
     llmRerank: true,
   },
   {
@@ -110,8 +116,10 @@ export const STRATEGY_PRESETS: StrategyPreset[] = [
     rulesText: [
       '硬筛：RPS(60日)70~97 · 成交额≥8千万 · 单日-5%~+7% · 60日涨幅≤60% · MA5>MA13>MA55 · 量比≤2.5 · 波动率≤60% · 回撤≥-25%',
       '因子侧重：入场点40% · 波动35% · 质量20% · 箱体5%',
+      '规则分门槛：≥45（低于门槛不入选）',
     ].join('\n'),
-    maxOutput: 30,
+    maxOutput: 20,
+    minScreenScore: 45,
     llmRerank: true,
   },
   // —— 以下两个旧预设保留（历史胜率数据延续），新 UI 不展示 ——

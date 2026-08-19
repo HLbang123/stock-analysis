@@ -39,29 +39,45 @@ export default function MarketPage() {
   const [loading, setLoading] = useState(true);
   const [limitUp, setLimitUp] = useState<LimitUpResp | null>(null);
   const [hotStocks, setHotStocks] = useState<HotStocksResp | null>(null);
+  const [limitUpLoading, setLimitUpLoading] = useState(true);
+  const [hotStocksLoading, setHotStocksLoading] = useState(true);
   const [sectorFlow, setSectorFlow] = useState<SectorFlowItem[]>([]);
   const [sectorIndex, setSectorIndex] = useState<SectorIndexItem[]>([]);
 
-  const fetchAll = useCallback(async () => {
+  // 本地 DB 预计算表：秒回，控制整页 loading
+  const fetchLocal = useCallback(async () => {
     setLoading(true);
     try {
-      const [b, m, s, lu, hs, sf, si] = await Promise.all([
+      const [b, m, s, sf, si] = await Promise.all([
         getJSON<BreadthResp>('/api/market/breadth?days=60'),
         getJSON<MarginResp>('/api/market/margin?days=120'),
         getJSON<RpsSectorsResp>('/api/rps/sectors?period=60&min=87'),
-        getJSONOr<LimitUpResp | null>('/api/limit-up', null),
-        getJSONOr<HotStocksResp | null>('/api/fuyao/hot-stocks', null),
         getJSONOr<SectorFlowResp | null>('/api/market/sector-flow?days=5', null),
         getJSONOr<SectorIndexResp | null>('/api/market/sector-index?days=1', null),
       ]);
       if (b.items) setBreadth(b.items);
       if (m.items) setMargin(m.items);
       if (s.sectors) setSectors(s.sectors);
-      if (lu && !lu.error) setLimitUp(lu);
-      if (hs && !hs.error) setHotStocks(hs);
       if (sf?.sectors) setSectorFlow(sf.sectors);
       if (si?.sectors) setSectorIndex(si.sectors);
     } catch { /* 整体失败时保持已有数据 */ } finally { setLoading(false); }
+  }, []);
+
+  // 外部数据源（同花顺涨停池/Tushare）：独立 loading，后到后补，不卡整页
+  const fetchLimitUp = useCallback(async () => {
+    setLimitUpLoading(true);
+    try {
+      const lu = await getJSONOr<LimitUpResp | null>('/api/limit-up', null);
+      if (lu && !lu.error) setLimitUp(lu);
+    } catch { /* ignore */ } finally { setLimitUpLoading(false); }
+  }, []);
+
+  const fetchHotStocks = useCallback(async () => {
+    setHotStocksLoading(true);
+    try {
+      const hs = await getJSONOr<HotStocksResp | null>('/api/fuyao/hot-stocks', null);
+      if (hs && !hs.error) setHotStocks(hs);
+    } catch { /* ignore */ } finally { setHotStocksLoading(false); }
   }, []);
 
   const fetchIdx = useCallback(async (code: string) => {
@@ -71,7 +87,9 @@ export default function MarketPage() {
     } catch { /* 指数估值失败不阻塞页面 */ }
   }, []);
 
-  useEffect(() => { fetchAll(); }, [fetchAll]);
+  useEffect(() => { fetchLocal(); }, [fetchLocal]);
+  useEffect(() => { fetchLimitUp(); }, [fetchLimitUp]);
+  useEffect(() => { fetchHotStocks(); }, [fetchHotStocks]);
   useEffect(() => { fetchIdx(idxCode); }, [idxCode, fetchIdx]);
 
   const latest = breadth[breadth.length - 1];
@@ -257,7 +275,9 @@ export default function MarketPage() {
           {/* 7. 涨停情绪（Tushare limit_list_d） */}
           <Card className="p-4">
             <h3 className="font-medium mb-1">涨停情绪</h3>
-            {(limitUp?.items?.up?.length ?? 0) > 0 ? (
+            {limitUpLoading ? (
+              <CardLoading />
+            ) : (limitUp?.items?.up?.length ?? 0) > 0 ? (
               <>
                 <p className="text-xs text-gray-500 mb-2">
                   {limitUp?.source === 'ths'
@@ -323,7 +343,9 @@ export default function MarketPage() {
           {/* 8. 热度排行 */}
           <Card className="p-4">
             <h3 className="font-medium mb-1">热度排行</h3>
-            {(hotStocks?.hot?.item?.length ?? 0) > 0 ? (
+            {hotStocksLoading ? (
+              <CardLoading />
+            ) : (hotStocks?.hot?.item?.length ?? 0) > 0 ? (
               <>
                 <p className="text-xs text-gray-500 mb-2">热门标的 Top10（24h）</p>
                 <div className="space-y-1 mb-3">
@@ -369,6 +391,15 @@ function Empty() {
     <div className="h-full min-h-[120px] flex flex-col items-center justify-center text-gray-400 gap-2">
       <LineChart className="w-8 h-8 opacity-20" />
       <p className="text-xs">数据未生成</p>
+    </div>
+  );
+}
+
+/** 卡片内局部 loading（外部数据源后到后补，不阻塞整页） */
+function CardLoading() {
+  return (
+    <div className="h-full min-h-[120px] flex items-center justify-center text-gray-400">
+      <Loader2 className="w-5 h-5 animate-spin" />
     </div>
   );
 }

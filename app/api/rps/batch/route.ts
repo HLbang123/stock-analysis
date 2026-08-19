@@ -16,12 +16,19 @@ export async function GET(request: Request) {
 
   try {
     const { prisma } = await import("@/lib/db");
-    // DISTINCT ON + (tsCode, calcDate) 索引：每票一次索引下探寻最新行，只回 1 行/票
+    // 每票一次主键 (tsCode, calcDate) 索引下探，O(log n) 取最新 rps_60。
+    // 不用 DISTINCT ON + ANY：后者在大数组时会把每票 10 年历史全排序再取首行，
+    // 且依赖统计信息选对计划——统计过期即退化全表扫（load 9 事故同源）。
     const rows: any[] = await prisma.$queryRawUnsafe(
-      `SELECT DISTINCT ON ("tsCode") "tsCode", rps_60, "calcDate"
-       FROM rps_scores
-       WHERE "tsCode" = ANY($1::text[]) AND rps_60 IS NOT NULL
-       ORDER BY "tsCode", "calcDate" DESC`,
+      `SELECT r."tsCode", r.rps_60, r."calcDate"
+       FROM unnest($1::text[]) AS c(ts_code)
+       CROSS JOIN LATERAL (
+         SELECT "tsCode", rps_60, "calcDate"
+         FROM rps_scores
+         WHERE "tsCode" = c.ts_code AND rps_60 IS NOT NULL
+         ORDER BY "calcDate" DESC
+         LIMIT 1
+       ) r`,
       [...codeToTs.values()]
     );
     const latest = new Map<string, { rps60: number | null; calcDate: string }>();

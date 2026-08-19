@@ -46,6 +46,7 @@ export interface StrategyPreset {
   rankingHints: string; // 给 LLM 的排序提示
   rulesText: string; // 给用户看的规则说明（硬筛 + 因子权重 + 组合约束）
   maxOutput: number;
+  minScreenScore?: number; // 规则分最小门槛：screenScore < 此值不入选（缺省回退 DEFAULT_MIN_SCREEN_SCORE）
   llmRerank: boolean; // 是否启用 LLM 重排
 }
 

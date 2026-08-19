@@ -13,6 +13,7 @@ import { macdStatus, rsiStatus, volatility20d, maxDrawdown20d, atr20pct, volumeR
 import { computeScreenScores } from './scorer';
 import { rankCandidates } from './ranker';
 import { applyRiskOverlay, applyPortfolioOverlay } from './risk';
+import { DEFAULT_MIN_SCREEN_SCORE } from './strategies';
 import { boxFeatures } from '@/lib/box';
 import { detectMarketRegime, tradingDayLag } from './regime';
 
@@ -177,8 +178,10 @@ export async function runScreen(preset: StrategyPreset, llmCfg?: LlmConfig, _ful
   picks = applyRiskOverlay(picks, preset);
   picks = applyPortfolioOverlay(picks, preset);
 
-  // 选中 top-N,标记 selected/rank(覆盖 overlay 临时设的 rank)
-  const selected = picks.slice(0, preset.maxOutput);
+  // 选中 top-N：先过规则分门槛，不满 N 就少选（行情差宁可空着也不硬凑）
+  const minScore = preset.minScreenScore ?? DEFAULT_MIN_SCREEN_SCORE;
+  const eligible = picks.filter((k) => k.screenScore >= minScore);
+  const selected = eligible.slice(0, preset.maxOutput);
   for (const k of picks) {
     k.selected = false;
     k.rank = 0;
@@ -301,12 +304,12 @@ export async function rescueRun(
   let picks = r.picks;
   picks = applyRiskOverlay(picks, preset);
   picks = applyPortfolioOverlay(picks, preset);
-  // 全部候选参与排序写库（尾部候选的 llm 字段也要保留），只标前 N 为选中
+  // 全部候选参与排序写库（尾部候选的 llm 字段也要保留），只标「过门槛的前 N」为选中
   for (const k of picks) {
     k.selected = false;
     k.rank = 0;
   }
-  picks.slice(0, preset.maxOutput).forEach((k, i) => {
+  picks.filter((k) => k.screenScore >= (preset.minScreenScore ?? DEFAULT_MIN_SCREEN_SCORE)).slice(0, preset.maxOutput).forEach((k, i) => {
     k.selected = true;
     k.rank = i + 1;
   });

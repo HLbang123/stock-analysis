@@ -3,7 +3,7 @@
 import { useEffect, useState, useMemo } from 'react';
 import { useParams, useRouter } from 'next/navigation';
 import { useStockStore } from '@/store';
-import { getRealtimeQuote, getKLineSina, getMinuteData, getChipData } from '@/services/stockApi';
+import { getRealtimeQuote, getKLineSina, getKLineDb, getMinuteData, getChipData } from '@/services/stockApi';
 import { isETF, parseCode } from '@/lib/identify';
 import { ALERT_RULES, checkAllRules, isBuyRule, REFERENCE_RULE_IDS } from '@/services/alertRules';
 import { computeSupportResistance, type SupportResistance } from '@/services/deep-analysis/levels';
@@ -75,9 +75,9 @@ export default function StockDetailPage() {
     setIsLoading(true);
     setError(null);
     try {
-      const [quoteData, kLineData, minData] = await Promise.all([
+      const [quoteData, dbKLine, minData] = await Promise.all([
         getRealtimeQuote(code),
-        getKLineSina(code, 240, 120),
+        getKLineDb(code, 1000),
         getMinuteData(code),
       ]);
 
@@ -86,16 +86,26 @@ export default function StockDetailPage() {
         return;
       }
 
+      // 日K历史段：优先本地 daily_bars（前复权现算，T-1 及以前，与 AI 分析/RPS 同源）；
+      // DB 无覆盖（ETF/北交所）或复权因子未回补时回落上游单只拉取。
+      let kLineData: KLineData[] = dbKLine.bars;
+      if (!dbKLine.adjFactorCovered || kLineData.length < 20) {
+        kLineData = await getKLineSina(code, 240, 120);
+      }
+
       setQuote(quoteData);
-      setKLines(kLineData);
       setMinuteData(minData || []);
 
+      // 合并今日实时 bar（DB 历史不含今日；上游历史若含今日则被实时价替换），
+      // 图表与规则/支撑压力共用同一序列，避免图与分析各看一份。
+      const mergedKLines = buildUpdatedKLines(quoteData, kLineData);
+      setKLines(mergedKLines);
+
       // 构建实时K线并检查规则
-      if (kLineData.length >= 5) {
-        const updatedKLines = buildUpdatedKLines(quoteData, kLineData);
+      if (mergedKLines.length >= 5) {
         const chip = await getChipData(code).catch(() => null);
-        const results = checkAllRules(updatedKLines, quoteData, ALERT_RULES.filter(r => r.isEnabled), chip, undefined, isETF(code));
-        setSrData(computeSupportResistance(updatedKLines, chip));
+        const results = checkAllRules(mergedKLines, quoteData, ALERT_RULES.filter(r => r.isEnabled), chip, undefined, isETF(code));
+        setSrData(computeSupportResistance(mergedKLines, chip));
 
         setRuleResults(results);
       }

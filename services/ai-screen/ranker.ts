@@ -19,6 +19,7 @@ import { buildChatUrl, buildLLMHeaders, createTimeoutSignal } from '@/lib/llm-cl
 import { formatAiError, formatNetworkError } from '@/lib/ai-error';
 import type { AiPick, LlmConfig, StrategyPreset } from './types';
 import { buildRankingPrompt, buildShardPoolContext } from './prompt';
+import { DEFAULT_MIN_SCREEN_SCORE } from './strategies';
 
 const RANK_WEIGHT = 0.4;
 const MIN_COVERAGE = 0.6;
@@ -30,7 +31,7 @@ const LLM_TIMEOUT_MS = 300_000;
 // 12288 = 2k 正文 + 10k 思考余量：保住思考深度不撞线，真实花费仍随输入/输出瘦身降 ~40%。
 // 中转若把 max_tokens 卡得更小会 400，callLlm 内自动降级重试 4096。
 const LLM_MAX_TOKENS = 12288;
-// 送 LLM 的候选数上限：规则分 top 50（比 maxOutput=30 多 20 条，让 LLM 有机会把规则分 31-50 的遗珠捞进 top 30）
+// 送 LLM 的候选数上限：过门槛候选里的规则分 top 50（比 maxOutput=20 多留余量，让 LLM 在门槛线之上仍有重排空间）
 const LLM_TOPK_CAP = 50;
 // 分片大小（08-11 实验定稿）：10/片并行 + reasoning_effort:"low" 是唯一 100% 可靠组合；
 // 片太大思考烧光预算，片太小浪费调用且跨股比较视野变窄
@@ -372,7 +373,11 @@ export async function rankCandidates(
   // 送 LLM 的候选数 = min(maxOutput, TOPK)。与 maxOutput 对齐（08-05 审计后从 15 恢复）：池尾不再有"展示但无 LLM 介入"的断层
   const topK = Math.min(LLM_TOPK_CAP, picks.length);
   const sortedByScreen = [...picks].sort((a, b) => b.screenScore - a.screenScore);
-  const candidates = sortedByScreen.slice(0, topK);
+  // 只送「过规则分门槛」的候选给 LLM：门槛线以下的最终会被 engine 选中逻辑过滤掉，
+  // 送它们只会白烧 token（弱市尤其明显）；也让 LLM 在真正有资格竞争的集合里重排
+  const minScore = preset.minScreenScore ?? DEFAULT_MIN_SCREEN_SCORE;
+  const eligibleByScreen = sortedByScreen.filter((k) => k.screenScore >= minScore);
+  const candidates = eligibleByScreen.slice(0, topK);
   const candidateMap = new Map(candidates.map((k) => [normalizeCode(k.tsCode), k]));
   // 池外候选先按规则分排好，作为 LLM 命中后的尾部
   const rest = picks.filter((k) => !candidateMap.has(normalizeCode(k.tsCode))).sort((a, b) => b.screenScore - a.screenScore);

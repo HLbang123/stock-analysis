@@ -157,6 +157,16 @@ async function main() {
   );
 
   console.log(`[compute-rps] 完成：RPS(${PERIODS.join("/")}) 已写入 ${calcDate}`);
+
+  // 写入后刷新统计信息（best-effort，失败不阻断主流程）：10 年回补后不 ANALYZE，
+  // planner 会退化全表扫（load 9 事故根因）。每日顺手刷一遍（10M 行采样，秒级）。
+  try {
+    await prisma.$executeRawUnsafe(`ANALYZE rps_scores`);
+    console.log("[compute-rps] ANALYZE rps_scores 完成");
+  } catch (e) {
+    console.warn("[compute-rps] ANALYZE rps_scores 失败（忽略）:", (e as Error).message);
+  }
+
   await prisma.$disconnect();
 }
 

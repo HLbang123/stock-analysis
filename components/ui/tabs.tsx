@@ -24,18 +24,24 @@ interface TabsProps<T extends string = string> {
   /** segment 选中态颜色，默认 purple；pills 用各色按钮时传 undefined 自行控制 */
   activeCls?: string;
   className?: string;
+  /** segment 尺寸：sm=紧凑(默认)，md=大号(页级主视图切换) */
+  size?: 'sm' | 'md';
+  /** segment 是否撑满整行（页级主视图切换用） */
+  fullWidth?: boolean;
 }
 
-export function Tabs<T extends string = string>({ items, value, onChange, variant = 'segment', activeCls, className }: TabsProps<T>) {
+export function Tabs<T extends string = string>({ items, value, onChange, variant = 'segment', activeCls, className, size = 'sm', fullWidth = false }: TabsProps<T>) {
   if (variant === 'segment') {
     return (
-      <div className={cn('flex gap-1 p-1 bg-gray-100 dark:bg-gray-800/50 rounded-lg w-fit', className)}>
+      <div className={cn('flex gap-1 p-1 bg-gray-100 dark:bg-gray-800/50 rounded-lg', fullWidth ? 'w-full' : 'w-fit', className)}>
         {items.map(it => (
           <button
             key={it.value}
             onClick={() => onChange(it.value)}
             className={cn(
-              'px-3 py-1 rounded-md text-xs font-medium flex items-center gap-1 transition',
+              'rounded-md font-medium flex items-center gap-1.5 transition',
+              size === 'md' ? 'px-4 py-1.5 text-sm' : 'px-3 py-1 text-xs',
+              fullWidth && 'flex-1 justify-center',
               value === it.value
                 ? 'bg-white dark:bg-gray-900 text-purple-600 shadow-sm'
                 : 'text-gray-500 dark:text-gray-400',

@@ -42,6 +42,27 @@ export async function getKLineSina(
 }
 
 /**
+ * 获取日K历史段（T-1 及以前，本地 daily_bars 前复权现算，不打上游）。
+ * 返回 { bars, adjFactorCovered }：adjFactorCovered=false 表示该票复权因子未回补或
+ * 无覆盖（ETF/北交所等），调用方须回落 getKLineSina 逐只拉上游。
+ */
+export async function getKLineDb(
+  symbol: string,
+  dataLen: number = 120
+): Promise<{ bars: KLineData[]; adjFactorCovered: boolean }> {
+  try {
+    const res = await fetch(`/api/kline/db?code=${encodeURIComponent(symbol)}&days=${dataLen}`);
+    if (!res.ok) return { bars: [], adjFactorCovered: false };
+    const data = await res.json();
+    if (data.error) return { bars: [], adjFactorCovered: false };
+    return { bars: (data.bars ?? []) as KLineData[], adjFactorCovered: !!data.adjFactorCovered };
+  } catch (error) {
+    console.error('获取DB日K失败:', error);
+    return { bars: [], adjFactorCovered: false };
+  }
+}
+
+/**
  * 批量实时行情（/api/quotes，腾讯多代码+服务端 5s 缓存）。
  * 自选/分享详情等整页刷新用：400 只 = 1 次请求，替代逐只 getRealtimeQuote。
  * 返回 code → quote；缺失即该票拉取失败（调用方按无行情处理）。

@@ -10,7 +10,7 @@ import { useState, useEffect, useCallback } from 'react';
 import { Card } from '@/components/ui/card';
 import { Activity } from 'lucide-react';
 import { cn } from '@/lib/utils';
-import { pct, signed, toneCls, Metric, StatsHeader, StatsEmpty, TuningDetails } from './stats-primitives';
+import { pct, signed, toneCls, Metric, StatsEmpty, TuningDetails } from './stats-primitives';
 
 interface Stats {
   primaryN: number;
@@ -25,6 +25,15 @@ interface Stats {
 /** 低样本灰显：胜率等百分比在样本过少时降级视觉权重，避免个别样本被当成统计 */
 const weak = (count: number, min = 5) => count < min;
 const weakCls = (count: number, min = 5) => (weak(count, min) ? 'text-gray-400 dark:text-gray-500' : '');
+
+/** 策略定性标签（outcome 字段，A股语义涨红跌绿）：strong/positive 偏多红，negative 偏空绿 */
+const OUTCOME_META: Record<string, { label: string; cls: string }> = {
+  strong: { label: '强', cls: 'bg-[var(--color-up)] text-white' },
+  positive: { label: '正', cls: 'bg-[var(--color-up-soft)] text-[var(--color-up)]' },
+  negative: { label: '负', cls: 'bg-[var(--color-down-soft)] text-[var(--color-down)]' },
+  mixed: { label: '混合', cls: 'bg-gray-100 dark:bg-gray-800 text-gray-500' },
+  insufficient: { label: '样本少', cls: 'bg-gray-100 dark:bg-gray-800 text-gray-400' },
+};
 
 export function AiScreenStats() {
   const [stats, setStats] = useState<Stats | null>(null);
@@ -59,12 +68,6 @@ export function AiScreenStats() {
 
   return (
     <div className="space-y-4">
-      <StatsHeader
-        note={<>T+{stats?.primaryN ?? 5} 胜率，样本不足显示 --</>}
-        onRefresh={load}
-        loading={loading}
-      />
-
       {!stats && !loading && !error && <StatsEmpty>暂无回测数据</StatsEmpty>}
       {error && (
         <div className="text-center py-10">
@@ -77,9 +80,10 @@ export function AiScreenStats() {
         <>
           {/* 整体 */}
           <Card className="p-4">
-            <div className="grid grid-cols-2 sm:grid-cols-4 gap-3 text-center">
+            <div className="grid grid-cols-2 sm:grid-cols-5 gap-3 text-center">
               <Metric label={`T+${stats.primaryN} 胜率`} value={stats.summary.winRate == null ? '--' : `${stats.summary.winRate}%`} />
               <Metric label={`T+${stats.primaryN} 均值`} value={signed(stats.summary.avg)} tone={stats.summary.avg != null ? (stats.summary.avg >= 0 ? 'up' : 'down') : undefined} />
+              <Metric label={`T+${stats.primaryN} 中位数`} value={signed(stats.summary.median)} tone={stats.summary.median != null ? (stats.summary.median >= 0 ? 'up' : 'down') : undefined} />
               <Metric label="入选样本" value={`${stats.summary.selectedCount}`} />
               <Metric label="运行次数" value={`${stats.summary.runCount}`} />
             </div>
@@ -103,18 +107,29 @@ export function AiScreenStats() {
                     <th className="px-2 py-1.5 text-right">T+5胜率</th>
                     <th className="px-2 py-1.5 text-right">T+20胜率</th>
                     <th className="px-2 py-1.5 text-right">T+5均值</th>
+                    <th className="px-2 py-1.5 text-right">T+5中位</th>
+                    <th className="px-2 py-1.5 text-right">缺失率</th>
                     <th className="px-2 py-1.5 text-right">评分</th>
                   </tr>
                 </thead>
                 <tbody>
                   {stats.strategies.map((s) => (
                     <tr key={s.strategyId} onClick={() => setFocus(s.strategyId)} className={cn('border-b border-gray-50 dark:border-gray-800/50 cursor-pointer hover:bg-gray-50 dark:hover:bg-gray-800/30', focus === s.strategyId && 'bg-purple-50/50 dark:bg-purple-950/20')}>
-                      <td className="px-2 py-1.5 font-medium">{s.strategyName}</td>
+                      <td className="px-2 py-1.5 font-medium">
+                        <span className="inline-flex items-center gap-1">
+                          {s.strategyName}
+                          {s.outcome && OUTCOME_META[s.outcome] && (
+                            <span className={cn('px-1 py-0.5 rounded text-[10px] leading-none', OUTCOME_META[s.outcome].cls)}>{OUTCOME_META[s.outcome].label}</span>
+                          )}
+                        </span>
+                      </td>
                       <td className="px-2 py-1.5 text-right text-gray-500">{s.selectedCount}/{s.evaluatedCount}</td>
                       <td className={cn('px-2 py-1.5 text-right', weakCls(s.byHoldingPeriod?.[1]?.count ?? 0))} title={weak(s.byHoldingPeriod?.[1]?.count ?? 0) ? `样本仅 ${s.byHoldingPeriod?.[1]?.count} 条` : undefined}>{pct(s.byHoldingPeriod?.[1]?.winRate, 0)}%</td>
                       <td className={cn('px-2 py-1.5 text-right font-semibold', weakCls(s.byHoldingPeriod?.[5]?.count ?? 0))} title={weak(s.byHoldingPeriod?.[5]?.count ?? 0) ? `样本仅 ${s.byHoldingPeriod?.[5]?.count} 条` : undefined}>{pct(s.byHoldingPeriod?.[5]?.winRate, 0)}%</td>
                       <td className={cn('px-2 py-1.5 text-right', weakCls(s.byHoldingPeriod?.[20]?.count ?? 0))} title={weak(s.byHoldingPeriod?.[20]?.count ?? 0) ? `样本仅 ${s.byHoldingPeriod?.[20]?.count} 条` : undefined}>{pct(s.byHoldingPeriod?.[20]?.winRate, 0)}%</td>
                       <td className={cn('px-2 py-1.5 text-right font-mono', (s.avgReturn ?? 0) >= 0 ? 'text-[var(--color-up)]' : 'text-[var(--color-down)]')}>{signed(s.avgReturn)}</td>
+                      <td className={cn('px-2 py-1.5 text-right font-mono', (s.byHoldingPeriod?.[5]?.median ?? 0) >= 0 ? 'text-[var(--color-up)]' : 'text-[var(--color-down)]')}>{signed(s.byHoldingPeriod?.[5]?.median)}</td>
+                      <td className={cn('px-2 py-1.5 text-right font-mono text-gray-500', (s.missingRate ?? 0) >= 20 ? 'text-[var(--color-warning)]' : '')}>{s.missingRate != null ? `${s.missingRate}%` : '--'}</td>
                       <td className={cn('px-2 py-1.5 text-right font-mono', weakCls(s.evaluatedCount ?? 0))} title={weak(s.evaluatedCount ?? 0) ? `样本仅 ${s.evaluatedCount} 条` : undefined}>{pct(s.performanceScore, 0)}</td>
                     </tr>
                   ))}
