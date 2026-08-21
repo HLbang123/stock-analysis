@@ -383,6 +383,7 @@ export default function AiPage() {
           break;
         } catch (e: any) {
           if (e.name === 'AbortError' || abortController.signal.aborted) throw e;
+          if (e.name === 'FatalApiError') throw e; // 致命 API 配置错误（key 失效/余额不足/模型不存在）：重试同 key 无意义，直接报真实原因，不自动续跑
           const resume = loadDeepResume();
           const hasProgress = !!resume && resume.stockCode === selectedCode && Object.keys(resume.completed).length > 0;
           if (!hasProgress || attempt >= MAX_AUTO_RESUME) throw e;

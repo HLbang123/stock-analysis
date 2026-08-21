@@ -1,6 +1,6 @@
 /**
- * 一次性迁移执行器：把 scripts/migrate-*.sql 应用到本地库。
- * 用法：npx tsx scripts/_run-migration.ts scripts/migrate-fund-profile.sql
+ * 一次性迁移执行器：把 scripts/migrations/migrate-*.sql 应用到本地库。
+ * 用法：npx tsx scripts/_run-migration.ts scripts/migrations/migrate-fund-profile.sql
  * （服务器上没有 psql 时同样可用；迁移 SQL 均幂等 IF NOT EXISTS）
  */
 import { prisma } from "../lib/db";

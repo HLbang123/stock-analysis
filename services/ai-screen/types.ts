@@ -93,7 +93,7 @@ export interface AiPick {
   atr20: number | null;
   volumeRatio: number | null;
   signalScore: number | null; // 0-100 综合技术信号(仅供 risk.ts 风险层读取,不再喂因子)
-  maBullish: boolean | null; // MA5>MA13>MA55 多头排列(trend 因子独占)
+  maBullish: boolean | null; // MA5>MA13>MA55 多头排列(仅作存储特征/requireMaBullish 硬筛;08-21 起不再喂 trend 因子)
   pullbackToMa20Pct: number | null; // (latestClose−MA20)/MA20×100,回踩深度(entry_timing 用)
   breakout20dPct: number | null; // (latestClose−20日最高)/20日最高×100,shape_status 用
   cross13: boolean | null; // 近5根内 MA5 上穿 MA13 且放量确认（5/13金叉，镜像 alertRules R04；2026-08-21 引入）

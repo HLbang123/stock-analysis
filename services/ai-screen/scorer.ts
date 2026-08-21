@@ -2,7 +2,7 @@
  * AI 筛选 — 因子打分引擎(胜率优先重构)
  *
  * 设计原则:每个因子独占一组不相交的原始信号,消除跨因子泄漏。
- * - trend    : ret60d / maBullish / macdStatus / volumeRatio / latestChange(趋势+量能确认,合并旧 momentum+activity)
+ * - trend    : ret60d / macdStatus / volumeRatio / latestChange(趋势+量能确认,合并旧 momentum+activity;maBullish 08-21 起不再喂 trend)
  * - entry_timing : rsiStatus / pullbackToMa20Pct / latestChange(趋势中回踩入场,不追顶,直接服务胜率)
  * - risk     : volatility20d / maxDrawdown20d / atr20(纯波动控制,旧 stability 瘦身,不再碰 change/volume/signal)
  * - quality  : ROE / 毛利率 / 营收增速
@@ -33,8 +33,6 @@ export const DEFAULT_SCORING_PROFILE: Record<string, number> = {
   trend_60d_overheat_penalty_slope: 0.8,
   trend_60d_breakdown_pct: -20.0,
   trend_60d_breakdown_penalty_slope: 0.7,
-  trend_ma_bullish_bonus: 8.0,
-  trend_ma_bearish_penalty: 6.0,
   macd_bullish_bonus: 6.0,
   macd_bearish_penalty: 8.0,
   trend_ideal_volume_ratio: 2.0,
