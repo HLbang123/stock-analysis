@@ -9,10 +9,10 @@
 import { randomUUID } from 'crypto';
 import type { AiPick, AiScreenRun, CandidateRaw, LlmConfig, StrategyPreset } from './types';
 import { fetchCandidates } from './candidates';
-import { macdStatus, rsiStatus, volatility20d, maxDrawdown20d, atr20pct, volumeRatio, signalScore, maBullish, pullbackToMa20Pct, breakout20dPct, chipFeatures } from './indicators';
+import { macdStatus, rsiStatus, volatility20d, maxDrawdown20d, atr20pct, volumeRatio, signalScore, maBullish, pullbackToMa20Pct, breakout20dPct, chipFeatures, maCross13 } from './indicators';
 import { computeScreenScores } from './scorer';
 import { rankCandidates } from './ranker';
-import { applyRiskOverlay, applyPortfolioOverlay } from './risk';
+import { applyRiskOverlay } from './risk';
 import { DEFAULT_MIN_SCREEN_SCORE } from './strategies';
 import { boxFeatures } from '@/lib/box';
 import { detectMarketRegime, tradingDayLag } from './regime';
@@ -40,6 +40,7 @@ export function enrichWithReason(c: CandidateRaw, preset: StrategyPreset): { pic
   const mab = maBullish(closes);
   const pb = pullbackToMa20Pct(closes);
   const bo = highs.length === closes.length ? breakout20dPct(closes, highs) : null;
+  const cross13Flag = maCross13(closes, vols); // 5/13 金叉（镜像 alertRules R04）
   const chip = chipFeatures(closes, highs, lows, vols, c.turnoverRates, c.latestClose);
   // 箱体形态特征（只算分落库攒样本，不进权重；IC 验证有效后再升因子）
   const box = highs.length === closes.length ? boxFeatures(closes, highs, lows) : null;
@@ -70,6 +71,7 @@ export function enrichWithReason(c: CandidateRaw, preset: StrategyPreset): { pic
     maBullish: mab,
     pullbackToMa20Pct: pb,
     breakout20dPct: bo,
+    cross13: cross13Flag,
     chipConcentration: chip.chipConcentration,
     chipProfitRatio: chip.chipProfitRatio,
     chipPeakPos: chip.chipPeakPos,
@@ -174,9 +176,8 @@ export async function runScreen(preset: StrategyPreset, llmCfg?: LlmConfig, _ful
     if (preset.llmRerank && !llmCfg) degradation.push('llm_config_missing');
   }
 
-  // 风险层 + 组合层
+  // 风险层（组合分散层 08-14 已随 portfolioProfile 移除）
   picks = applyRiskOverlay(picks, preset);
-  picks = applyPortfolioOverlay(picks, preset);
 
   // 选中 top-N：先过规则分门槛，不满 N 就少选（行情差宁可空着也不硬凑）
   const minScore = preset.minScreenScore ?? DEFAULT_MIN_SCREEN_SCORE;
@@ -236,6 +237,7 @@ export function dbPickToAiPick(r: any): AiPick {
     maBullish: r.maBullish ?? null,
     pullbackToMa20Pct: r.pullbackToMa20Pct ?? null,
     breakout20dPct: r.breakout20dPct ?? null,
+    cross13: r.cross13 ?? null,
     chipConcentration: r.chipConcentration ?? null,
     chipProfitRatio: r.chipProfitRatio ?? null,
     chipPeakPos: r.chipPeakPos ?? null,
@@ -303,7 +305,6 @@ export async function rescueRun(
   const r = await rankCandidates(dbPicks, preset, cfg);
   let picks = r.picks;
   picks = applyRiskOverlay(picks, preset);
-  picks = applyPortfolioOverlay(picks, preset);
   // 全部候选参与排序写库（尾部候选的 llm 字段也要保留），只标「过门槛的前 N」为选中
   for (const k of picks) {
     k.selected = false;

@@ -199,6 +199,37 @@ export function maBullish(closes: number[]): boolean | null {
   return false;
 }
 
+/**
+ * 5/13 金叉：近 within 根内 MA5 上穿 MA13 且当前仍 MA5>MA13，并放量确认。
+ * 镜像 alertRules R04（crossedAboveWithin within=2 + volConfirmed 今日量>前5日均量×1.2），
+ * 窗口放宽到 5 根以覆盖「金叉后数日内」的持续语境（筛选每日跑，R04 只在金叉当日触发）。
+ * 序列不足返回 null。
+ */
+export function maCross13(closes: number[], vols: number[], within = 5): boolean | null {
+  if (closes.length < 14) return null;
+  const ma5 = ma(closes, 5);
+  const ma13 = ma(closes, 13);
+  const n = closes.length - 1;
+  if (ma5[n] == null || ma13[n] == null) return null;
+  if (ma5[n]! <= ma13[n]!) return false; // 当前非金叉后状态
+
+  let crossed = false;
+  for (let i = n; i > n - within && i >= 1; i--) {
+    const f0 = ma5[i - 1], s0 = ma13[i - 1], f1 = ma5[i], s1 = ma13[i];
+    if (f0 == null || s0 == null || f1 == null || s1 == null) continue;
+    if (f0 <= s0 && f1 > s1) { crossed = true; break; }
+  }
+  if (!crossed) return false;
+
+  // 放量确认：今日量 > 前 5 日均量 ×1.2（镜像 R04 volConfirmed；量能数据不足时不降级）
+  if (vols.length < 6) return true;
+  const last = vols[vols.length - 1];
+  const prev = vols.slice(vols.length - 6, vols.length - 1);
+  const avg5 = prev.reduce((a, b) => a + b, 0) / prev.length;
+  if (avg5 <= 0) return true;
+  return last > avg5 * 1.2;
+}
+
 /** 距 MA20 的回踩幅度 (latestClose−MA20)/MA20×100;序列不足返回 null */
 export function pullbackToMa20Pct(closes: number[]): number | null {
   if (closes.length < 20) return null;

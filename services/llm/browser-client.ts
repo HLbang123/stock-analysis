@@ -33,7 +33,7 @@ export class LlmHttpError extends Error {
 /** 判定是否"直连不可达"（CORS/网络层/超时）→ 应降级到服务器中转。用户取消（AbortError）除外。 */
 export function isDirectConnectionError(e: unknown): boolean {
   if (!(e instanceof Error)) return false;
-  if (e.name === 'AbortError' || e.name === 'LlmHttpError') return false;
+  if (e.name === 'AbortError' || e.name === 'LlmHttpError' || e.name === 'FatalApiError') return false;
   return e.name === 'TypeError'
     || /fetch|network|超时|timeout/i.test(e.message || '');
 }

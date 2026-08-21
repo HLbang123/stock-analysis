@@ -21,7 +21,8 @@
 import type { StrategyPreset } from './types';
 
 /** 规则分门槛默认值：未显式配置 minScreenScore 的预设（旧预设 quality/defensive）回退到此。
- *  门槛是「质量地板」而非择时——momentum=45（其分数自带市场信号，天然兼做择时）、balanced=40（其分数不随市场走，仅去尾巴）。 */
+ *  门槛是「质量地板」而非择时（2026-08-21：entry_timing 横截面化后 screenScore 回归市场中性，
+ *  momentum 不再拿门槛当择时代理，择时交给 regime 标记）。 */
 export const DEFAULT_MIN_SCREEN_SCORE = 50;
 
 export const STRATEGY_PRESETS: StrategyPreset[] = [
@@ -44,14 +45,15 @@ export const STRATEGY_PRESETS: StrategyPreset[] = [
       maxDrawdown20dPctMin: -15,
     },
     factorWeights: {
-      entry_timing: 0.50,
-      quality: 0.25,
-      risk: 0.20,
+      entry_timing: 0.35,
+      quality: 0.30,
+      risk: 0.25,
       trend: 0,
       liquidity: 0,
       theme_heat: 0,
       chip: 0,
       box: 0.05, // 2026-08-15 回放验证升级（箱体内 T+5 +2~5pp）
+      cross13: 0.05, // 2026-08-21 5/13金叉（规则健康表 R04 正指）
     },
     scoringProfile: {
       risk_high_volatility_pct: 38.0,
@@ -65,17 +67,17 @@ export const STRATEGY_PRESETS: StrategyPreset[] = [
     ].join('\n'),
     rulesText: [
       '硬筛：RPS(60日)70~95 · 成交额≥5千万 · 单日±7% · 60日涨幅≤60% · 量比≤2.5 · 波动率≤45% · 回撤≥-15%',
-      '因子侧重：入场点50% · 质量25% · 波动20% · 箱体5%',
+      '因子侧重：入场点35% · 质量30% · 波动25% · 箱体5% · 金叉5%',
       '规则分门槛：≥40（低于门槛不入选）',
     ].join('\n'),
-    maxOutput: 20,
+    maxOutput: 30,
     minScreenScore: 40,
     llmRerank: true,
   },
   {
     id: 'momentum',
     name: '趋势猎手',
-    description: '强势趋势+低波入场\n波动容忍度更高，追求进攻',
+    description: '高RPS强势+低波入场\n不追成熟多头，追求进攻',
     category: 'momentum',
     hardFilters: {
       excludeSt: true,
@@ -87,20 +89,20 @@ export const STRATEGY_PRESETS: StrategyPreset[] = [
       changePctMin: -5,
       changePctMax: 7, // 单日 +9.8% 收紧到 +7%，防追高
       change60dMax: 60, // 去掉 60日涨≥5% 下限
-      requireMaBullish: true,
       volumeRatioMax: 2.5,
       volatility20dPctMax: 60,
       maxDrawdown20dPctMin: -25,
     },
     factorWeights: {
-      entry_timing: 0.40,
+      entry_timing: 0.30,
       risk: 0.35,
-      quality: 0.20,
+      quality: 0.25,
       trend: 0,
       liquidity: 0,
       theme_heat: 0,
       chip: 0,
       box: 0.05, // 2026-08-15 回放验证升级（箱体内 T+5 +2~5pp）
+      cross13: 0.05, // 2026-08-21 5/13金叉（规则健康表 R04 正指）
     },
     scoringProfile: {
       risk_high_volatility_pct: 50.0,
@@ -108,18 +110,18 @@ export const STRATEGY_PRESETS: StrategyPreset[] = [
     },
     rankingHints: [
       '优先关注：',
-      '1. 强势趋势(MA 多头、MACD 多头)但入场点不追顶(回踩 MA20、RSI 不超买)',
-      '2. 波动回撤可控的前提下选趋势最强',
+      '1. 高RPS强势但入场点不追顶(回踩 MA20、RSI 不超买，5/13金叉更佳)',
+      '2. 波动回撤可控的前提下选入场点最优',
       '3. 基本面健康加分',
       '4. 规避刚放量爆量与单日大涨后的追高',
     ].join('\n'),
     rulesText: [
-      '硬筛：RPS(60日)70~97 · 成交额≥8千万 · 单日-5%~+7% · 60日涨幅≤60% · MA5>MA13>MA55 · 量比≤2.5 · 波动率≤60% · 回撤≥-25%',
-      '因子侧重：入场点40% · 波动35% · 质量20% · 箱体5%',
-      '规则分门槛：≥45（低于门槛不入选）',
+      '硬筛：RPS(60日)70~97 · 成交额≥8千万 · 单日-5%~+7% · 60日涨幅≤60% · 量比≤2.5 · 波动率≤60% · 回撤≥-25%',
+      '因子侧重：入场点30% · 波动35% · 质量25% · 箱体5% · 金叉5%',
+      '规则分门槛：≥40（低于门槛不入选）',
     ].join('\n'),
-    maxOutput: 20,
-    minScreenScore: 45,
+    maxOutput: 30,
+    minScreenScore: 40,
     llmRerank: true,
   },
   // —— 以下两个旧预设保留（历史胜率数据延续），新 UI 不展示 ——

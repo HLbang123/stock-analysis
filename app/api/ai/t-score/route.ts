@@ -133,7 +133,11 @@ async function callLlm(systemPrompt: string, userPrompt: string, cfg: { baseUrl:
     const err = e instanceof Error ? e : new Error(String(e));
     const isAbort = err.name === 'AbortError' || /abort/i.test(err.message);
     if (isAbort) throw new Error('LLM 微调超时（60s）');
-    throw new Error(formatNetworkError(err));
+    // 只有网络层错误才走 formatNetworkError；HTTP 业务错误（formatAiError 已翻译）原样抛出
+    if (err.name === 'TypeError' || /fetch failed|ENOTFOUND|ECONNREFUSED|ECONNRESET|ETIMEDOUT|ENETUNREACH|EHOSTUNREACH/i.test(err.message || '')) {
+      throw new Error(formatNetworkError(err));
+    }
+    throw err;
   } finally {
     clear();
   }

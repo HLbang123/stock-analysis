@@ -119,9 +119,6 @@ function trend(picks: AiPick[], p: Record<string, number>): number[] {
       score = score * 0.6 + t60 * 0.4;
     }
 
-    // MA 多头排列(替代旧 signalScore 的 MA 成分,独占)
-    if (k.maBullish === true) score += p.trend_ma_bullish_bonus;
-    else if (k.maBullish === false) score -= p.trend_ma_bearish_penalty;
     // MACD 状态
     if (k.macdStatus === 'bullish') score += p.macd_bullish_bonus;
     else if (k.macdStatus === 'bearish') score -= p.macd_bearish_penalty;
@@ -137,9 +134,12 @@ function trend(picks: AiPick[], p: Record<string, number>): number[] {
   });
 }
 
-/** 入场点:趋势中回踩入场,不追顶、不接崩塌(直接服务 T+5 胜率) */
+/** 入场点:趋势中回踩入场,不追顶、不接崩塌(直接服务 T+5 胜率)。
+ *  2026-08-21 起改池内横截面排名:绝对分在 RPS≥70 动量池内被压扁(绝大多数 ∈[5,25])，
+ *  rankScore 单调变换展开到 0-100——Spearman IC 不变(10 年「唯一强正」结论保留)，
+ *  同时让 screenScore 回归市场中性、门槛回归「质量地板」语义。 */
 function entryTiming(picks: AiPick[], p: Record<string, number>): number[] {
-  return picks.map((k) => {
+  const raw = picks.map((k) => {
     const ch = k.latestChange;
     let score = 50;
     if (ch != null) {
@@ -155,6 +155,7 @@ function entryTiming(picks: AiPick[], p: Record<string, number>): number[] {
     else if (k.rsiStatus === 'overbought') score -= p.rsi_overbought_penalty;
     return clip(score, 5, 100);
   });
+  return rankScore(raw, false, 50);
 }
 
 /** 波动控制(纯风险控制,旧 stability 瘦身:不再用 change/volume/signal/drawdown) */
@@ -207,6 +208,14 @@ function box(picks: AiPick[]): number[] {
 }
 
 /**
+ * 5/13 金叉二元因子（2026-08-21 引入）：规则健康表 R04 生产胜率显著；
+ * 近 5 根内放量金叉 = 100 否则 0，与 box 同模式待 IC 验证。
+ */
+function cross13(picks: AiPick[]): number[] {
+  return picks.map((k) => (k.cross13 ? 100 : 0));
+}
+
+/**
  * 筹码峰复合因子:4 子维度各自横截面排名后加权合成。
  * 子维度权重:集中度 0.3 / 获利盘 0.3 / 峰位 0.25 / 漂移 0.15
  */
@@ -250,6 +259,7 @@ export function computeScreenScores(picks: AiPick[], preset: StrategyPreset): vo
     theme_heat: themeHeat(picks, p),
     chip: chip(picks),
     box: box(picks),
+    cross13: cross13(picks),
   };
 
   for (let i = 0; i < picks.length; i++) {

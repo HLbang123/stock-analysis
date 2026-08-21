@@ -25,6 +25,7 @@ import { getIndustry, getRealtimeQuoteCached, getKLineSinaCached, getChipData, f
 import { fetchTushareDataCached, formatTushareForPrompt } from '@/services/tushareData';
 import { getJSONOr, postJSON, getJSON } from '@/services/api';
 import { streamChatDirect, LlmHttpError, isDirectConnectionError } from '@/services/llm/browser-client';
+import { FatalApiError, isFatalApiStatus } from '@/lib/ai-error';
 import { acquireLlmSlot, noteLlmRateLimited } from './concurrency';
 import type { StockRpsResp, BreadthResp, FuyaoFundResp } from '@/types/api';
 import { isETF } from '@/lib/identify';
@@ -451,6 +452,10 @@ async function runDeepAnalysisDirect(opts: RunDeepOptions, completedMap: Record<
       });
     } catch (e: any) {
       if (e.name === 'AbortError') throw e; // 用户取消，原样冒泡
+      // 致命 API 配置错误（401/403/404/402）：不重试、不降级，直接 fail-hard
+      if (e instanceof LlmHttpError && isFatalApiStatus(e.status)) {
+        throw new FatalApiError(e.message);
+      }
       // 429 限流：学到该 key 低并发（后续调用串行排队），warnings 记一条"变慢但完整"的提示
       if (e instanceof LlmHttpError && e.status === 429) {
         if (noteLlmRateLimited(llmSlotKey) && !degraded.includes('rate_limited')) degraded.push('rate_limited');
@@ -541,6 +546,7 @@ async function runDeepAnalysisDirect(opts: RunDeepOptions, completedMap: Record<
       return await runOrReplay(stageKey, sys, usr, maxTokens, isDebate);
     } catch (e: any) {
       if (e.name === 'AbortError') throw e;
+      if (e instanceof FatalApiError) throw e; // 致命 API 配置错误（key 失效/过期/模型不存在），直接冒泡不兜底
       degraded.push(stageKey);
       console.warn(`[Deep AI Direct] ${stageKey} 失败，跳过继续：${e.message}`);
       return '';
@@ -630,6 +636,7 @@ async function runDeepAnalysisDirect(opts: RunDeepOptions, completedMap: Record<
       break;
     } catch (e: any) {
       if (e.name === 'AbortError') throw e;
+      if (e instanceof FatalApiError) throw e; // 致命 API 配置错误，不降级重试
       lastVerdictError = e.message || '未知原因';
       degraded.push(`verdict_attempt${attempt + 1}`);
       console.warn(`[Deep AI Direct] 裁决第${attempt + 1}档失败，降级重试：${e.message}`);
@@ -877,7 +884,10 @@ async function runDeepAnalysisViaServer(opts: RunDeepOptions, completedMap: Reco
 
         try {
           const msg = JSON.parse(data);
-          if (msg.error && !msg.stage) throw new Error(msg.error);
+          if (msg.error && !msg.stage) {
+            if (msg.fatal) throw new FatalApiError(msg.error); // 致命 API 配置错误，客户端不兜底
+            throw new Error(msg.error);
+          }
 
           // 辩论角色实时增量（stage=tech/risk/...）：追加到角色缓冲，拼装顺序固定
           if ((DEBATE_R1_KEYS as readonly string[]).includes(msg.stage) || (DEBATE_R2_KEYS as readonly string[]).includes(msg.stage)) {
@@ -937,6 +947,7 @@ async function runDeepAnalysisViaServer(opts: RunDeepOptions, completedMap: Reco
     }
   } catch (e: any) {
     if (e.name === 'AbortError') throw e;
+    if (e instanceof FatalApiError) throw e; // 致命 API 配置错误不兜底
     // 裁决彻底失败 → 规则兜底（levels + 规则信号），保证"最坏情况也有裁决输出"
     warnings.push('server_verdict_failed', 'fallback_rule');
     console.warn('[Deep AI Direct] 服务器中转裁决失败，退回规则兜底:', e.message);

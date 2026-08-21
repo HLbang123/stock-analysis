@@ -47,6 +47,10 @@ export function formatAiError(status: number, responseBody: string): string {
       return 'API Key 无效或已过期，请检查密钥是否正确';
     }
 
+    case 402:
+      // DeepSeek 等厂商用 402 表示账户余额不足
+      return 'API 账户余额不足，请前往平台充值';
+
     case 403:
       if (providerMsg.includes('balance') || providerMsg.includes('余额') || providerMsg.includes('quota') || providerMsg.includes('额度')) {
         return 'API 账户余额不足，请前往平台充值';
@@ -123,4 +127,24 @@ export function formatNetworkError(error: Error): string {
     return `网络连接失败: ${msg.slice(0, 120)}，请检查 Base URL 和网络`;
   }
   return `网络请求失败${code ? `（${code}）` : ''}，请检查 Base URL 是否正确、网络是否连通`;
+}
+
+/**
+ * 致命 API 配置错误：鉴权失效/配额不足/模型不存在等。
+ * 这类错误重试无意义（同样的 key/配置再试还是失败），且"降级兜底展示部分结果"会误导用户
+ * —— 应 fail-hard：直接把清晰错误抛给用户，不再走"跳过继续/规则兜底"。
+ */
+export class FatalApiError extends Error {
+  constructor(message: string) {
+    super(message);
+    this.name = 'FatalApiError';
+  }
+}
+
+/** 致命 API 状态码集合：401 鉴权失效/过期、403 权限/禁用、402 余额不足、404 模型不存在 */
+const FATAL_API_STATUS = new Set([401, 403, 404, 402]);
+
+/** 是否为"API 配置/鉴权"类致命状态码（重试无意义，应直接报错而非兜底） */
+export function isFatalApiStatus(status: number): boolean {
+  return FATAL_API_STATUS.has(status);
 }

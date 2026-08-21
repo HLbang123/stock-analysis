@@ -170,6 +170,12 @@ export function AiScreenTab() {
               <span className="bg-gray-100 text-gray-600 px-1.5 py-0.5 rounded">纯规则</span>
             )}
           </div>
+          {current.marketRegime === 'defense' && selected === 'momentum' && (
+            <div className="text-xs text-amber-600 flex items-start gap-1 mt-2">
+              <AlertTriangle className="w-3.5 h-3.5 mt-0.5 shrink-0" />
+              <span>防守期趋势型策略历史偏弱，参考即可</span>
+            </div>
+          )}
           {!current.llmReranked && current.degradation.length > 0 && (
             <div className="text-xs text-amber-600 flex items-start gap-1 mt-2">
               <AlertTriangle className="w-3.5 h-3.5 mt-0.5 shrink-0" />

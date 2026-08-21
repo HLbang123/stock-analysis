@@ -114,6 +114,8 @@ backfill-rps 完成 1035 万条（2016-12~2026-08），backtest-factors 全量�
 
 （quality/defensive 未进回测，按全市场级结论轻砍 trend/liquidity。）
 
+> **2026-08-21 后续调整**：entry_timing 改池内横截面排名（Spearman IC 不变，治 balanced 分数塌 35-40）；新增 5/13 金叉二元因子 cross13（规则健康表 R04 正指）；momentum 删 `requireMaBullish` 多头硬筛（反指）；maxOutput 20→30；minScreenScore momentum 45→40。当前权重见 services/ai-screen/strategies.ts（balanced：entry 0.35 / quality 0.30 / risk 0.25 / box 0.05 / cross13 0.05；momentum：entry 0.30 / risk 0.35 / quality 0.25 / box 0.05 / cross13 0.05）。
+
 ### ⚠️ 新发现（后续大项，未执行）
 
 **候选池全周期跑输市场**：10 年窗口池超额转负（balanced -0.22% / momentum -0.27% T+5 日均），680 天窗口为正——RPS 高位动量池是牛市产物，熊市（2018/2024 微盘）高 RPS 票补跌最狠。评分器池内有效（Top20 把 -0.27% 拉回到 -0.05%），拖后腿的是**候选池构建**。方向：弱市门控（如大盘宽度/指数均线下方时降仓或停筛），待立项。

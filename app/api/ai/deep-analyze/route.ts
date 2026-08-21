@@ -1,5 +1,5 @@
 import { NextRequest, NextResponse } from 'next/server';
-import { formatAiError, formatNetworkError } from '@/lib/ai-error';
+import { formatAiError, formatNetworkError, FatalApiError, isFatalApiStatus } from '@/lib/ai-error';
 import { buildChatUrl, buildLLMHeaders, createTimeoutSignal, llmRouteError, sseResponse } from '@/lib/llm-client';
 import { readLlmDeltas, encodeSSE, endSSE } from '@/lib/llm-stream';
 import {
@@ -109,6 +109,10 @@ export async function POST(request: NextRequest) {
                 await new Promise(r => setTimeout(r, backoff));
                 return runStage(stageKey, systemPrompt, userPrompt, 4096, attempt + 1);
               }
+              // 致命 API 配置错误（401/403/404/402）：重试无意义，直接 fail-hard
+              if (isFatalApiStatus(llmResponse.status)) {
+                throw new FatalApiError(formatAiError(llmResponse.status, errorText));
+              }
               throw new Error(`[${stageKey}] ${formatAiError(llmResponse.status, errorText)}`);
             }
 
@@ -172,6 +176,8 @@ export async function POST(request: NextRequest) {
               await new Promise(r => setTimeout(r, backoff));
               return runStage(stageKey, systemPrompt, userPrompt, maxTokens, attempt + 1);
             }
+            // 致命 API 配置错误（401/402/403/404）已由 formatAiError 翻译好，原样冒泡，别套"网络连接失败"误导
+            if (e instanceof FatalApiError) throw e;
             // 已带 [stageKey] 前缀的错误直接抛，否则用 formatNetworkError 翻译网络原因
             throw e.message?.startsWith(`[${stageKey}]`)
               ? e
@@ -224,6 +230,7 @@ export async function POST(request: NextRequest) {
             try {
               return await runOrReplay(stageKey, sys, usr, maxTokens, isDebate);
             } catch (e: any) {
+              if (e instanceof FatalApiError) throw e; // 致命 API 配置错误（key 失效/过期/模型不存在），直接冒泡不跳过
               degraded.push(stageKey);
               console.warn(`[Deep AI Proxy] ${stageKey} 失败，跳过继续：${e.message}`);
               return '';
@@ -315,6 +322,7 @@ export async function POST(request: NextRequest) {
               verdictOk = true;
               break;
             } catch (e: any) {
+              if (e instanceof FatalApiError) throw e; // 致命 API 配置错误，不降级重试
               degraded.push(`verdict_attempt${attempt + 1}`);
               console.warn(`[Deep AI Proxy] 裁决第${attempt + 1}档失败，降级重试：${e.message}`);
               // reset：让客户端清掉已流式的残片，防降级结果前缀重复
@@ -324,8 +332,13 @@ export async function POST(request: NextRequest) {
           }
         } catch (e: any) {
           console.error('[Deep AI Proxy] 分析失败:', e.message);
-          // 裁决彻底失败：客户端收到 error 后会自动退回规则兜底，保证"最坏也有裁决"
-          encodeSSE(encoder, controller, { error: `${e.message || '分析失败'}，已退回规则引擎兜底` });
+          if (e instanceof FatalApiError) {
+            // 致命 API 配置错误：明确报错，客户端据 fatal 标志不兜底
+            encodeSSE(encoder, controller, { error: e.message, fatal: true });
+          } else {
+            // 裁决彻底失败：客户端收到 error 后会自动退回规则兜底，保证"最坏也有裁决"
+            encodeSSE(encoder, controller, { error: `${e.message || '分析失败'}，已退回规则引擎兜底` });
+          }
         } finally {
           clearInterval(heartbeat);
           endSSE(encoder, controller);

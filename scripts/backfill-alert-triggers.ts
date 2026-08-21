@@ -25,11 +25,18 @@ function toTushareCode(c: string): string {
 async function main() {
   const limit = parseInt(process.argv.find((a) => a.startsWith('--limit='))?.split('=')[1] || '100000');
 
-  // 交易日序列（升序）
-  const dayRows = await prisma.$queryRawUnsafe<{ tradeDate: string }[]>(
-    `SELECT DISTINCT "tradeDate" FROM daily_bars ORDER BY "tradeDate" ASC`
-  );
-  const days = dayRows.map((d) => d.tradeDate);
+  // 交易日序列（升序）：递归 CTE 松散索引扫描，取代 DISTINCT 全表扫（daily_bars 千万级）
+  const dayRows = await prisma.$queryRawUnsafe<{ d: string }[]>(`
+    WITH RECURSIVE dates AS (
+      (SELECT "tradeDate" AS d FROM daily_bars ORDER BY "tradeDate" DESC LIMIT 1)
+      UNION ALL
+      SELECT (SELECT "tradeDate" FROM daily_bars WHERE "tradeDate" < dates.d ORDER BY "tradeDate" DESC LIMIT 1)
+      FROM dates
+      WHERE dates.d IS NOT NULL
+    )
+    SELECT d FROM dates WHERE d IS NOT NULL LIMIT 4000
+  `);
+  const days = dayRows.map((r) => r.d).reverse();
   const dayIndex = new Map(days.map((d, i) => [d, i]));
   console.log(`[backfill-alert-triggers] 交易日 ${days.length} 天（${days[0]}~${days[days.length - 1]}）`);
 

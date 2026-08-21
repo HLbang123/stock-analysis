@@ -1,5 +1,5 @@
 import { NextRequest, NextResponse } from 'next/server';
-import { formatAiError } from '@/lib/ai-error';
+import { formatAiError, formatNetworkError } from '@/lib/ai-error';
 import { buildChatUrl, buildLLMHeaders, createTimeoutSignal, llmRouteError, sseResponse } from '@/lib/llm-client';
 import { readLlmDeltas, readLlmDeltasWithTools, encodeSSE, endSSE } from '@/lib/llm-stream';
 import { CHAT_TOOLS, executeTool } from '@/lib/chat-tools';
@@ -165,7 +165,8 @@ async function streamFinalAnswer(
     });
   } catch (e: any) {
     clear();
-    encodeSSE(encoder, controller, `⚠️ AI 请求失败：${formatAiError(500, e.message)}`);
+    // fetch 网络层失败（非 HTTP 业务错误），用 formatNetworkError 翻译真实原因，别套 500
+    encodeSSE(encoder, controller, `⚠️ AI 请求失败：${formatNetworkError(e)}`);
     return;
   }
   clear();

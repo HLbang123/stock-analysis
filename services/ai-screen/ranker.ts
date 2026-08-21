@@ -296,7 +296,13 @@ async function callLlm(prompt: string, cfg: LlmConfig): Promise<LlmTextResult> {
     const err = e instanceof Error ? e : new Error(String(e));
     const isAbort = err.name === 'AbortError' || /abort/i.test(err.message || '');
     if (isAbort) throw new Error(`LLM 重排超时（${LLM_TIMEOUT_MS / 1000}s）`);
-    throw new Error(formatNetworkError(err));
+    // 只有网络层错误（fetch TypeError / 网络关键字）才走 formatNetworkError；
+    // 已是 formatAiError 翻译好的 HTTP 业务错误（401/402/403/404/429/5xx）原样抛出，
+    // 别套"网络连接失败"误导（如 402 余额不足被错标成网络问题）
+    if (err.name === 'TypeError' || /fetch failed|ENOTFOUND|ECONNREFUSED|ECONNRESET|ETIMEDOUT|ENETUNREACH|EHOSTUNREACH/i.test(err.message || '')) {
+      throw new Error(formatNetworkError(err));
+    }
+    throw err;
   } finally {
     clear();
   }
