@@ -963,16 +963,37 @@ export function toTushareCode(c: string): string {
 }
 
 /**
- * 已删除子信号的 subLabel 集合（历史触发记录仍残留在 alert_rule_triggers）。
- * 规则代码已删这些信号，但落库记录未清理，统计/周报聚合时按此过滤，避免污染健康面板与周报口径。
- * 清单来源 docs/rule-optimization-20260812.md 生产表 + docs/alert-rules.md 变更历史：
- *  R01 见顶阶梯删：跳空衰竭/纺锤线见顶(08-15)、长上影见顶/长下影见顶/涨停封板(08-17)
- *  R02 离场阶梯删：放量离场/缩量破位(08-05)、MA5拐头(08-10)
+ * 当前活跃的 (ruleId → subLabel) 白名单 —— 健康面板/周报聚合的唯一过滤事实源。
+ * 只认当前 14 条规则实际产出的信号；历史落库里已删除/改名的信号自动排除：
+ *   - 整条规则删除：妇联定律（旧 R04，08-05 重排移除）
+ *   - 子信号改名：站稳五日线加仓（现仅「站稳五日线」）
+ *   - 跨规则重排残留：5/13金叉@R05、5/10金叉@R06（同一名字在一处合法、另一处非法）
+ * 旧 DELETED_SUB_LABELS 黑名单已废弃：按 subLabel 全局过滤，抓不住「同一 subLabel 在不同 ruleId 下
+ * 一处合法一处非法」的跨规则残留。改规则时须同步维护本表（subLabel 散在 check* 函数字符串字面量里，
+ * 无单一事实源，见 [[alert-rules-refactor-plan]]）。
  */
-export const DELETED_SUB_LABELS = new Set([
-  '跳空衰竭', '纺锤线见顶', '长上影见顶', '长下影见顶', '涨停封板',
-  '放量离场', '缩量破位', 'MA5拐头',
-]);
+export const ACTIVE_RULE_SIGNALS: Record<string, string[]> = {
+  R01: ['对子顶', '巨量见顶', '第二波见顶', '涨停炸板', '巨量异动'],
+  R02: ['急跌', '5/13死叉', '5/10死叉', '破趋势线+破MA60', '有效跌破10日线', '跌破5日线', '破趋势线', '跌破10日线待确认'],
+  R03: ['跌破55日线'],
+  R04: ['5/13金叉'],
+  R05: ['5/10金叉'],
+  R06: ['止跌企稳'],
+  R07: ['RSI超卖'],
+  R08: ['反包入场'],
+  R09: ['黄金位反弹'],
+  R10: ['箱体信号'],
+  R11: ['均线多头排列'],
+  R12: ['站稳五日线'],
+  R13: ['筹码低位密集'],
+  R14: ['筹码高位套牢'],
+};
+
+/** (ruleId, subLabel) 是否当前活跃信号 —— 健康面板/周报聚合过滤用。ruleId 未识别也返回 false（含孤儿 ruleId）。 */
+export function isActiveSignal(ruleId: string, subLabel: string): boolean {
+  const labels = ACTIVE_RULE_SIGNALS[ruleId];
+  return !!labels && labels.includes(subLabel);
+}
 
 /** 当日全市场涨跌停价表（stk_limit，前端预取传入）：Tushare code → { up, down }。未传入/未命中回落规则推算 */
 export type LimitPriceMap = Record<string, { up: number; down: number }>;

@@ -13,7 +13,7 @@
  */
 
 import { prisma } from '../lib/db';
-import { DELETED_SUB_LABELS } from '../services/alertRules';
+import { isActiveSignal } from '../services/alertRules';
 
 /** 东八区 YYYYMMDD */
 const shDate = (d: Date) => d.toLocaleDateString('sv-SE', { timeZone: 'Asia/Shanghai' }).replace(/-/g, '');
@@ -173,20 +173,22 @@ async function main() {
   // ── 预警：本周触发 Top ─────────────────────────────────────────
   const triggers = await prisma.alertRuleTrigger.findMany({
     where: { barDate: { gte: ws, lte: we } },
-    select: { subLabel: true, stockName: true, tsCode: true },
+    select: { ruleId: true, subLabel: true, stockName: true, tsCode: true },
     take: 50000,
   });
   const ruleCount = new Map<string, number>();
   const stockCount = new Map<string, { name: string; n: number }>();
+  let kept = 0;
   for (const t of triggers) {
-    if (DELETED_SUB_LABELS.has(t.subLabel)) continue; // 已删子信号的历史记录，过滤
+    if (!isActiveSignal(t.ruleId, t.subLabel)) continue; // 已删/改名/跨规则残留信号，过滤
+    kept++;
     ruleCount.set(t.subLabel, (ruleCount.get(t.subLabel) ?? 0) + 1);
     let s = stockCount.get(t.tsCode);
     if (!s) { s = { name: t.stockName ?? t.tsCode, n: 0 }; stockCount.set(t.tsCode, s); }
     s.n++;
   }
   const alerts = {
-    total: triggers.length,
+    total: kept,
     topRules: [...ruleCount.entries()].sort((a, b) => b[1] - a[1]).slice(0, 8).map(([label, n]) => ({ label, n })),
     topStocks: [...stockCount.entries()].sort((a, b) => b[1].n - a[1].n).slice(0, 5).map(([, s]) => s),
   };

@@ -1,81 +1,79 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { prisma } from '@/lib/db';
-import { DELETED_SUB_LABELS } from '@/services/alertRules';
+import { isActiveSignal } from '@/services/alertRules';
 
 /**
- * 预警规则健康统计 — 面板卡数据源
- * 按 ruleId+subLabel 聚合触发样本：T+5/T+10 胜率与均值、近 30 天样本（趋势）、触发频率。
- * 只统计有回填结果的样本（t5Return != null）；胜率口径 = T+5 绝对收益 > 0。
+ * 预警规则健康统计 — SQL 下推聚合版。
+ * 单条 GROUP BY 直接算好各 (ruleId, subLabel) 的 T+5/T+10 胜率与均值、近30天样本，
+ * 只回几十行，替代旧的「findMany 拉最多 10 万行进 JS 聚合」——近180天窗口 11.5 万行
+ * 已超 take:100000 静默截断（且无 orderBy，截掉的是任意子集），是 20s 主因 + 统计失真根因。
+ * 过滤改 (ruleId, subLabel) 白名单（isActiveSignal），已删/改名/跨规则残留信号自动排除。
  */
-
 export async function GET(request: NextRequest) {
   try {
     const days = parseInt(new URL(request.url).searchParams.get('days') || '180');
-    // 近 N 天按「触发日 barDate」过滤（YYYYMMDD 字符串，命中 idx_alert_triggers_bardate 索引）。
-    // 原按 createdAt 过滤无索引走全表扫描，且回放历史记录 createdAt 均为回放时刻、会把历史触发误算进近 N 天。
     const since = new Date(Date.now() - days * 86400000).toLocaleDateString('sv-SE', { timeZone: 'Asia/Shanghai' }).replace(/-/g, '');
-
-    const rows = await prisma.alertRuleTrigger.findMany({
-      where: { barDate: { gte: since } },
-      select: { ruleId: true, subLabel: true, t5Return: true, t10Return: true, barDate: true },
-      take: 100000,
-    });
-
-    // 按规则+子信号聚合；"近30天"按触发日(barDate)而非落库时间——回放补的历史样本
-    // createdAt 是回放时刻，按它算会把旧样本全计进近30天，趋势列失真
-    const map = new Map<string, { ruleId: string; subLabel: string; n: number; t5s: number[]; t10s: number[]; recent30: number; recent30Wins: number }>();
-    // 规则级聚合（R01/R02 阶梯含多个子信号，规则级 = 各子信号合并，供「整条规则」判断）
-    const ruleMap = new Map<string, { n: number; t5s: number[]; t10s: number[]; recent30: number; recent30Wins: number }>();
     const cut30 = new Date(Date.now() - 30 * 86400000).toLocaleDateString('sv-SE', { timeZone: 'Asia/Shanghai' }).replace(/-/g, '');
-    for (const r of rows) {
-      if (DELETED_SUB_LABELS.has(r.subLabel)) continue; // 已删子信号的历史记录，过滤
-      const key = `${r.ruleId}:${r.subLabel}`;
-      let a = map.get(key);
-      if (!a) { a = { ruleId: r.ruleId, subLabel: r.subLabel, n: 0, t5s: [], t10s: [], recent30: 0, recent30Wins: 0 }; map.set(key, a); }
-      if (r.t5Return == null) continue;
-      a.n++;
-      a.t5s.push(r.t5Return);
-      if (r.t10Return != null) a.t10s.push(r.t10Return);
-      if (r.barDate >= cut30) { a.recent30++; if (r.t5Return > 0) a.recent30Wins++; }
-      let ra = ruleMap.get(r.ruleId);
-      if (!ra) { ra = { n: 0, t5s: [], t10s: [], recent30: 0, recent30Wins: 0 }; ruleMap.set(r.ruleId, ra); }
-      ra.n++;
-      ra.t5s.push(r.t5Return);
-      if (r.t10Return != null) ra.t10s.push(r.t10Return);
-      if (r.barDate >= cut30) { ra.recent30++; if (r.t5Return > 0) ra.recent30Wins++; }
+
+    const rows = await prisma.$queryRawUnsafe<Array<{
+      rule_id: string; sub_label: string;
+      n: number; wins5: number; sum5: number | null;
+      n10: number; wins10: number; sum10: number | null;
+      recent30: number; recent30_wins: number;
+    }>>(
+      `SELECT rule_id, sub_label,
+              COUNT(*)::int AS n,
+              COUNT(*) FILTER (WHERE t5_return > 0)::int AS wins5,
+              SUM(t5_return) AS sum5,
+              COUNT(t10_return)::int AS n10,
+              COUNT(*) FILTER (WHERE t10_return > 0)::int AS wins10,
+              SUM(t10_return) AS sum10,
+              COUNT(*) FILTER (WHERE bar_date >= $2)::int AS recent30,
+              COUNT(*) FILTER (WHERE bar_date >= $2 AND t5_return > 0)::int AS recent30_wins
+       FROM alert_rule_triggers
+       WHERE bar_date >= $1
+         AND t5_return IS NOT NULL
+       GROUP BY rule_id, sub_label`,
+      since,
+      cut30
+    );
+
+    const active = rows.filter((r) => isActiveSignal(r.rule_id, r.sub_label));
+
+    // 子信号级聚合
+    const stats = active
+      .map((r) => ({
+        ruleId: r.rule_id,
+        subLabel: r.sub_label,
+        count: r.n,
+        winRate5: r.n > 0 ? Math.round((r.wins5 / r.n) * 1000) / 10 : null,
+        avgReturn5: r.n > 0 && r.sum5 != null ? Math.round((r.sum5 / r.n) * 100) / 100 : null,
+        winRate10: r.n10 > 0 ? Math.round((r.wins10 / r.n10) * 1000) / 10 : null,
+        recent30Count: r.recent30,
+        recent30WinRate: r.recent30 > 0 ? Math.round((r.recent30_wins / r.recent30) * 1000) / 10 : null,
+      }))
+      .sort((a, b) => b.count - a.count);
+
+    // 规则级聚合（R01/R02 阶梯合并子信号；结果仅几十行，JS 加总即可，等价旧 ruleMap）
+    const agg = new Map<string, { n: number; wins5: number; sum5: number; n10: number; wins10: number; sum10: number; recent30: number; recent30Wins: number }>();
+    for (const r of active) {
+      let a = agg.get(r.rule_id);
+      if (!a) { a = { n: 0, wins5: 0, sum5: 0, n10: 0, wins10: 0, sum10: 0, recent30: 0, recent30Wins: 0 }; agg.set(r.rule_id, a); }
+      a.n += r.n; a.wins5 += r.wins5; a.sum5 += r.sum5 ?? 0;
+      a.n10 += r.n10; a.wins10 += r.wins10; a.sum10 += r.sum10 ?? 0;
+      a.recent30 += r.recent30; a.recent30Wins += r.recent30_wins;
     }
-
-    const stats = [...map.entries()].map(([key, a]) => {
-      const win5 = a.t5s.length ? Math.round((a.t5s.filter((x) => x > 0).length / a.t5s.length) * 1000) / 10 : null;
-      const avg5 = a.t5s.length ? Math.round((a.t5s.reduce((x, y) => x + y, 0) / a.t5s.length) * 100) / 100 : null;
-      const win10 = a.t10s.length ? Math.round((a.t10s.filter((x) => x > 0).length / a.t10s.length) * 1000) / 10 : null;
-      return {
-        ruleId: a.ruleId,
-        subLabel: a.subLabel,
-        count: a.n,
-        winRate5: win5,
-        avgReturn5: avg5,
-        winRate10: win10,
-        recent30Count: a.recent30,
-        recent30WinRate: a.recent30 > 0 ? Math.round((a.recent30Wins / a.recent30) * 1000) / 10 : null,
-      };
-    }).sort((x, y) => y.count - x.count);
-
-    // 规则级聚合行（R01/R02 阶梯合并子信号；其余单信号规则 = 自身）
-    const rules = [...ruleMap.entries()].map(([ruleId, a]) => {
-      const win5 = a.t5s.length ? Math.round((a.t5s.filter((x) => x > 0).length / a.t5s.length) * 1000) / 10 : null;
-      const avg5 = a.t5s.length ? Math.round((a.t5s.reduce((x, y) => x + y, 0) / a.t5s.length) * 100) / 100 : null;
-      const win10 = a.t10s.length ? Math.round((a.t10s.filter((x) => x > 0).length / a.t10s.length) * 1000) / 10 : null;
-      return {
+    const rules = [...agg.entries()]
+      .map(([ruleId, a]) => ({
         ruleId,
         count: a.n,
-        winRate5: win5,
-        avgReturn5: avg5,
-        winRate10: win10,
+        winRate5: a.n > 0 ? Math.round((a.wins5 / a.n) * 1000) / 10 : null,
+        avgReturn5: a.n > 0 ? Math.round((a.sum5 / a.n) * 100) / 100 : null,
+        winRate10: a.n10 > 0 ? Math.round((a.wins10 / a.n10) * 1000) / 10 : null,
         recent30Count: a.recent30,
         recent30WinRate: a.recent30 > 0 ? Math.round((a.recent30Wins / a.recent30) * 1000) / 10 : null,
-      };
-    }).sort((x, y) => y.count - x.count);
+      }))
+      .sort((a, b) => b.count - a.count);
 
     return NextResponse.json({ stats, rules });
   } catch (e: any) {
