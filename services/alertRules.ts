@@ -989,6 +989,22 @@ export const ACTIVE_RULE_SIGNALS: Record<string, string[]> = {
   R14: ['筹码高位套牢'],
 };
 
+/** 阶梯规则（R01/R02）：subLabel 落库取自 extraData.triggered 的子信号，与规则名不同，需手动维护白名单。 */
+const TIERED_RULE_IDS = new Set(['R01', 'R02']);
+
+// 开发期自检：新增规则号 / 单信号规则改名却忘了同步 ACTIVE_RULE_SIGNALS 时启动即报错，
+// 避免健康面板与周报把新信号静默当「已删除」漏统计（生产跳过）。
+if (process.env.NODE_ENV !== 'production') {
+  const missingIds = ALERT_RULES.filter((r) => !(r.id in ACTIVE_RULE_SIGNALS) || ACTIVE_RULE_SIGNALS[r.id].length === 0).map((r) => r.id);
+  const renamed = ALERT_RULES
+    .filter((r) => !TIERED_RULE_IDS.has(r.id))
+    .filter((r) => ACTIVE_RULE_SIGNALS[r.id]?.length !== 1 || ACTIVE_RULE_SIGNALS[r.id][0] !== r.name)
+    .map((r) => r.id);
+  if (missingIds.length || renamed.length) {
+    throw new Error(`[alertRules] ACTIVE_RULE_SIGNALS 与 ALERT_RULES 失配：缺登记=${missingIds.join(',') || '无'}，规则名不符=${renamed.join(',') || '无'}`);
+  }
+}
+
 /** (ruleId, subLabel) 是否当前活跃信号 —— 健康面板/周报聚合过滤用。ruleId 未识别也返回 false（含孤儿 ruleId）。 */
 export function isActiveSignal(ruleId: string, subLabel: string): boolean {
   const labels = ACTIVE_RULE_SIGNALS[ruleId];

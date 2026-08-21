@@ -1,9 +1,9 @@
 /**
- * AI 筛选 — 风险层 + 组合分散层
+ * AI 筛选 — 风险层
  *
  * 译自 alphasift risk.py，删 PE/PB/日线数据质量相关风险点（本项目无该数据）；新增筹码高位套牢风险点。
  * 风险层独立于总分：累加风险点 → 封顶扣分 → 可选一票否决。
- * 组合层：LLM 标的 sector 映射到风险桶，同桶超配递增扣分（封顶 3 倍步长）。
+ * （组合分散层 08-14 已随 portfolioProfile 移除，桶映射函数 08-21 一并清理。）
  */
 
 import type { AiPick, StrategyPreset } from './types';
@@ -28,46 +28,6 @@ export const DEFAULT_RISK_PROFILE: Record<string, number> = {
   chip_high_trap_points: 1.5,
   max_penalty: 12.0,
 };
-
-/** 行业规范化别名（译自 risk.py:248-266） */
-const SECTOR_ALIASES: Record<string, string[]> = {
-  券商: ['券商', '证券'],
-  银行: ['银行'],
-  保险: ['保险'],
-  地产: ['地产', '房地产'],
-  医药: ['医药', '医疗', '创新药'],
-  白酒: ['白酒', '酿酒'],
-  半导体: ['半导体', '芯片'],
-  AI算力: ['AI算力', '算力', '数据中心'],
-  新能源: ['新能源', '光伏', '锂电', '电池'],
-};
-
-/** 默认风险桶（译自 risk.py:37-45） */
-const DEFAULT_BUCKETS: Record<string, string[]> = {
-  金融: ['券商', '银行', '保险', '金融'],
-  地产链: ['地产', '房地产', '建材', '家居', '物业'],
-  新能源: ['新能源', '光伏', '锂电', '电池', '储能'],
-  AI算力: ['AI算力', '算力', '数据中心', '服务器', '光模块'],
-  消费: ['白酒', '食品', '家电', '零售', '消费'],
-  医药: ['医药', '医疗', '创新药'],
-  半导体: ['半导体', '芯片'],
-};
-
-function canonicalSector(raw: string): string {
-  const s = raw.slice(0, 40);
-  for (const [canon, aliases] of Object.entries(SECTOR_ALIASES)) {
-    if (aliases.some((a) => s.includes(a))) return canon;
-  }
-  return s;
-}
-
-function portfolioBucket(sector: string, theme: string, buckets: Record<string, string[]>): string {
-  const text = `${sector} ${theme}`;
-  for (const [bucket, kws] of Object.entries(buckets)) {
-    if (kws.some((kw) => text.includes(kw))) return bucket;
-  }
-  return sector || '其他';
-}
 
 function mergeRiskProfile(preset: StrategyPreset): Record<string, number> {
   const out = { ...DEFAULT_RISK_PROFILE };
@@ -151,32 +111,3 @@ export function applyRiskOverlay(picks: AiPick[], preset: StrategyPreset, vetoHi
   return kept;
 }
 
-/** 组合分散层：同风险桶超配递增扣分 */
-export function applyPortfolioOverlay(picks: AiPick[], preset: StrategyPreset): AiPick[] {
-  const profile = preset.portfolioProfile;
-  if (!profile) return picks;
-  const maxSame = profile.maxSameBucket ?? 1;
-  const step = profile.concentrationPenalty ?? 4;
-  if (step <= 0) return picks;
-  const buckets = { ...DEFAULT_BUCKETS, ...(profile.buckets ?? {}) };
-
-  const sorted = [...picks].sort((a, b) => b.finalScore - a.finalScore);
-  const counts: Record<string, number> = {};
-  for (const k of sorted) {
-    const sector = canonicalSector(k.llmSector || k.industry || '');
-    const bucket = portfolioBucket(sector, k.llmTheme, buckets);
-    counts[bucket] = (counts[bucket] ?? 0) + 1;
-    const excess = counts[bucket] - maxSame;
-    if (excess > 0) {
-      const penalty = Math.min(step * excess, step * 3);
-      k.portfolioPenalty = penalty;
-      k.finalScore = Math.round((k.finalScore - penalty) * 10000) / 10000;
-      if (!k.riskFlags.includes(`portfolio_sector_concentration:${bucket}`)) {
-        k.riskFlags.push(`portfolio_sector_concentration:${bucket}`);
-      }
-    }
-  }
-  sorted.sort((a, b) => b.finalScore - a.finalScore);
-  sorted.forEach((k, i) => (k.rank = i + 1));
-  return sorted;
-}

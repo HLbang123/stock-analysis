@@ -242,14 +242,12 @@ export async function POST(request: NextRequest) {
           // 分析师在后台跑，R2 反驳链不依赖分析师报告 → R1 完成后立即启动 R2，让 R2 串行耗时与分析师生成重叠（提速，质量不变）
           const analystPromise = safeRunOrReplay('analyst', stage1.systemPrompt, stage1.userPrompt, 12288);
           analystPromise.catch(() => {}); // 后台 promise 仅在用户取消时 reject，统一由后续 await 处理
-          const r1Settled = await Promise.allSettled([
+          // safeRunOrReplay 已把非致命失败吞成空串，Promise.all 只让 FatalApiError 冒泡（不再 allSettled 吞致命错误）
+          const [t1, r1, x1] = await Promise.all([
             safeRunOrReplay('tech', buildTechR1SystemPrompt(), debateData, 4096, true),
             safeRunOrReplay('risk', buildRiskR1SystemPrompt(), debateData, 4096, true),
             safeRunOrReplay('xinjie', buildXinJieR1DebatePrompt(), debateData, 4096, true),
           ]);
-          const t1 = (r1Settled[0] as PromiseFulfilledResult<string>).value;
-          const r1 = (r1Settled[1] as PromiseFulfilledResult<string>).value;
-          const x1 = (r1Settled[2] as PromiseFulfilledResult<string>).value;
 
           // ===== R2：串行反驳链（宽容；前一步失败用空串占位）=====
           console.log('[Deep AI Proxy] Wave 2: R2 rebuttal chain (tolerant)');

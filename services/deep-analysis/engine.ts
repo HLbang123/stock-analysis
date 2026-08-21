@@ -558,14 +558,12 @@ async function runDeepAnalysisDirect(opts: RunDeepOptions, completedMap: Record<
   // 分析师在后台跑，R2 反驳链不依赖分析师报告 → R1 完成后立即启动 R2，让 R2 串行耗时与分析师生成重叠（提速，质量不变）
   const analystPromise = safeRun('analyst', ctx.stage1.systemPrompt, ctx.stage1.userPrompt, 12288);
   analystPromise.catch(() => {}); // 后台 promise 仅在用户取消时 reject，统一由后续 await 处理
-  const r1Settled = await Promise.allSettled([
+  // safeRun 已把非致命失败吞成空串，Promise.all 只让 Abort/Fatal 冒泡（不再 allSettled 吞致命错误）
+  const [t1, r1, x1] = await Promise.all([
     safeRun('tech', buildTechR1SystemPrompt(), debateData, 4096, true),
     safeRun('risk', buildRiskR1SystemPrompt(), debateData, 4096, true),
     safeRun('xinjie', buildXinJieR1DebatePrompt(), debateData, 4096, true),
   ]);
-  const t1 = (r1Settled[0] as PromiseFulfilledResult<string>).value;
-  const r1 = (r1Settled[1] as PromiseFulfilledResult<string>).value;
-  const x1 = (r1Settled[2] as PromiseFulfilledResult<string>).value;
 
   // ===== R2：串行反驳链（宽容；前一步失败用空串占位，不阻断后续）=====
   const techR2Ctx = `前面两人的第一轮发言：\n${r1}\n${x1}\n\n请回应以上两人的观点。`;
