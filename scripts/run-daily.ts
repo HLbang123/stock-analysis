@@ -14,6 +14,10 @@ const STEPS: { name: string; cmd: string; fatal?: boolean }[] = [
   { name: "基金日线", cmd: "npx tsx scripts/sync-fund-daily.ts", fatal: false },
   { name: "涨跌停价", cmd: "npx tsx scripts/sync-stock-limit.ts", fatal: false },
   { name: "大盘宽度", cmd: "npx tsx scripts/compute-market-breadth.ts" },
+  // 复盘日历：指数日线 → 日级快照+冰点 → 三态重算（新功能，失败不阻断日任务）
+  { name: "指数日线", cmd: "npx tsx scripts/sync-index-daily.ts", fatal: false },
+  { name: "复盘日历快照", cmd: "npx tsx scripts/compute-review-calendar.ts", fatal: false },
+  { name: "复盘日历状态", cmd: "npx tsx scripts/compute-review-regime.ts", fatal: false },
   // 吸筹箱体预计算（扫描器箱体条件/后续突破预警的数据源，失败不阻断）
   { name: "箱体形态", cmd: "npx tsx scripts/compute-box.ts", fatal: false },
   { name: "行业指数", cmd: "npx tsx scripts/sync-sw-daily.ts" },

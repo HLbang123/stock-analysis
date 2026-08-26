@@ -160,7 +160,7 @@ export function AiScreenTab() {
                 current.marketRegime === 'attack'
                   ? 'bg-red-100 text-red-700 dark:bg-red-950/40 dark:text-red-400'
                   : 'bg-green-100 text-green-700 dark:bg-green-950/40 dark:text-green-400')}>
-                {current.marketRegime === 'attack' ? '进攻期' : '防守期'}
+                {current.marketRegime === 'attack' ? '活跃' : current.marketRegime === 'defense' ? '收缩' : '震荡'}
               </span>
             )}
             <span>候选 {current.candidateCount} → 入选 {current.pickCount}</span>

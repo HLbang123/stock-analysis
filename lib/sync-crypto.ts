@@ -36,8 +36,14 @@ export function generateIdentity(): { syncId: string; syncKeyBytes: Uint8Array }
 
 /** 6 位数字配对码（允许前导零） */
 export function generatePairCode(): string {
-  const n = crypto.getRandomValues(new Uint32Array(1))[0] % 1000000;
-  return n.toString().padStart(6, '0');
+  // 拒绝采样消除取模偏差：2^32 % 10^6 ≠ 0，直接取模会让 0~294967295 区间的码出现概率略高
+  const MAX = 1_000_000;
+  const LIMIT = Math.floor(0x1_0000_0000 / MAX) * MAX; // 2^32 以内最大的 MAX 倍数
+  let n = 0;
+  do {
+    n = crypto.getRandomValues(new Uint32Array(1))[0];
+  } while (n >= LIMIT);
+  return (n % MAX).toString().padStart(6, '0');
 }
 
 const gzipSupported = typeof CompressionStream !== 'undefined';

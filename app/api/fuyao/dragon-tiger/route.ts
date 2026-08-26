@@ -10,19 +10,12 @@ export async function GET(request: Request) {
   const date = searchParams.get("date") || undefined;
   // 代码归一化为 thscode：支持 6 位纯数字(600519→600519.SH)、sina 格式(sh600519)、thscode 原样
   const rawCode = searchParams.get("code")?.trim() || "";
-  let code: string | undefined;
-  if (/^\d{6}$/.test(rawCode)) {
-    code = `${rawCode}.${rawCode.startsWith("6") ? "SH" : rawCode.startsWith("4") || rawCode.startsWith("8") ? "BJ" : "SZ"}`;
-  } else if (/^[a-z]{2}\d{6}$/i.test(rawCode)) {
-    code = `${rawCode.slice(2)}.${rawCode.slice(0, 2).toUpperCase()}`;
-  } else if (rawCode) {
-    code = rawCode.toUpperCase();
-  }
   if (!["all", "org", "hot_money"].includes(board)) {
     return Response.json({ error: "board 仅支持 all/org/hot_money" }, { status: 400 });
   }
   try {
-    const { getDragonTigerList } = await import("@/lib/fuyao");
+    const { getDragonTigerList, normalizeThscode } = await import("@/lib/fuyao");
+    const code = rawCode ? normalizeThscode(rawCode) : undefined;
     const data = await getDragonTigerList(board, date);
     if (code) {
       // 个股过滤：all/org 过滤 stock_items；hot_money 过滤每个游资的 rows 并剔除空游资

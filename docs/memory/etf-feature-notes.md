@@ -27,7 +27,7 @@ ETF 功能路线（2026-08-14 与用户定稿）：
 - **tushare etf_basic（8000分）**：index_code/index_name 跟踪指数 + etf_type(境内/QDII)；积分不够则解析 benchmark 文本兜底
 - **tushare fund_adj（600分）基金复权因子** → 红利 ETF 除息跳空会致 R02 破位假信号（正确性问题，提到 P0）；fund_daily_bars 加 adj_factor
 - tushare etf_share_size（8000分）：每日份额+总规模+净值+收盘价（清盘预警+折溢价+申赎动向）；积分不够则 fuyao nav 算折溢价
-- 待确认：用户 tushare 积分是否 ≥8000（决定 etf_basic/etf_share_size 可用性）
+- ~~待确认：tushare 积分是否 ≥8000~~ → **已定：账号 6000 分，不够**（[[project-architecture]] 数据源节）。\`etf_basic\`/\`etf_share_size\` 用不了 → 跟踪指数解析 \`benchmark\` 文本兜底、折溢价走 fuyao nav。
 
 **How to apply**: 动手顺序 = ①品种 profile 落库(fund_basic 分类+名称关键词兜底 T+0) ②预警适配(禁chip+R01裁剪+波动档缩放+复权修正) ③ETF_TSCORE_PROFILE ④深度分析 ETF prompt 包+数据块。基金快照换手率直接用不用自算。详见 [[fuyao-integration]] [[alert-rules-refactor-plan]] [[tscore-feature]] [[deep-analysis-feature]]
 

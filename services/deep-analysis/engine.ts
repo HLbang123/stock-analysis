@@ -192,6 +192,13 @@ export async function prepareDeepContext(
   const indicatorResult = calculateIndicators(updatedKLines);
   const indicatorBlock = formatIndicatorsForPrompt(indicatorResult);
 
+  // MA60 压制提示：近60日涨幅≥30% 且现价逼近 MA60 时，提示短期回落风险（十年回放：强势标的触线后 T+5/T+10 胜率明显走低）
+  let ma60PressureNote = '';
+  if (rpsRes && !rpsRes.error && typeof rpsRes.ret60 === 'number' && indicatorResult.ma60 > quote.price && quote.price >= indicatorResult.ma60 * 0.95 && rpsRes.ret60 >= 30) {
+    ma60PressureNote = `\n[压力提示] 该标的近60日上涨${rpsRes.ret60.toFixed(0)}%，现价 ${quote.price} 逼近 MA60（${indicatorResult.ma60.toFixed(2)}），强势标的触及该位置后短期回落风险偏高，追高需谨慎。\n`;
+  }
+  const indicatorBlockWithNote = indicatorBlock + ma60PressureNote;
+
   const tradeLevels = computeKeyLevels({
     kLines: updatedKLines,
     indicators: indicatorResult,
@@ -203,8 +210,8 @@ export async function prepareDeepContext(
     marketRegime,
     breadthDate: breadthLatest?.date,
   });
-  // 背离提示同时进裁决 prompt（stage3 只带 levelsText，不带 marketStatusNote）
-  const levelsText = formatLevelsForPrompt(tradeLevels) + (regimeConflictNote ? `\n${regimeConflictNote.trim()}` : '');
+  // 背离提示同时进裁决 prompt（stage3 只带 levelsText，不带 marketStatusNote）；MA60 压力提示也一并进入裁决
+  const levelsText = formatLevelsForPrompt(tradeLevels) + (ma60PressureNote ? `\n${ma60PressureNote.trim()}` : '') + (regimeConflictNote ? `\n${regimeConflictNote.trim()}` : '');
 
   const reflectionBlock = buildReflectionContext(selectedCode, history, { price: quote.price, changePercent: quote.changePercent });
 
@@ -237,11 +244,11 @@ export async function prepareDeepContext(
 
   const stage1 = {
     systemPrompt: buildAnalystSystemPrompt(etf),
-    userPrompt: marketStatusNote + rpsNote + etfHoldingsNote + chipNote + buildAnalystUserPrompt(selectedCode, stock.name, quoteJson, klineSummary, engineSummary, indicatorBlock, reflectionBlock, positionNote, etf, tushareBlock, getIndustry(selectedCode)),
+    userPrompt: marketStatusNote + rpsNote + etfHoldingsNote + chipNote + buildAnalystUserPrompt(selectedCode, stock.name, quoteJson, klineSummary, engineSummary, indicatorBlockWithNote, reflectionBlock, positionNote, etf, tushareBlock, getIndustry(selectedCode)),
   };
   const stage2 = {
     systemPrompt: '',
-    userPrompt: buildDebateDataPrompt(selectedCode, stock.name, quoteJson, indicatorBlock, marketStatusNote, engineSummary, klineSummary20, chipNote),
+    userPrompt: buildDebateDataPrompt(selectedCode, stock.name, quoteJson, indicatorBlockWithNote, marketStatusNote, engineSummary, klineSummary20, chipNote),
   };
   const compactQuote = `当前价 ${quote.price} 元，涨跌 ${quote.changePercent.toFixed(2)}%（昨收 ${quote.preClose}，开盘 ${quote.open}，最高 ${quote.high}，最低 ${quote.low}）`;
   const stage3 = {

@@ -137,6 +137,20 @@ function applyRemoteBlob(plain: string) {
   } catch { return; }
   if ((blob.v !== 1 && blob.v !== 2 && blob.v !== 3) || !blob.data) return;
   const d = blob.data;
+
+  // 被移出检测：远端设备清单明确存在、不含本机、且本机不是刚配对的新设备（lastVersion>0），
+  // 说明本机被另一端移除——清身份退出同步，避免本机又把自己写回清单并继续更新数据。
+  const remoteDevices = Array.isArray(d.devices) ? (d.devices as SyncDeviceEntry[]) : null;
+  const stBefore = useSyncStore.getState();
+  const selfInRemote = stBefore.deviceId && remoteDevices
+    ? remoteDevices.some((x) => x.id === stBefore.deviceId)
+    : true;
+  if (remoteDevices && !selfInRemote && stBefore.enabled && stBefore.lastVersion > 0) {
+    stBefore.clearIdentity();
+    toast.info('你已被移出同步组');
+    return;
+  }
+
   applyingRemote = true;
   try {
     // 多组映射规整：default 组已废弃 → 删除；v1/v2 标的的 groupId 收集进对应组 stockCodes（与本地 persist 迁移同口径）
@@ -202,6 +216,12 @@ export async function pull(): Promise<boolean> {
   if (!key) return false;
   try {
     const res = await fetch(`/api/sync?syncId=${encodeURIComponent(st.syncId)}`);
+    if (res.status === 404) {
+      // 云端快照已被某个设备删除（该设备关闭了同步）→ 本机也退出，不再重新建快照
+      useSyncStore.getState().clearIdentity();
+      toast.info('云端同步已被关闭');
+      return false;
+    }
     if (!res.ok) return false;
     const data = await res.json();
     if (!data.blob || typeof data.blob !== 'string') return false;
@@ -221,6 +241,11 @@ export async function checkAndPull(): Promise<boolean> {
   if (!st.enabled || !st.syncId) return false;
   try {
     const res = await fetch(`/api/sync?syncId=${encodeURIComponent(st.syncId)}&versionOnly=1`);
+    if (res.status === 404) {
+      useSyncStore.getState().clearIdentity();
+      toast.info('云端同步已被关闭');
+      return false;
+    }
     if (!res.ok) return false;
     const data = await res.json();
     if (typeof data.version === 'number' && data.version > st.lastVersion) return pull();
@@ -295,7 +320,12 @@ export async function redeemPairCode(code: string): Promise<{ ok: boolean; error
     const keyHash = await sha256Hex(keyB64);
     useSyncStore.getState().setIdentity(data.syncId, keyB64, keyHash);
     lastUploadedHash = '';
-    await pull();
+    const pulled = await pull();
+    if (!pulled || !useSyncStore.getState().enabled) {
+      // pull 可能因快照不存在/网络失败/被移出而清空身份，不能装作恢复成功
+      useSyncStore.getState().clearIdentity();
+      return { ok: false, error: '恢复失败，云端快照不可用' };
+    }
     // 拉完立即上传注册本机，原设备才能看到新设备
     await upload(true);
     return { ok: true };
@@ -353,8 +383,8 @@ export async function renameDevice(targetId: string, name: string): Promise<void
 }
 
 /** 从共享清单移除一台设备（本机不可移除）。
- *  清单是共享数据且所有设备同一把钥匙（零知识，服务器无法区分设备），无法强制踢出同步组：
- *  被移除设备若仍活跃，下次上传会自行重新注册出现（对清理"不再使用的旧设备"场景正确）。 */
+ *  清单是共享数据，本机移除后会上传一份不含该设备的清单；被移除设备下次联系时会发现自己不在清单里并自动退出同步。
+ *  注：这是协作式移除——若有人改本地存储硬加回，仍可绕过；要防那种情况需要密钥轮换（当前未实现）。 */
 export async function removeDevice(targetId: string): Promise<void> {
   const st = useSyncStore.getState();
   if (!st.enabled || !st.syncId || targetId === st.deviceId) return;

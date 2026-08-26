@@ -30,7 +30,7 @@ export function defaultDeviceName(): string {
   const mobile = /Android/i.test(ua) ? 'Android' : /iPhone/i.test(ua) ? 'iPhone' : /iPad/i.test(ua) ? 'iPad' : '';
   if (mobile) return mobile;
   const browser = /Edg\//i.test(ua) ? 'Edge' : /Chrome\//i.test(ua) ? 'Chrome' : /Firefox\//i.test(ua) ? 'Firefox' : /Safari\//i.test(ua) ? 'Safari' : '浏览器';
-  const os = /Windows/i.test(navigator.platform || '') ? 'Windows' : /Mac/i.test(navigator.platform || '') ? 'Mac' : /Linux/i.test(navigator.platform || '') ? 'Linux' : '';
+  const os = /Win/i.test(navigator.platform || '') ? 'Windows' : /Mac/i.test(navigator.platform || '') ? 'Mac' : /Linux/i.test(navigator.platform || '') ? 'Linux' : '';
   return os ? `${os} ${browser}` : browser;
 }
 

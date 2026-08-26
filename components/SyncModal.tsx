@@ -7,7 +7,7 @@
  * 无表情、无确认按钮、无二维码（用户拍板的简化）。
  */
 
-import { useEffect, useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import { Modal } from '@/components/ui/modal';
 import { cn } from '@/lib/utils';
 import { toast } from 'sonner';
@@ -43,6 +43,7 @@ export function SyncModal({ open, onClose }: { open: boolean; onClose: () => voi
   const [editingId, setEditingId] = useState<string | null>(null);
   const [editName, setEditName] = useState('');
   const [busyRefresh, setBusyRefresh] = useState(false);
+  const renamingRef = useRef(false);
 
   // 配对码倒计时
   useEffect(() => {
@@ -122,11 +123,16 @@ export function SyncModal({ open, onClose }: { open: boolean; onClose: () => voi
   };
 
   const saveRename = async () => {
-    if (!editingId) return;
+    if (!editingId || renamingRef.current) return;
+    renamingRef.current = true;
     const id = editingId;
     setEditingId(null);
-    if (!editName.trim()) return;
-    await renameDevice(id, editName);
+    try {
+      if (!editName.trim()) return;
+      await renameDevice(id, editName);
+    } finally {
+      renamingRef.current = false;
+    }
   };
 
   const doRemove = async (d: SyncDeviceEntry) => {
@@ -163,18 +169,18 @@ export function SyncModal({ open, onClose }: { open: boolean; onClose: () => voi
               已有配对码？
               <span className="h-px flex-1 bg-gray-100 dark:bg-gray-800" />
             </div>
-            <div className="flex gap-2">
+            <div className="flex flex-col gap-2 sm:flex-row sm:items-center">
               <input
                 value={redeemInput}
                 onChange={(e) => setRedeemInput(e.target.value.replace(/\D/g, '').slice(0, 6))}
                 placeholder="6 位数字"
                 inputMode="numeric"
-                className="flex-1 px-3 py-2 rounded-lg border border-gray-200 dark:border-gray-700 bg-transparent text-sm text-center tracking-[0.4em] font-mono"
+                className="w-full min-w-0 px-3 py-2 rounded-lg border border-gray-200 dark:border-gray-700 bg-transparent text-sm text-center tracking-[0.4em] font-mono sm:flex-1"
               />
               <button
                 onClick={doRedeem}
                 disabled={busy}
-                className="px-4 py-2 rounded-lg text-sm font-medium bg-gray-100 dark:bg-gray-800 text-gray-700 dark:text-gray-200 hover:bg-gray-200 dark:hover:bg-gray-700 disabled:opacity-50"
+                className="w-full px-4 py-2 rounded-lg text-sm font-medium bg-gray-100 dark:bg-gray-800 text-gray-700 dark:text-gray-200 hover:bg-gray-200 dark:hover:bg-gray-700 disabled:opacity-50 sm:w-auto sm:shrink-0"
               >
                 恢复
               </button>

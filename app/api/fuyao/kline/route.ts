@@ -16,18 +16,9 @@ export async function GET(request: Request) {
     return Response.json({ error: "adjust 仅支持 none/forward/backward" }, { status: 400 });
   }
 
-  // 归一化为 thscode
-  let thscode: string;
-  if (/^\d{6}$/.test(rawCode)) {
-    thscode = `${rawCode}.${rawCode.startsWith("6") ? "SH" : rawCode.startsWith("4") || rawCode.startsWith("8") ? "BJ" : "SZ"}`;
-  } else if (/^[a-z]{2}\d{6}$/i.test(rawCode)) {
-    thscode = `${rawCode.slice(2)}.${rawCode.slice(0, 2).toUpperCase()}`;
-  } else {
-    thscode = rawCode.toUpperCase();
-  }
-
   try {
-    const { getHistoricalK } = await import("@/lib/fuyao");
+    const { getHistoricalK, normalizeThscode } = await import("@/lib/fuyao");
+    const thscode = normalizeThscode(rawCode);
     const end = Date.now();
     const start = end - days * 86400_000;
     const data = await getHistoricalK(thscode, start, end, adjust as "none" | "forward" | "backward");

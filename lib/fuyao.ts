@@ -6,9 +6,12 @@
 
 // tsx 脚本不会自动加载 .env.local，手动加载（与 lib/tushare.ts 同模式）
 import dotenv from "dotenv";
+import { getCached, setCache } from "./cache";
 dotenv.config({ path: ".env.local" });
 
 const BASE_URL = "https://fuyao.aicubes.cn";
+const MAX_RETRIES = 2;         // 仅限 429/5xx/网络错误，业务错误不重试
+const RETRY_BASE_MS = 500;     // 500ms → 1000ms 退避
 
 function getKey(): string {
   const key = process.env.FUYAO_API_KEY;
@@ -16,7 +19,24 @@ function getKey(): string {
   return key;
 }
 
-/** 统一请求方法 */
+/** 网络类错误才重试；业务错误和参数错误直接抛出 */
+function isRetryableError(e: unknown): boolean {
+  const msg = e instanceof Error ? e.message : String(e ?? "");
+  return msg.includes("fetch failed") || msg.includes("network") || msg.includes("ECONN");
+}
+
+function sleep(ms: number): Promise<void> {
+  return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+interface FuyaoEnvelope {
+  code?: number;
+  message?: string;
+  request_id?: string;
+  data?: unknown;
+}
+
+/** 统一请求方法：带 request_id 与有界退避重试（仅 429/5xx/网络错误） */
 export async function fuyaoGet<T = any>(path: string, params?: Record<string, string>): Promise<T> {
   const url = new URL(`${BASE_URL}${path}`);
   if (params) {
@@ -24,15 +44,80 @@ export async function fuyaoGet<T = any>(path: string, params?: Record<string, st
       if (v) url.searchParams.set(k, v);
     }
   }
-  const res = await fetch(url.toString(), {
-    headers: { "X-api-key": getKey() },
-    signal: AbortSignal.timeout(15000),
-  });
-  const json = await res.json();
-  if (json.code !== 0) {
-    throw new Error(`同花顺API错误 [${json.code}]: ${json.message}`);
+
+  for (let attempt = 0; attempt <= MAX_RETRIES; attempt++) {
+    let res: Response;
+    try {
+      res = await fetch(url.toString(), {
+        headers: { "X-api-key": getKey() },
+        signal: AbortSignal.timeout(15000),
+      });
+    } catch (e) {
+      if (isRetryableError(e) && attempt < MAX_RETRIES) {
+        await sleep(RETRY_BASE_MS * 2 ** attempt);
+        continue;
+      }
+      throw e;
+    }
+
+    const json = (await res.json().catch(() => null)) as FuyaoEnvelope | null;
+    const requestId = json?.request_id ? ` (request_id=${json.request_id})` : "";
+    const message = json?.message || `HTTP ${res.status}`;
+
+    // HTTP 传输层错误：只对 429/5xx 退避重试
+    if (!res.ok || !json || typeof json.code !== "number") {
+      if ((res.status === 429 || res.status >= 500) && attempt < MAX_RETRIES) {
+        await sleep(RETRY_BASE_MS * 2 ** attempt);
+        continue;
+      }
+      throw new Error(`同花顺API错误 [${json?.code ?? res.status}]: ${message}${requestId}`);
+    }
+
+    // 业务错误：不重试
+    if (json.code !== 0) {
+      throw new Error(`同花顺API错误 [${json.code}]: ${message}${requestId}`);
+    }
+
+    return json.data as T;
   }
-  return json.data as T;
+
+  throw new Error(`同花顺API请求失败（已重试 ${MAX_RETRIES} 次）: ${path}`);
+}
+
+/** 归一化为同花顺 thscode：600519 / sh600519 / 600519.SH 均可 */
+export function normalizeThscode(raw: string): string {
+  const code = raw.trim().toUpperCase();
+  if (!code) return "";
+  if (/^\d{6}$/.test(code)) {
+    const suffix = code.startsWith("6")
+      ? "SH"
+      : code.startsWith("4") || code.startsWith("8")
+        ? "BJ"
+        : "SZ";
+    return `${code}.${suffix}`;
+  }
+  if (/^[A-Z]{2}\d{6}$/.test(code)) {
+    return `${code.slice(2)}.${code.slice(0, 2)}`;
+  }
+  return code;
+}
+
+/** 读多写少的 fuyao 快照缓存：新鲜缓存直接返回，拉取失败时回退软过期数据 */
+async function cachedFuyao<T>(
+  dataType: string,
+  params: Record<string, string>,
+  fetcher: () => Promise<T>
+): Promise<T> {
+  const cached = getCached<T>(dataType, params);
+  if (cached && !cached.isStale) return cached.data;
+  try {
+    const data = await fetcher();
+    setCache(dataType, data, params);
+    return data;
+  } catch (e) {
+    if (cached) return cached.data;
+    throw e;
+  }
 }
 
 // ===== 类型定义 =====
@@ -85,9 +170,12 @@ export interface HotStockItem {
 
 // ===== API 方法 =====
 
-/** 个股异动原因列表（可选按标签过滤） */
+/** 个股异动原因列表（可选按标签过滤，短时缓存） */
 export async function getAnomalyList(tagCodes?: string): Promise<{ timestamp: number; item: AnomalyItem[] }> {
-  return fuyaoGet("/api/a-share/special-data/anomaly-analysis-list", tagCodes ? { tag_codes: tagCodes } : undefined);
+  const params: Record<string, string> = tagCodes ? { tag_codes: tagCodes } : {};
+  return cachedFuyao("fuyao_anomaly", params, () =>
+    fuyaoGet("/api/a-share/special-data/anomaly-analysis-list", tagCodes ? { tag_codes: tagCodes } : undefined)
+  );
 }
 
 /** 按股票查询异动原因 */
@@ -95,24 +183,34 @@ export async function getAnomalyByStock(thscodes: string): Promise<{ timestamp: 
   return fuyaoGet("/api/a-share/special-data/anomaly-analysis-stock", { thscodes });
 }
 
-/** 涨停股票池 */
+/** 涨停股票池（短时缓存，30s 内复用） */
 export async function getLimitUpPool(): Promise<{ timestamp: number; item: LimitUpItem[] }> {
-  return fuyaoGet("/api/a-share/special-data/limit-up-pool");
+  return cachedFuyao("fuyao_limit_up", {}, () =>
+    fuyaoGet("/api/a-share/special-data/limit-up-pool")
+  );
 }
 
-/** 连板天梯（近30交易日） */
+/** 连板天梯（近30交易日，短时缓存） */
 export async function getLimitUpLadder(): Promise<LimitUpLadderData> {
-  return fuyaoGet("/api/a-share/special-data/limit-up-ladder");
+  return cachedFuyao("fuyao_limit_up_ladder", {}, () =>
+    fuyaoGet("/api/a-share/special-data/limit-up-ladder")
+  );
 }
 
-/** 热股榜单 Top30 */
+/** 热股榜单 Top30（短时缓存） */
 export async function getHotStockList(level: "24h" | "1h" = "24h"): Promise<{ timestamp: number; item: HotStockItem[] }> {
-  return fuyaoGet("/api/a-share/special-data/hot-stock-list", { level });
+  const params = { level };
+  return cachedFuyao("fuyao_hot_stock", params, () =>
+    fuyaoGet("/api/a-share/special-data/hot-stock-list", params)
+  );
 }
 
-/** 飙升榜 Top30（period: day 日榜 / hour 小时榜） */
+/** 飙升榜 Top30（period: day 日榜 / hour 小时榜，短时缓存） */
 export async function getSkyrocketList(period: "day" | "hour" = "hour"): Promise<{ timestamp: number; item: HotStockItem[] }> {
-  return fuyaoGet("/api/a-share/special-data/skyrocket-list", { period });
+  const params = { period };
+  return cachedFuyao("fuyao_skyrocket", params, () =>
+    fuyaoGet("/api/a-share/special-data/skyrocket-list", params)
+  );
 }
 
 // ===== 龙虎榜 =====
@@ -164,10 +262,10 @@ export async function getDragonTigerList(
   boardType: "all" | "org" | "hot_money" = "all",
   date?: string
 ): Promise<DragonTigerData> {
-  return fuyaoGet("/api/a-share/special-data/dragon-tiger-list", {
-    board_type: boardType,
-    ...(date ? { date } : {}),
-  });
+  const params: Record<string, string> = { board_type: boardType, ...(date ? { date } : {}) };
+  return cachedFuyao("fuyao_dragon_tiger", params, () =>
+    fuyaoGet("/api/a-share/special-data/dragon-tiger-list", params)
+  );
 }
 
 // ===== 历史 K 线（前复权，单票最长10年） =====

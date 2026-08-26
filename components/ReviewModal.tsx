@@ -10,17 +10,19 @@
 import { useState } from 'react';
 import { Modal } from '@/components/ui/modal';
 import { cn } from '@/lib/utils';
-import { CalendarDays, Brain, Sparkles, AlertTriangle, TrendingUp } from 'lucide-react';
+import { CalendarDays, Brain, Sparkles, AlertTriangle, TrendingUp, CalendarRange } from 'lucide-react';
 import { WeeklyReview } from '@/components/ai/WeeklyReview';
+import { ReviewCalendar } from '@/components/ai/ReviewCalendar';
 import { DeepAnalysisStats } from '@/components/ai/DeepAnalysisStats';
 import { AiScreenStats } from '@/components/ai/AiScreenStats';
 import { AlertRuleHealth } from '@/components/ai/AlertRuleHealth';
 
-type Tab = 'weekly' | 'stats';
+type Tab = 'weekly' | 'calendar' | 'stats';
 type StatsTab = 'deep' | 'screen' | 'rule';
 
 const TABS: { key: Tab; label: string; icon: typeof CalendarDays }[] = [
   { key: 'weekly', label: '周报', icon: CalendarDays },
+  { key: 'calendar', label: '复盘日历', icon: CalendarRange },
   { key: 'stats', label: '胜率复盘', icon: TrendingUp },
 ];
 
@@ -60,6 +62,7 @@ export function ReviewModal({ open, onClose }: { open: boolean; onClose: () => v
       </div>
 
       {tab === 'weekly' && <WeeklyReview />}
+      {tab === 'calendar' && <ReviewCalendar />}
       {tab === 'stats' && (
         <div className="p-4">
           {/* 胜率复盘子 tab：三个统计面板同属一类，收进二级切换 */}

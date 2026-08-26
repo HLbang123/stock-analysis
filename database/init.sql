@@ -136,3 +136,41 @@ CREATE TABLE IF NOT EXISTS sw_index_member (
 );
 CREATE INDEX IF NOT EXISTS idx_sw_member_code ON sw_index_member(member_code);
 CREATE INDEX IF NOT EXISTS idx_sw_member_level ON sw_index_member(index_level);
+
+-- 宽基指数日线（上证/深证/创业板/沪深300 等，冰点规则与复盘日历用）
+CREATE TABLE IF NOT EXISTS index_daily (
+    ts_code    VARCHAR(12) NOT NULL,
+    trade_date VARCHAR(8)  NOT NULL,
+    open       DOUBLE PRECISION,
+    high       DOUBLE PRECISION,
+    low        DOUBLE PRECISION,
+    close      DOUBLE PRECISION,
+    pct_chg    DOUBLE PRECISION,
+    vol        DOUBLE PRECISION,
+    amount     DOUBLE PRECISION,
+    PRIMARY KEY (ts_code, trade_date)
+);
+CREATE INDEX IF NOT EXISTS idx_index_daily_date ON index_daily(trade_date);
+
+-- 复盘日历日级快照（一行/交易日，由 daily_bars 离线物化）
+CREATE TABLE IF NOT EXISTS review_calendar_days (
+    trade_date      VARCHAR(8) PRIMARY KEY,
+    total_amount    DOUBLE PRECISION,  -- 全市场成交额（千元）
+    advance         INTEGER,           -- 上涨家数
+    decline         INTEGER,           -- 下跌家数
+    flat            INTEGER,           -- 平盘家数
+    limit_up        INTEGER,           -- 涨停家数（近似口径）
+    limit_down      INTEGER,           -- 跌停家数（近似口径）
+    amount_ma20     DOUBLE PRECISION,  -- 20 日均成交额（千元）
+    volume_ratio    DOUBLE PRECISION,  -- total_amount / amount_ma20
+    vol_pctile_60d  DOUBLE PRECISION,  -- 当日成交额在近 60 交易日分位
+    vol_pctile_120d DOUBLE PRECISION,  -- 当日成交额在近 120 交易日分位
+    up_pctile_60d   DOUBLE PRECISION,  -- 上涨家数在近 60 交易日分位
+    up_pctile_120d  DOUBLE PRECISION,  -- 上涨家数在近 120 交易日分位
+    idx_pct_chg     DOUBLE PRECISION,  -- 上证指数涨跌幅
+    is_ice_point    BOOLEAN,           -- 是否量能冰点
+    ice_level       VARCHAR(12),       -- 极冰 / 接近冰点
+    ice_confidence  VARCHAR(8),        -- high / medium
+    regime          VARCHAR(8),        -- 三态：attack / neutral / defense
+    regime_day      INTEGER            -- 当前状态已持续交易日数
+);

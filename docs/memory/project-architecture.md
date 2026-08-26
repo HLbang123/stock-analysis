@@ -37,13 +37,15 @@ A股形态预警系统。技术栈：**Next.js 16.2.10 + React 19.2.4 + Prisma 7
 
 ## 数据源（lib/）
 - `lib/data-sources/` — 三源 fallback 结构化：`kline/{eastmoney,sina,tencent}.ts` + `quote/{eastmoney,sina,tencent}.ts` + `registry.ts`（选源/降级）。
-- `lib/tushare.ts` — Tushare 高级接口（涨跌停/行业/资金流/北向/融资融券）。`lib/fuyao.ts` — 同花顺 fuyao（key=FUYAO_API_KEY）。`lib/identify.ts` — ts_code→交易所。
+- `lib/tushare.ts` — Tushare 高级接口（涨跌停/行业/资金流/北向/融资融券）。**账号 6000 积分**（2026-08-15 确认）：`moneyflow`（主力净流入，2000 分）/`stk_holdernumber` 可直接调用，**不再有充值决策**；`etf_basic`/`etf_share_size`（8000 分）不够用，走 fuyao nav 兜底；L2 逐笔 tushare 不提供（需 ptrade/emquant 等外部源）。`lib/fuyao.ts` — 同花顺 fuyao（key=FUYAO_API_KEY）。`lib/identify.ts` — ts_code→交易所。
 - `lib/llm/` + `lib/llm-client.ts` + `lib/llm-stream.ts` — LLM 客户端/SSE 流。`lib/sectors.ts`、`lib/stock-helpers.ts`、`lib/indicators.ts`(RSI/MA 单一事实源)、`lib/cache.ts`、`lib/constants.ts`、`lib/auth.ts`、`lib/chat-tools.ts`、`lib/ai-error.ts`、`lib/api-helpers.ts`。
+- `lib/chip.ts` — **筹码分布单一事实源**（换手率转移模型：`computeChipDistribution` 纯函数 + `getChipDistribution` DB 取数）。ai-screen 的 `chipFeatures` 只是薄封装，**别做第二实现**（双指标源前车之鉴）；缺 `turnover_rate` 时自动降级固定衰减 γ=0.97；客户端必须走 `/api/chip`（直接 import 会把 prisma 拖进客户端 bundle）。筹码预警规则现为 **R13/R14**（原 R18/R19 已在 2026-08-05 重排，全仓已无 R18/R19）。暧昧形态的设计口径：不靠硬阈值——筛选靠横截面排名、分析靠 LLM 解读、预警靠宽松阈值弱参考。
 
 ## DB（prisma/schema.prisma，lib/db.ts PrismaPg adapter）
 14 个模型：`Stock`、`DailyBar`、`RpsScore`、`MarketBreadth`、`IndexValuation`、`NorthboundFlow`、`MarginTotal`、`StockFundamental`、`StockMoneyflow`、`SwIndexDaily`、`SwIndexMember`、`AiScreenRun`、`AiScreenPick`。
 **列名陷阱**：只有标 `@map` 的字段在 DB 是 snake_case；`DailyBar` 的 `tsCode`/`tradeDate`、`RpsScore` 的 `tsCode`/`calcDate` 是 camelCase（raw SQL 要带双引号如 `"tsCode"`）。写 raw SQL 前查 schema.prisma 确认。`daily_bars` 孤儿会卡 `prisma db push`——AI筛选表已 raw SQL 建表绕过，部署别跑 db push。
 默认 DATABASE_URL=localhost:5432，生产在硅云 CVM（见部署节）。`.env.local` 是 dotenvx 加密。
+raw SQL 表（非 Prisma 模型，走 $queryRawUnsafe）：index_daily（宽基指数日线，复盘日历冰点规则数据源）、review_calendar_days（日级快照：全市场成交额/涨跌家数/冰点/三态 regime，一行/交易日，约 2505 行）。复盘日历只读接口 app/api/review-calendar/route.ts；三态状态机单一事实源 services/review-calendar/regime.ts（规则经 10 年回测，见 docs/review-calendar-phase0-backtest.md）。
 
 ## 服务（services/）
 - `alertRules.ts` — 12 条预警规则 [[alert-rules-refactor-plan]]。`deepAnalysisPrompt.ts` — AI prompt 注入源（RULES_TABLE）。`aiPrompt.ts`/`xinjiePrompt.ts`/`tushareData.ts` — 其他 prompt/数据组装。
@@ -56,7 +58,7 @@ A股形态预警系统。技术栈：**Next.js 16.2.10 + React 19.2.4 + Prisma 7
 `ai/`(AiChat/AiScreenPanel/AnalysisHistory/ProfileFormModal/ProfileSettingsModal/ReasoningPanel/shared)、`layout/`(shell/sidebar-nav/bottom-nav)、`market/`(EChart)、`ui/`(badge/button/card/spinner)、`providers/`(theme-provider)。根 `components/`：KLineChart、MinuteChart、UpdateLog。
 
 ## 脚本（scripts/，`npx tsx scripts/xxx.ts`）
-数据同步：`sync-daily`(日线)、`sync-stocks`、`sync-fundamentals`、`sync-hsgt`(北向)、`sync-margin`、`sync-moneyflow`、`sync-index-valuation`、`sync-sw-daily`/`sync-sw-member`(申万)。计算：`compute-rps`、`compute-market-breadth`。调度：`run-daily`(全量日任务)。`fetch-stocks.js`。
+数据同步：`sync-daily`(日线)、`sync-stocks`、`sync-fundamentals`、`sync-hsgt`(北向)、`sync-margin`、`sync-moneyflow`、`sync-index-valuation`、`sync-sw-daily`/`sync-sw-member`(申万)、`sync-index-daily`(宽基指数日线)。计算：`compute-rps`、`compute-market-breadth`、`compute-review-calendar`(复盘日历日级快照+冰点)、`compute-review-regime`(三态重算，读全表)。调度：`run-daily`(全量日任务)。`fetch-stocks.js`。
 
 ## 部署/网络
 硅云香港 CVM `103.151.217.28`，nginx(80+443)→Next:3000(PM2 进程名 `stock-analysis`)，域名 xkls888.top。部署只需 `git pull && npm run build && pm2 restart`（别跑 `prisma db push`，孤儿会卡）。服务器详情见 [[server-info]]，用户 git 推送习惯见 [[user-git-habits]]。

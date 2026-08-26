@@ -16,9 +16,11 @@ export type MarketRegime = 'attack' | 'neutral' | 'defense';
 
 export interface RegimeInfo {
   regime: MarketRegime;
-  aboveMa55Ratio: number | null; // 最新 MA55 上方占比 0-1
-  ratioDelta5d: number | null;   // 占比 5 日变化（百分点，-1~1）
-  ret20Median: number | null;    // 全市场 20 日收益中位数（%）
+  aboveMa55Ratio: number | null; // 旧口径（breadth fallback 时才有值）
+  ratioDelta5d: number | null;
+  ret20Median: number | null;
+  regimeDay?: number | null;     // calendar 口径：当前状态持续交易日数
+  source?: 'calendar' | 'breadth'; // 判定来源（calendar=复盘日历已回测口径）
 }
 
 /**
@@ -28,6 +30,27 @@ export interface RegimeInfo {
  *   其余 neutral；数据缺失一律 neutral（不阻塞流水线）
  */
 export async function detectMarketRegime(): Promise<RegimeInfo> {
+  // 优先读复盘日历口径（services/review-calendar/regime.ts，经 10 年回测验证）。
+  // 复盘日历与 AI 筛选共用同一「市场三态」，避免同日两处结论打架（双指标源前车之鉴）。
+  try {
+    const row = await prisma.$queryRawUnsafe<{ regime: string; regime_day: number | null }[]>(
+      `SELECT regime, regime_day FROM review_calendar_days ORDER BY trade_date DESC LIMIT 1`
+    );
+    if (row.length && row[0].regime && ['attack', 'neutral', 'defense'].includes(row[0].regime)) {
+      return {
+        regime: row[0].regime as MarketRegime,
+        aboveMa55Ratio: null,
+        ratioDelta5d: null,
+        ret20Median: null,
+        regimeDay: row[0].regime_day,
+        source: 'calendar',
+      };
+    }
+  } catch {
+    // 表不存在/未建时走下方 fallback，不阻塞筛选流水线
+  }
+
+  // fallback：旧口径（MA55 上方占比 + 全市场 20 日收益中位数），表尚未物化时兜底
   try {
     const breadth = await prisma.marketBreadth.findMany({
       orderBy: { tradeDate: 'desc' },
@@ -50,9 +73,9 @@ export async function detectMarketRegime(): Promise<RegimeInfo> {
     else if (ret20Median != null && ret20Median <= -4) regime = 'defense';
     else if (ratio != null && ratio >= 0.55 && ret20Median != null && ret20Median > 0) regime = 'attack';
 
-    return { regime, aboveMa55Ratio: ratio, ratioDelta5d, ret20Median };
+    return { regime, aboveMa55Ratio: ratio, ratioDelta5d, ret20Median, source: 'breadth' };
   } catch {
-    return { regime: 'neutral', aboveMa55Ratio: null, ratioDelta5d: null, ret20Median: null };
+    return { regime: 'neutral', aboveMa55Ratio: null, ratioDelta5d: null, ret20Median: null, source: 'breadth' };
   }
 }
 

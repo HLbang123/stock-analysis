@@ -21,6 +21,12 @@ const DEFAULT_TTL: Record<string, { ttl: number; maxAge: number }> = {
   minute_data:      { ttl: 120_000,   maxAge: 600_000 },   // 分时：2min/10min
   tushare_fundamental: { ttl: 600_000, maxAge: 3_600_000 }, // 基本面：10min/60min
   stock_list:       { ttl: 3_600_000, maxAge: 86_400_000 }, // 股票列表：60min/24h
+  fuyao_anomaly:         { ttl: 30_000,  maxAge: 180_000 },  // 异动快照：30s/3min
+  fuyao_limit_up:        { ttl: 30_000,  maxAge: 180_000 },  // 涨停池：30s/3min
+  fuyao_limit_up_ladder: { ttl: 300_000, maxAge: 900_000 },  // 连板天梯：5min/15min
+  fuyao_hot_stock:       { ttl: 60_000,  maxAge: 300_000 },  // 热股榜：1min/5min
+  fuyao_skyrocket:       { ttl: 60_000,  maxAge: 300_000 },  // 飙升榜：1min/5min
+  fuyao_dragon_tiger:    { ttl: 60_000,  maxAge: 600_000 },  // 龙虎榜：1min/10min
 };
 
 const cache = new Map<string, CacheEntry<any>>();

@@ -211,11 +211,35 @@ function priceCrossedAboveWithin(kLines: KLineData[], ma: number[], idx: number,
 // 合并后的规则内部按严重度择优返回最强信号，避免 4-6 条冗余预警。
 
 /**
+ * RSI(14) 超买新高（弱提醒）：最近一根已完成 bar 是摆动高，价格创近60日内前一个摆动高新高，
+ * 且前摆动高 RSI(14)≥70。十年回放：此类「创新高+超买」后 T+5/T+10 显著负向，短期过热。
+ * 先落弱提醒（sev2），待确认日入场口径复验后再决定是否升档。
+ */
+function rsiOverboughtNewHighSignal(kLines: KLineData[], idx: number): { triggered: boolean; cur: number; prev: number } {
+  if (idx < 3 || kLines.length < 60) return { triggered: false, cur: 0, prev: 0 };
+  const p = idx - 1; // 最近一根已完成 bar 作为候选摆动高
+  const high = kLines.map(k => k.high);
+  const rsi = calcRSISeries(kLines.map(k => k.close), 14);
+  const hp = high[p];
+  if (!(hp >= high[p - 1] && hp >= high[idx])) return { triggered: false, cur: 0, prev: 0 };
+  for (let q = p - 2; q >= Math.max(1, p - 60); q--) {
+    if (high[q] >= high[q - 1] && high[q] >= high[q + 1]) {
+      const rsiQ = rsi[q];
+      if (rsiQ >= 70 && hp > high[q]) {
+        return { triggered: true, cur: hp, prev: high[q] };
+      }
+      break;
+    }
+  }
+  return { triggered: false, cur: 0, prev: 0 };
+}
+
+/**
  * R01: 见顶阶梯 — 见顶/过热/量能出逃信号合并阶梯，内部按严重度择优返回主信号
  * 把所有"见顶/过热/量能出逃"信号合并到一个阶梯，内部按严重度择优返回主信号，
  * extraData 列出全部命中的子信号（供 UI 展示）。这样同类信号在一个规则内统一力度，杜绝跨规则矛盾。
  *
- * 子信号严重度：对子顶(5) > 巨量见顶(极端天量≥4x 升5)/第二波见顶/涨停炸板(4) > 巨量异动(1)
+ * 子信号严重度：对子顶(5) > 巨量见顶(极端天量≥4x 升5)/第二波见顶/涨停炸板(4) > RSI超买新高(2) > 巨量异动(1)
  * 形态类见顶（长上影/长下影/跳空衰竭/纺锤线）与涨停封板已全部删除——生产胜率+十年全市场回放反复证伪。
  */
 function checkTopPattern(kLines: KLineData[], quote: RealtimeQuote | null, rule: AlertRule, limitMap?: LimitPriceMap | null): RuleCheckResult {
@@ -307,6 +331,11 @@ function checkTopPattern(kLines: KLineData[], quote: RealtimeQuote | null, rule:
   if (isVolumeAbnormal && !isPeak) {
     // 已成交量口径：三个数字同一基数（today.volume / avg5），不再出现"量 391万 < 均量 422万 却放量85%"的矛盾
     triggered.push([1, '巨量异动', `巨量异动：成交量 ${today.volume.toLocaleString()}，近5日均量 ${Math.round(avg5).toLocaleString()}，放量 ${Math.round(today.volume / avg5 * 100 - 100)}%`]);
+  }
+  // RSI超买新高（弱提醒）：创新高 + 前摆动高 RSI(14)≥70，短期过热
+  const rsiTop = rsiOverboughtNewHighSignal(kLines, idx);
+  if (rsiTop.triggered) {
+    triggered.push([2, 'RSI超买新高', `RSI超买新高：价格创新高 ${rsiTop.cur.toFixed(2)} 超过前摆动高 ${rsiTop.prev.toFixed(2)}，且前摆动高 RSI(14)≥70，短期过热，弱提醒`]);
   }
 
   if (triggered.length === 0) return { triggered: false };
@@ -828,7 +857,7 @@ export const ALERT_RULES: AlertRule[] = [
   {
     id: 'R01',
     name: '见顶阶梯',
-    description: '见顶/过热/量能出逃信号合并阶梯：对子顶/巨量见顶/第二波见顶/涨停炸板/巨量异动，按严重度择优只出一条预警',
+    description: '见顶/过热/量能出逃信号合并阶梯：对子顶/巨量见顶/第二波见顶/涨停炸板/RSI超买新高/巨量异动，按严重度择优只出一条预警',
     category: 'PATTERN' as any,
     level: 'CRITICAL' as any,
     suggestion: '见顶信号分级提示：对子顶/极端天量等强信号需高度重视',
@@ -973,7 +1002,7 @@ export function toTushareCode(c: string): string {
  * 无单一事实源，见 [[alert-rules-refactor-plan]]）。
  */
 export const ACTIVE_RULE_SIGNALS: Record<string, string[]> = {
-  R01: ['对子顶', '巨量见顶', '第二波见顶', '涨停炸板', '巨量异动'],
+  R01: ['对子顶', '巨量见顶', '第二波见顶', '涨停炸板', 'RSI超买新高', '巨量异动'],
   R02: ['急跌', '5/13死叉', '5/10死叉', '破趋势线+破MA60', '有效跌破10日线', '跌破5日线', '破趋势线', '跌破10日线待确认'],
   R03: ['跌破55日线'],
   R04: ['5/13金叉'],

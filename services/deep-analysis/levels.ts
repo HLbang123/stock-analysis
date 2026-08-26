@@ -66,10 +66,12 @@ export function computeSupportResistance(kLines: KLineData[], chip?: ChipDistrib
   const high60 = last60.length ? Math.max(...last60.map(k => k.high)) : high20;
   const ma20 = smaCloses(kLines, 20);
   const ma55 = smaCloses(kLines, 55);
+  const ma60 = smaCloses(kLines, 60);
 
   const candidates: PriceLevel[] = [
     ...(ma20 != null ? [{ price: ma20, label: 'MA20' }] : []),
     ...(ma55 != null ? [{ price: ma55, label: 'MA55' }] : []),
+    ...(ma60 != null ? [{ price: ma60, label: 'MA60' }] : []),
     { price: low20, label: '近20日低' },
     { price: high20, label: '近20日高' },
     ...(last60.length ? [{ price: low60, label: '近60日低' }, { price: high60, label: '近60日高' }] : []),
@@ -160,6 +162,8 @@ export function computeKeyLevels(params: {
   // --- 压力位候选（目标参考，均 > 现价）---
   const resistances: { price: number; label: string }[] = [];
   if (recentHigh > price) resistances.push({ price: recentHigh, label: `近60日高点${round2(recentHigh)}` });
+  // MA60：牛熊分界，现价在下方时作为最近压力位（十年回放：强势标的逼近 MA60 后短期回落风险偏高）
+  if (indicators.ma60 > 0 && indicators.ma60 > price) resistances.push({ price: indicators.ma60, label: `MA60 压制${round2(indicators.ma60)}` });
   const boxHigh = extractBoxHigh(engineResults);
   if (boxHigh && boxHigh > price) resistances.push({ price: boxHigh, label: `箱体上沿${round2(boxHigh)}` });
   if (chip && chip.peaks && chip.peaks.length > 0) {
