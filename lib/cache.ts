@@ -85,7 +85,8 @@ export function cleanupExpired(): void {
   }
 }
 
-// 每 5 分钟自动清理一次
+// 每 5 分钟自动清理一次（unref：清理定时器不阻止 CLI 脚本/一次性进程正常退出）
 if (typeof setInterval !== 'undefined') {
-  setInterval(cleanupExpired, 300_000);
+  const timer = setInterval(cleanupExpired, 300_000);
+  if (timer && typeof (timer as any).unref === 'function') (timer as any).unref();
 }
