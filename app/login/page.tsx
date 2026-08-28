@@ -31,6 +31,7 @@ export default function LoginPage() {
         body: JSON.stringify({ password }),
       });
       if (res.ok) {
+        try { localStorage.setItem('auth_password', password); } catch {}
         router.replace('/');
         router.refresh();
       } else {

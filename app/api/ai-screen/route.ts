@@ -266,8 +266,9 @@ export async function GET() {
         degradation: true,
       },
     });
+    const visibleStrategyIds = new Set(['momentum']);
     return NextResponse.json({
-      strategies: STRATEGY_PRESETS.map((s) => ({ id: s.id, name: s.name, description: s.description, category: s.category, rulesText: s.rulesText })),
+      strategies: STRATEGY_PRESETS.filter((s) => visibleStrategyIds.has(s.id)).map((s) => ({ id: s.id, name: s.name, description: s.description, category: s.category, rulesText: s.rulesText })),
       runs,
     });
   } catch (e: any) {

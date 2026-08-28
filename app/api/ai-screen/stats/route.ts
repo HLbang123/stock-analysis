@@ -5,7 +5,7 @@
  *   - summary:整体 + 分策略(胜率/均值/中位/performance_score/outcome),按持有期 T+1/T+5/T+20
  *   - factorIC:每策略每因子 Spearman 秩相关(factor_score vs T+5 returnPct)+ 5 分位胜率
  *   - llmAB:每策略 topK 池内三种选法(纯 screenScore / 0.6·screen+0.4·llm / screen 否决 llmRisks)的 T+5 胜率
- *   - eventSignals:LLM tags/catalysts/risks 当信号,T+5 收益分类 prefer/avoid/watch
+ *   - eventSignals:LLM tags/catalysts/risks 当信号,T+5 方向收益分类 prefer/avoid/watch（risk 反号：命中=下跌）
  *
  * 主口径 T+5 绝对收益>0。胜率完整性基于全候选(selected+未入选)。
  */
@@ -49,16 +49,17 @@ const median = (xs: number[]) => {
   return s.length % 2 ? s[m] : (s[m - 1] + s[m]) / 2;
 };
 
-/** 收益统计:胜率(>0 占比)、均值、中位 */
-function returnStats(returns: number[]) {
+/** 收益统计:胜率(>0 占比)、均值、中位；invert=true 时反号并以下跌为命中（risk 信号） */
+function returnStats(returns: number[], invert = false) {
   const valid = returns.filter((r) => r != null && Number.isFinite(r));
   if (valid.length === 0) return { count: 0, winRate: null, avg: null, median: null };
-  const wins = valid.filter((r) => r > 0).length;
+  const wins = valid.filter((r) => (invert ? r < 0 : r > 0)).length;
+  const sign = invert ? -1 : 1;
   return {
     count: valid.length,
     winRate: Math.round((wins / valid.length) * 1000) / 10,
-    avg: Math.round((mean(valid) ?? 0) * 10000) / 10000,
-    median: Math.round((median(valid) ?? 0) * 10000) / 10000,
+    avg: Math.round((mean(valid) ?? 0) * sign * 10000) / 10000,
+    median: Math.round((median(valid) ?? 0) * sign * 10000) / 10000,
   };
 }
 
@@ -111,7 +112,13 @@ export async function GET(request: NextRequest) {
     const since = new Date(Date.now() - days * 86400000).toISOString();
 
     const rows = await prisma.aiScreenPick.findMany({
-      where: { run: { createdAt: { gte: since } } },
+      where: {
+        run: {
+          createdAt: { gte: since },
+          // 已下线预设不参与胜率复盘（当前对外可见：momentum）
+          strategyId: { notIn: ['balanced', 'quality', 'defensive'] },
+        },
+      },
       include: {
         evals: { select: { nDays: true, returnPct: true, shapeStatus: true } },
         run: { select: { strategyId: true, strategyName: true, barDate: true, pickCount: true } },
@@ -262,8 +269,9 @@ export async function GET(request: NextRequest) {
     }
     const eventSignals = [...signalGroups.entries()]
       .map(([key, rets]) => {
-        const st = returnStats(rets);
-        const [t, label] = [signalType.get(key)!, key.slice(key.indexOf(':') + 1)];
+        const type = signalType.get(key)!;
+        const st = returnStats(rets, type === 'risk');
+        const label = key.slice(key.indexOf(':') + 1);
         let action = 'watch';
         if (st.avg == null || st.winRate == null || st.count < 5) action = 'insufficient';
         else if (st.avg > 0 && st.winRate >= 50) action = 'prefer';

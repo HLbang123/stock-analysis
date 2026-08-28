@@ -1,8 +1,16 @@
 import { NextRequest, NextResponse } from "next/server";
-import { ACCESS_PASSWORD, AUTH_COOKIE, AUTH_MAX_AGE, signToken } from "@/lib/auth";
+import { AUTH_COOKIE, AUTH_EXP_COOKIE, AUTH_MAX_AGE, AUTH_TIER_COOKIE, resolveTier, signToken } from "@/lib/auth";
 
 const COOKIE_OPTS = {
   httpOnly: true,
+  sameSite: "lax" as const,
+  path: "/",
+  maxAge: AUTH_MAX_AGE,
+};
+
+// auth_tier 只给前端展示/门禁读取用，不含签名；真正鉴权看 AUTH_COOKIE
+const TIER_COOKIE_OPTS = {
+  httpOnly: false,
   sameSite: "lax" as const,
   path: "/",
   maxAge: AUTH_MAX_AGE,
@@ -20,23 +28,29 @@ export async function POST(request: NextRequest) {
   if (contentType.includes("application/x-www-form-urlencoded")) {
     const form = await request.formData().catch(() => null);
     const password = (form?.get("password") as string) || "";
-    if (password !== ACCESS_PASSWORD) {
+    const tier = resolveTier(password);
+    if (!tier) {
       return NextResponse.redirect(new URL("/login?err=1", request.url));
     }
-    const token = await signToken();
+    const signed = await signToken(tier);
     const res = NextResponse.redirect(new URL("/", request.url));
-    res.cookies.set(AUTH_COOKIE, token, COOKIE_OPTS);
+    res.cookies.set(AUTH_COOKIE, signed.token, COOKIE_OPTS);
+    res.cookies.set(AUTH_TIER_COOKIE, tier, TIER_COOKIE_OPTS);
+    res.cookies.set(AUTH_EXP_COOKIE, String(signed.exp), TIER_COOKIE_OPTS);
     return res;
   }
 
   // fetch JSON 流程（正常前端）
   const { password } = await request.json().catch(() => ({} as any));
-  if (password !== ACCESS_PASSWORD) {
+  const tier = resolveTier(password ?? "");
+  if (!tier) {
     return NextResponse.json({ error: "口令错误" }, { status: 401 });
   }
-  const token = await signToken();
-  const res = NextResponse.json({ ok: true });
-  res.cookies.set(AUTH_COOKIE, token, COOKIE_OPTS);
+  const signed = await signToken(tier);
+  const res = NextResponse.json({ ok: true, tier, exp: signed.exp });
+  res.cookies.set(AUTH_COOKIE, signed.token, COOKIE_OPTS);
+  res.cookies.set(AUTH_TIER_COOKIE, tier, TIER_COOKIE_OPTS);
+  res.cookies.set(AUTH_EXP_COOKIE, String(signed.exp), TIER_COOKIE_OPTS);
   return res;
 }
 
@@ -44,5 +58,7 @@ export async function POST(request: NextRequest) {
 export async function DELETE() {
   const res = NextResponse.json({ ok: true });
   res.cookies.delete(AUTH_COOKIE);
+  res.cookies.delete(AUTH_TIER_COOKIE);
+  res.cookies.delete(AUTH_EXP_COOKIE);
   return res;
 }

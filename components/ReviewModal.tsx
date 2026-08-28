@@ -7,18 +7,21 @@
  * tab 为条件渲染：切到才挂载拉数，切走卸载；再切回重新拉（回填可能已更新，正好刷新生效）。
  */
 
-import { useState } from 'react';
+import { useState, useEffect } from 'react';
 import { Modal } from '@/components/ui/modal';
 import { cn } from '@/lib/utils';
-import { CalendarDays, Brain, Sparkles, AlertTriangle, TrendingUp, CalendarRange } from 'lucide-react';
+import { CalendarDays, Brain, Sparkles, AlertTriangle, TrendingUp, CalendarRange, Zap } from 'lucide-react';
+import { getClientTier } from '@/lib/client-auth';
 import { WeeklyReview } from '@/components/ai/WeeklyReview';
 import { ReviewCalendar } from '@/components/ai/ReviewCalendar';
 import { DeepAnalysisStats } from '@/components/ai/DeepAnalysisStats';
 import { AiScreenStats } from '@/components/ai/AiScreenStats';
 import { AlertRuleHealth } from '@/components/ai/AlertRuleHealth';
+import { AlertRuleRegime } from '@/components/ai/AlertRuleRegime';
+import { ShortTermStats } from '@/components/ai/ShortTermStats';
 
 type Tab = 'weekly' | 'calendar' | 'stats';
-type StatsTab = 'deep' | 'screen' | 'rule';
+type StatsTab = 'deep' | 'screen' | 'rule' | 'short';
 
 const TABS: { key: Tab; label: string; icon: typeof CalendarDays }[] = [
   { key: 'weekly', label: '周报', icon: CalendarDays },
@@ -29,12 +32,20 @@ const TABS: { key: Tab; label: string; icon: typeof CalendarDays }[] = [
 const STATS_TABS: { key: StatsTab; label: string; icon: typeof Brain }[] = [
   { key: 'deep', label: '深度分析', icon: Brain },
   { key: 'screen', label: 'AI筛选', icon: Sparkles },
+  { key: 'short', label: '超短线', icon: Zap },
   { key: 'rule', label: '预警规则', icon: AlertTriangle },
 ];
 
 export function ReviewModal({ open, onClose }: { open: boolean; onClose: () => void }) {
   const [tab, setTab] = useState<Tab>('weekly');
   const [statsTab, setStatsTab] = useState<StatsTab>('deep');
+  const [tier, setTier] = useState<'basic' | 'advanced'>('basic');
+
+  useEffect(() => {
+    setTier(getClientTier());
+  }, []);
+
+  const visibleStatsTabs = tier === 'advanced' ? STATS_TABS : STATS_TABS.filter((t) => t.key !== 'short');
 
   // 必须守卫 open（在 hooks 之后）：无此守卫时父组件一旦渲染本组件，弹窗永远显示、叉不掉
   if (!open) return null;
@@ -67,7 +78,7 @@ export function ReviewModal({ open, onClose }: { open: boolean; onClose: () => v
         <div className="p-4">
           {/* 胜率复盘子 tab：三个统计面板同属一类，收进二级切换 */}
           <div className="flex gap-1 p-0.5 mb-3 bg-gray-100 dark:bg-gray-800/50 rounded-lg w-fit">
-            {STATS_TABS.map(({ key, label, icon: Icon }) => (
+            {visibleStatsTabs.map(({ key, label, icon: Icon }) => (
               <button
                 key={key}
                 onClick={() => setStatsTab(key)}
@@ -84,7 +95,11 @@ export function ReviewModal({ open, onClose }: { open: boolean; onClose: () => v
           </div>
           {statsTab === 'deep' && <DeepAnalysisStats />}
           {statsTab === 'screen' && <AiScreenStats />}
-          {statsTab === 'rule' && <AlertRuleHealth />}
+          {statsTab === 'short' && <ShortTermStats />}
+          {statsTab === 'rule' && (<>
+            <AlertRuleHealth />
+            <div className="mt-3"><AlertRuleRegime /></div>
+          </>)}
         </div>
       )}
     </Modal>

@@ -1,17 +1,19 @@
 'use client';
 
-/**
- * AI 筛选 tab — 扫描页内嵌，读 DB 展示每日调度结果（服务器 key 每日自动跑）。
- * 与旧 AiScreenPanel 的区别：无运行按钮/无进度条/无用户 key 依赖，打开即看当日结果。
- */
-
-import { useState, useEffect, useCallback, Fragment } from 'react';
+import { useState, useEffect, Fragment } from 'react';
 import { useRouter } from 'next/navigation';
 import { useUiStore } from '@/store/ui-store';
 import { cn } from '@/lib/utils';
 import { Card } from '@/components/ui/card';
 import { ChevronDown, ChevronUp, Info, Sparkles, AlertTriangle, Loader2 } from 'lucide-react';
 import type { AiPick } from '@/services/ai-screen/types';
+import { ShortTermTab } from '@/components/ShortTermTab';
+import { getClientTier } from '@/lib/client-auth';
+
+/**
+ * AI 筛选 tab — 扫描页内嵌，读 DB 展示每日调度结果（服务器每日自动跑）。
+ * 两个主 tab：超短线（涨停+三连阴 / 龙首阴 / 双龙战法）、短线（趋势，复用原趋势猎手逻辑改名）。
+ */
 
 interface StrategyInfo {
   id: string;
@@ -40,22 +42,62 @@ interface RunWithPicks {
   picks: AiPick[];
 }
 
+const MAIN_TABS = [
+  { value: 'ultra-short', label: '超短线' },
+  { value: 'short', label: '趋势优选' },
+] as const;
+
 export function AiScreenTab() {
+  const mainTab = useUiStore((s) => s.aiScreenMainTab);
+  const setMainTab = useUiStore((s) => s.setAiScreenMainTab);
+  const [tier, setTier] = useState<'basic' | 'advanced'>('basic');
+
+  useEffect(() => {
+    setTier(getClientTier());
+  }, []);
+
+  const ultraShortEnabled = tier === 'advanced';
+  const visibleTabs = ultraShortEnabled ? MAIN_TABS : MAIN_TABS.filter((t) => t.value !== 'ultra-short');
+  const effectiveMainTab = mainTab === 'ultra-short' && !ultraShortEnabled ? 'short' : mainTab;
+
+  return (
+    <div>
+      {/* 两个主 tab：专用口令显示超短线（三套短线策略）；普通口令只显示短线（趋势） */}
+      <div className="flex gap-1 mb-4 p-1 bg-gray-100 dark:bg-gray-800 rounded-lg w-fit">
+        {visibleTabs.map((t) => (
+          <button
+            key={t.value}
+            onClick={() => setMainTab(t.value)}
+            className={cn(
+              'px-4 py-1.5 rounded-md text-sm transition',
+              effectiveMainTab === t.value
+                ? 'bg-white dark:bg-gray-900 shadow-sm font-medium text-gray-900 dark:text-white'
+                : 'text-gray-500 hover:text-gray-700 dark:hover:text-gray-200',
+            )}
+          >
+            {t.label}
+          </button>
+        ))}
+      </div>
+      {effectiveMainTab === 'ultra-short' ? <ShortTermTab /> : <ShortLineTab />}
+    </div>
+  );
+}
+
+function ShortLineTab() {
   const router = useRouter();
-  const [strategies, setStrategies] = useState<StrategyInfo[]>([]);
-  // 选中策略存 ui-store：钻进详情返回后仍停在原策略（useState 会被重挂载重置）
-  const selected = useUiStore(s => s.aiScreenStrategy);
-  const setSelected = useUiStore(s => s.setAiScreenStrategy);
+  const [strategy, setStrategy] = useState<StrategyInfo | null>(null);
   const [current, setCurrent] = useState<RunWithPicks | null>(null);
-  const [loading, setLoading] = useState(false);
+  const [loading, setLoading] = useState(true);
   const [showLlm, setShowLlm] = useState(false);
   const [showRules, setShowRules] = useState(false);
   const [expanded, setExpanded] = useState<number | null>(null);
   // 表头排序：null=按 AI 排名（rank）展示
   const [sortKey, setSortKey] = useState<'final' | 'screen' | 'change' | null>(null);
   const [sortDir, setSortDir] = useState<-1 | 1>(-1);
+
   const toggleSort = (k: 'final' | 'screen' | 'change') => {
-    if (sortKey === k) setSortDir(d => (d === -1 ? 1 : -1));
+    if (sortKey === k) setSortDir((d) => (d === -1 ? 1 : -1));
     else { setSortKey(k); setSortDir(-1); }
   };
   const sortMark = (k: string) => (sortKey === k ? (sortDir === -1 ? ' ↓' : ' ↑') : '');
@@ -72,83 +114,54 @@ export function AiScreenTab() {
     });
   };
 
-  // 拉策略定义 + 历史运行列表
+  // 拉策略定义（短线 tab 复用原 momentum「趋势猎手」逻辑，改名「趋势」）+ 最近一次运行
   useEffect(() => {
-    fetch('/api/ai-screen')
-      .then((r) => r.json())
-      .then((d) => {
-        if (d.strategies) {
-          const daily = d.strategies.filter((s: StrategyInfo) => s.id === 'momentum' || s.id === 'balanced');
-          setStrategies(daily);
+    let cancelled = false;
+    Promise.all([
+      fetch('/api/ai-screen').then((r) => r.json()),
+      fetch('/api/ai-screen/latest?strategyId=momentum').then((r) => r.json()),
+    ])
+      .then(([stratD, latestD]) => {
+        if (cancelled) return;
+        if (stratD.strategies) {
+          const m = stratD.strategies.find((s: StrategyInfo) => s.id === 'momentum');
+          if (m) setStrategy(m);
         }
+        if (latestD.run) setCurrent(latestD.run);
+        else setCurrent(null);
       })
-      .catch(() => {});
+      .catch(() => {
+        if (!cancelled) setCurrent(null);
+      })
+      .finally(() => {
+        if (!cancelled) setLoading(false);
+      });
+    return () => {
+      cancelled = true;
+    };
   }, []);
-
-  // 拉选中策略最近一次运行（含 picks）
-  const loadLatest = useCallback(async (strategyId: string) => {
-    setLoading(true);
-    try {
-      const res = await fetch(`/api/ai-screen/latest?strategyId=${strategyId}`);
-      const d = await res.json();
-      if (d.run) setCurrent(d.run);
-      else setCurrent(null);
-    } catch {
-      setCurrent(null);
-    } finally {
-      setLoading(false);
-    }
-  }, []);
-
-  useEffect(() => {
-    loadLatest(selected);
-  }, [selected, loadLatest]);
 
   const toAppCode = (tsCode: string) => {
     const m = tsCode.match(/^(\d+)\.(SH|SZ|BJ)$/);
     return m ? m[2].toLowerCase() + m[1] : tsCode;
   };
 
-  const selectedStrategy = strategies.find((s) => s.id === selected);
-
   return (
     <div>
-      {/* 策略大卡：名称 + 一句话，完整规则折叠在下方 */}
-      <div className="grid grid-cols-2 gap-3 mb-4">
-        {strategies.map((s) => {
-          const active = selected === s.id;
-          return (
-            <button
-              key={s.id}
-              onClick={() => { setSelected(s.id); setExpanded(null); }}
-              className={cn(
-                'relative p-4 rounded-xl text-left border-2 transition',
-                active
-                  ? 'border-purple-500 bg-purple-50 dark:bg-purple-950/40'
-                  : 'border-gray-200 dark:border-gray-700 hover:border-gray-300',
-              )}
-            >
-              <div className="font-semibold text-gray-900 dark:text-white">{s.name}</div>
-            </button>
-          );
-        })}
+      {/* 短线策略头 + 说明（折叠） */}
+      <div className="mb-4">
+        <p className="text-xs text-gray-400">强势低波入场，不追成熟多头</p>
+        <button onClick={() => setShowRules(!showRules)} className="flex items-center gap-1 text-xs text-purple-600 mt-1">
+          <Info className="w-3.5 h-3.5" /> 策略说明
+          {showRules ? <ChevronUp className="w-3 h-3" /> : <ChevronDown className="w-3 h-3" />}
+        </button>
+        {showRules && strategy && (
+          <div className="mt-2 rounded-xl bg-purple-50/60 dark:bg-purple-950/20 border border-purple-100 dark:border-purple-900 p-3 text-xs text-gray-600 dark:text-gray-400 space-y-2">
+            <p className="whitespace-pre-line leading-relaxed">{strategy.description}</p>
+            {strategy.rulesText && <p className="whitespace-pre-line leading-relaxed opacity-90">{strategy.rulesText}</p>}
+          </div>
+        )}
       </div>
-
-      {/* 策略说明（默认折叠）：当前选中策略的完整规则 */}
-      {selectedStrategy && (
-        <div className="mb-4">
-          <button onClick={() => setShowRules(!showRules)} className="flex items-center gap-1 text-xs text-purple-600">
-            <Info className="w-3.5 h-3.5" /> 策略说明
-            {showRules ? <ChevronUp className="w-3 h-3" /> : <ChevronDown className="w-3 h-3" />}
-          </button>
-          {showRules && (
-            <div className="mt-2 rounded-xl bg-purple-50/60 dark:bg-purple-950/20 border border-purple-100 dark:border-purple-900 p-3 text-xs text-gray-600 dark:text-gray-400 space-y-2">
-              <p className="whitespace-pre-line leading-relaxed">{selectedStrategy.description}</p>
-              {selectedStrategy.rulesText && <p className="whitespace-pre-line leading-relaxed opacity-90">{selectedStrategy.rulesText}</p>}
-            </div>
-          )}
-        </div>
-      )}
 
       {/* 运行概况 + AI 视角 */}
       {current && (
@@ -170,7 +183,7 @@ export function AiScreenTab() {
               <span className="bg-gray-100 text-gray-600 px-1.5 py-0.5 rounded">纯规则</span>
             )}
           </div>
-          {current.marketRegime === 'defense' && selected === 'momentum' && (
+          {current.marketRegime === 'defense' && (
             <div className="text-xs text-amber-600 flex items-start gap-1 mt-2">
               <AlertTriangle className="w-3.5 h-3.5 mt-0.5 shrink-0" />
               <span>防守期趋势型策略历史偏弱，参考即可</span>

@@ -16,8 +16,8 @@ import { runScreen } from '../services/ai-screen/engine';
 import { getServerScreenCfg } from '../services/ai-screen/server-cfg';
 import { persistRun } from '../services/ai-screen/persist';
 
-/** 每日只跑这两个策略（旧 quality/defensive 预设保留历史数据，不再每日运行） */
-const DAILY_STRATEGY_IDS = ['momentum', 'balanced'];
+/** 每日只跑当前对外可见策略（旧 balanced/quality/defensive 预设保留历史数据，不再每日运行） */
+const DAILY_STRATEGY_IDS = ['momentum'];
 
 async function main() {
   const force = process.argv.includes('--force');

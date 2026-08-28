@@ -94,15 +94,15 @@ export const STRATEGY_PRESETS: StrategyPreset[] = [
       maxDrawdown20dPctMin: -25,
     },
     factorWeights: {
-      entry_timing: 0.30,
-      risk: 0.35,
-      quality: 0.25,
+      entry_timing: 0.40,
+      risk: 0.15,
+      quality: 0.05,
       trend: 0,
       liquidity: 0,
       theme_heat: 0,
-      chip: 0,
-      box: 0.05, // 2026-08-15 回放验证升级（箱体内 T+5 +2~5pp）
-      cross13: 0.05, // 2026-08-21 5/13金叉（规则健康表 R04 正指）
+      chip: 0.10,
+      box: 0.25, // 当前 IC 最强（约 +0.20），上调
+      cross13: 0.05,
     },
     scoringProfile: {
       risk_high_volatility_pct: 50.0,
@@ -117,10 +117,10 @@ export const STRATEGY_PRESETS: StrategyPreset[] = [
     ].join('\n'),
     rulesText: [
       '硬筛：RPS(60日)70~97 · 成交额≥8千万 · 单日-5%~+7% · 60日涨幅≤60% · 量比≤2.5 · 波动率≤60% · 回撤≥-25%',
-      '因子侧重：入场点30% · 波动35% · 质量25% · 箱体5% · 金叉5%',
+      '因子侧重：入场点40% · 箱体25% · 波动15% · 筹码10% · 质量5% · 金叉5%',
       '规则分门槛：≥40（低于门槛不入选）',
     ].join('\n'),
-    maxOutput: 30,
+    maxOutput: 10,
     minScreenScore: 40,
     llmRerank: true,
   },

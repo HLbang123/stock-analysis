@@ -1,7 +1,9 @@
 'use client';
 
-import { useState, useEffect, useRef } from 'react';
-import { Menu, X } from 'lucide-react';
+import { useState, useEffect, useRef, type FormEvent } from 'react';
+import { Menu, X, Loader2 } from 'lucide-react';
+import { Modal } from '@/components/ui/modal';
+import { getAuthInfo, remainingDays } from '@/lib/client-auth';
 
 /**
  * 更新日志 + 鸣谢 — 首页标题左侧的汉堡按钮。
@@ -15,6 +17,25 @@ interface ChangeEntry {
 }
 
 const CHANGELOG: ChangeEntry[] = [
+  {
+    date: '2026-08-28',
+    items: [
+      'AI 筛选「趋势优选」规则优化：更重视入场点与箱体形态，入选数收紧为 10 只',
+      '复盘 AI 筛选只展示当前策略，移除已下线预设',
+      '预警规则胜率修正：卖出类信号以下跌为命中，均值按方向显示',
+      '首页菜单新增口令查看与重新输入',
+    ],
+  },
+  {
+    date: '2026-08-27',
+    items: [
+      'AI 筛选趋势策略更名为「趋势优选」，原稳健优选入口下线',
+      '复盘日历升级：默认按上证涨跌红涨绿跌，可切换三态周期视角，新增月内速览（上涨/下跌天数、涨停合计、量能冰点等）',
+      '预警新增「周期可信度」：展示信号在不同市场周期下的历史方向命中率，收缩期与震荡期对比更清楚（仅展示，不改变信号）',
+      '深度分析市场状态统一到复盘日历三态：修正原先把多数环境误判为强势的问题，仓位建议更贴近实际周期',
+      '深度分析ETF优化：ETF改看跟踪指数、区间涨幅、净值、折溢价与品种档案，辩论与裁决同步切换为 ETF 口径',
+    ],
+  },
   {
     date: '2026-08-26',
     items: [
@@ -355,6 +376,18 @@ export function UpdateLog({ onShowRules }: { onShowRules?: () => void }) {
   const [menuOpen, setMenuOpen] = useState(false);
   const [panel, setPanel] = useState<'log' | 'thanks' | null>(null);
   const wrapRef = useRef<HTMLDivElement>(null);
+  const [daysLeft, setDaysLeft] = useState<number | null>(null);
+  const [storedPw, setStoredPw] = useState('');
+  const [pwOpen, setPwOpen] = useState(false);
+  const [pw, setPw] = useState('');
+  const [pwLoading, setPwLoading] = useState(false);
+  const [pwError, setPwError] = useState('');
+
+  useEffect(() => {
+    const info = getAuthInfo();
+    setDaysLeft(remainingDays(info.expSec));
+    try { setStoredPw(localStorage.getItem('auth_password') || ''); } catch {}
+  }, []);
 
   // 点外部关闭小菜单
   useEffect(() => {
@@ -371,6 +404,34 @@ export function UpdateLog({ onShowRules }: { onShowRules?: () => void }) {
   const openPanel = (p: 'log' | 'thanks') => {
     setPanel(p);
     setMenuOpen(false);
+  };
+
+  const refreshAuth = async (e: FormEvent<HTMLFormElement>) => {
+    e.preventDefault();
+    setPwLoading(true);
+    setPwError('');
+    try {
+      const res = await fetch('/api/auth', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ password: pw }),
+      });
+      if (res.ok) {
+        const d = await res.json().catch(() => ({}));
+        setDaysLeft(remainingDays(typeof d.exp === 'number' ? d.exp : null));
+        setStoredPw(pw);
+        try { localStorage.setItem('auth_password', pw); } catch {}
+        setPw('');
+        setPwOpen(false);
+      } else {
+        const d = await res.json().catch(() => ({}));
+        setPwError(d.error || '口令错误');
+      }
+    } catch {
+      setPwError('网络错误');
+    } finally {
+      setPwLoading(false);
+    }
   };
 
   return (
@@ -407,6 +468,12 @@ export function UpdateLog({ onShowRules }: { onShowRules?: () => void }) {
               规则说明
             </button>
           )}
+          <button
+            onClick={() => { setMenuOpen(false); setPw(''); setPwError(''); setPwOpen(true); }}
+            className="w-full px-3 py-2 text-sm text-left text-gray-600 dark:text-gray-300 hover:bg-gray-50 dark:hover:bg-gray-800 transition border-t border-gray-100 dark:border-gray-800"
+          >
+            口令
+          </button>
         </div>
       )}
 
@@ -460,6 +527,49 @@ export function UpdateLog({ onShowRules }: { onShowRules?: () => void }) {
             </div>
           </div>
         </div>
+      )}
+
+      {/* 口令弹窗：展示当前口令 + 有效期 + 重新输入 */}
+      {pwOpen && (
+        <Modal title="口令" onClose={() => setPwOpen(false)} variant="center" maxWidth="sm:max-w-xs">
+          <div className="p-4 space-y-4">
+            <div>
+              <div className="text-xs text-gray-400 mb-1">口令</div>
+              <div className="text-sm font-medium text-gray-700 dark:text-gray-200 break-all">
+                {storedPw || '未记录'}
+              </div>
+            </div>
+
+            <div>
+              <div className="text-xs text-gray-400 mb-1">有效期</div>
+              <div className="text-sm text-gray-700 dark:text-gray-200">
+                {daysLeft == null ? '重新输入后显示' : daysLeft <= 0 ? '已过期' : `剩余 ${daysLeft} 天`}
+              </div>
+            </div>
+
+            <form onSubmit={refreshAuth} className="space-y-3">
+              <div>
+                <div className="text-xs text-gray-400 mb-1">输入口令</div>
+                <input
+                  type="password"
+                  value={pw}
+                  onChange={(e) => setPw(e.target.value)}
+                  placeholder="口令"
+                  autoFocus
+                  className="w-full px-3 py-2.5 border border-gray-200 dark:border-gray-700 rounded-lg bg-white dark:bg-gray-800 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500"
+                />
+              </div>
+              {pwError && <p className="text-xs text-red-500">{pwError}</p>}
+              <button
+                type="submit"
+                disabled={pwLoading || !pw}
+                className="w-full py-2.5 bg-blue-600 text-white rounded-lg text-sm font-medium hover:bg-blue-700 disabled:opacity-50 flex items-center justify-center gap-2"
+              >
+                {pwLoading && <Loader2 className="w-4 h-4 animate-spin" />} 确认
+              </button>
+            </form>
+          </div>
+        </Modal>
       )}
     </div>
   );

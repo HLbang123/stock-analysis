@@ -4,7 +4,8 @@
  * 预警规则健康卡 — AI 页「胜率复盘」tab 顶部。
  * 数据源 /api/alerts/triggers/stats（alert_rule_triggers 聚合，T+5 回填后才有样本）。
  * 目的：让规则质量持续可见——哪条规则在触发、触发后涨跌如何、近 30 天趋势。
- * 注意：胜率是绝对口径（T+5 > 0），弱市下基准线可能低于 50%，对照看趋势而非绝对高低。
+ * 注意：胜率为方向感知口径——卖出/风险侧（R01/R02/R03/R14）命中 = T+5 下跌，买入/机会侧命中 = T+5 上涨；
+ * 均值为方向收益（卖出侧已反号），正数代表规则方向正确。
  */
 
 import { useState, useEffect, useCallback, Fragment } from 'react';

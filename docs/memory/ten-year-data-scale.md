@@ -24,6 +24,9 @@ metadata:
 6. **跑法三铁律**：`setsid`（nohup 护不住 npx 子进程）、3584 堆、`&&` 串行链。细节见 [[server-info]]。
 7. **新脚本先小窗口试跑**（--days=60 验证逻辑与内存），再放全量。
 8. **build/部署与批处理永不同时**——2 核机器，撞一起就是双输。
+9. **新增统计/复盘/健康接口先问“这张表多大”**：凡是 join `alert_rule_triggers` / `daily_bars` / `rps_scores` 等大表的接口，必须带日期下界（通常 180 天），禁止无界全表 join。
+   - 2026-08-28 事故：预警规则健康 tab 新增「周期可信度」接口（`app/api/alerts/triggers/regime`）没有 `bar_date` 下界，全表 join 30 万+ 行，把原本已修快的健康 tab 又拖慢。
+   - **这是同类问题第二次出现，不允许第三次**。健康/复盘/统计类接口一律与 `app/api/alerts/triggers/stats` 对齐：`days=180` 默认窗口 + `bar_date >= since`。
 
 ## 消费地图：别为 10 年数据过度设计
 
@@ -50,5 +53,6 @@ metadata:
 - compute-market-breadth / compute-rps 卡死 → 统计过期，ANALYZE 治
 - 全站白天 load 9 → rps/batch 无日期过滤 × 12 并发 × 统计过期
 - 2026-08-19 load 尖峰 → DISTINCT ON + ANY 撞统计过期（见上）
+- 2026-08-28 预警规则健康再次变慢 → 新增 AlertRuleRegime 接口无日期下界，全表 join alert_rule_triggers（军规 9）
 
 相关：[[server-info]]

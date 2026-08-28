@@ -14,7 +14,7 @@ interface AiScreenState {
 export const useAiScreenStore = create<AiScreenState>()(
   persist(
     (set) => ({
-      selectedStrategyId: 'balanced',
+      selectedStrategyId: 'momentum',
       lastRun: null,
       lastPicks: [],
       setSelectedStrategy: (selectedStrategyId) => set({ selectedStrategyId }),
