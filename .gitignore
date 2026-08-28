@@ -49,3 +49,6 @@ next-env.d.ts
 
 # CodeGraph 索引(本地产物,8MB+,不入库)
 /.codegraph/
+
+# DSH agent-teams 团队状态(本地产物,不入库)
+.agent-teams/

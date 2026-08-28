@@ -27,7 +27,7 @@ import { getJSONOr, postJSON, getJSON } from '@/services/api';
 import { streamChatDirect, LlmHttpError, isDirectConnectionError } from '@/services/llm/browser-client';
 import { FatalApiError, isFatalApiStatus } from '@/lib/ai-error';
 import { acquireLlmSlot, noteLlmRateLimited } from './concurrency';
-import type { StockRpsResp, BreadthResp, FuyaoFundResp } from '@/types/api';
+import type { StockRpsResp, BreadthResp, FuyaoFundResp, FundBarsResp, FundPremiumResp, FundProfileResp } from '@/types/api';
 import { isETF } from '@/lib/identify';
 
 // ── 结构化裁决结果等类型在 ./types（单一事实源，解 engine⇄ai-store 类型环）──
@@ -113,11 +113,18 @@ export function parseVerdictContent(text: string, levels?: TradeLevels | null): 
 // ── 数据准备（抓行情/K线/筹码 + 算指标 + 拼三阶段 prompt）──────────────
 export interface DeepContext {
   stockCode: string;
+  isETF: boolean;
   stage1: { systemPrompt: string; userPrompt: string };
   stage2: { systemPrompt: string; userPrompt: string };
   stage3: { systemPrompt: string; userPrompt: string };
   tradeLevels: TradeLevels;
   marketRegime: MarketRegime;
+  /** 市场状态来源：review-calendar（复盘日历三态，B1）或 breadth（旧宽度口径 fallback） */
+  regimeSource: 'review-calendar' | 'breadth';
+  /** 复盘日历三态持续交易日数（breadth fallback 时为 null） */
+  regimeDay: number | null;
+  /** 市场状态基准日 YYYYMMDD（review-calendar 的 trade_date 或 breadth date） */
+  regimeDate: string | null;
   tushareIssues: string[];
   entryDate: string;
   quote: RealtimeQuote;
@@ -125,47 +132,86 @@ export interface DeepContext {
   engineSummary: string;
 }
 
+/** /api/deep-analysis/regime 响应：review_calendar_days 最新三态（B1 口径统一） */
+interface CalendarRegimeResp {
+  regime: 'attack' | 'neutral' | 'defense' | null;
+  regimeDay: number | null;
+  tradeDate: string | null;
+  source: 'review-calendar' | 'fallback';
+}
+
 export async function prepareDeepContext(
   selectedCode: string,
   stock: Stock,
   history: AiAnalysisRecord[],
 ): Promise<DeepContext> {
-  const [quote, kLines, tushareData, rpsRes, breadthRes, indexQuotes] = await Promise.all([
+  const etf = isETF(selectedCode);
+  const [quote, kLines, tushareData, rpsRes, breadthRes, regimeRes, indexQuotes, fundBarsRes, fundProfileRes] = await Promise.all([
     getRealtimeQuoteCached(selectedCode),
     getKLineSinaCached(selectedCode, 240, 120),
-    // 缓存版（10min TTL）：重复分析基本面秒出，且去掉原 2s 失败重试占用关键路径；fresh 失败时回退旧缓存
-    fetchTushareDataCached(selectedCode),
-    getJSONOr<StockRpsResp | null>(`/api/stock/rps?code=${selectedCode}`, null),
+    // 缓存版（10min TTL）：重复分析基本面秒出，且去掉原 2s 失败重试占用关键路径；fresh 失败时回退旧缓存。ETF 不查个股基本面。
+    etf ? Promise.resolve(null) : fetchTushareDataCached(selectedCode),
+    // ETF 不做个股 RPS 池（rps_scores 无 ETF），跳过；用区间涨幅替代。
+    etf ? Promise.resolve(null) : getJSONOr<StockRpsResp | null>(`/api/stock/rps?code=${selectedCode}`, null),
     getJSONOr<BreadthResp | null>('/api/market/breadth?days=1', null),
+    // B1：优先读复盘日历三态（review_calendar_days），查不到回退旧 breadth 口径
+    getJSONOr<CalendarRegimeResp | null>('/api/deep-analysis/regime', null),
     // 六指数实时行情（行情通道，含盘中）；tushare 指数盘后才有，盘中恒为 T-1
     getMarketIndexQuotes().catch((): MarketIndexQuote[] => []),
+    // ETF 净值走势 / 品种档案（本地 fund_profiles）；股票恒为 null
+    etf ? getJSONOr<FundBarsResp | null>(`/api/fund/daily?code=${selectedCode}`, null) : Promise.resolve(null),
+    etf ? getJSONOr<FundProfileResp | null>(`/api/fund/profile?code=${selectedCode}`, null) : Promise.resolve(null),
   ]);
 
   if (!quote) throw new Error('获取行情失败');
 
-  // 市场状态判定（仓位联动）：breadth 最新日涨跌比 + 站上55日线比例
+  // ETF 折溢价（服务端按品种过滤，只有跨境/商品类返回值；股票恒为 null）
+  let premiumRes: FundPremiumResp | null = null;
+  if (etf && quote?.price) {
+    premiumRes = await getJSONOr<FundPremiumResp | null>(`/api/fund/premium?code=${selectedCode}&price=${quote.price}`, null);
+  }
+
+  // 市场状态判定（B1，仓位联动）：优先 review_calendar_days 三态，映射 attack→strong / defense→weak / neutral→neutral；
+  // 查不到再回退旧 breadth 口径（0.5×涨跌比 + 0.5×站上55日线比例）。regimeFactor 1.2/0.6/1.0 冻结不动。
   const breadthLatest = breadthRes?.items?.[0];
   let marketRegime: MarketRegime = 'neutral';
-  if (breadthLatest) {
+  let regimeSource: 'review-calendar' | 'breadth' = 'breadth';
+  let regimeDay: number | null = null;
+  let regimeDate: string | null = null;
+  const calRegime = regimeRes?.regime ?? null;
+  if (regimeRes?.source === 'review-calendar' && calRegime) {
+    marketRegime = calRegime === 'attack' ? 'strong' : calRegime === 'defense' ? 'weak' : 'neutral';
+    regimeSource = 'review-calendar';
+    regimeDay = regimeRes.regimeDay ?? null;
+    regimeDate = regimeRes.tradeDate ?? null;
+  } else if (breadthLatest) {
+    // fallback：旧 breadth 口径（原逻辑保留，不改系数）
     const ad = (breadthLatest.advance || 0) + (breadthLatest.decline || 0);
     const adRatio = ad > 0 ? (breadthLatest.advance || 0) / ad : 0.5;
     const aboveRatio = typeof breadthLatest.aboveMa55Ratio === 'number' ? breadthLatest.aboveMa55Ratio : 0.5;
     const score = adRatio * 0.5 + aboveRatio * 0.5;
     marketRegime = score >= 0.6 ? 'strong' : score <= 0.4 ? 'weak' : 'neutral';
+    regimeSource = 'breadth';
+    regimeDate = breadthLatest.date ?? null;
   }
+  if (regimeDate == null) regimeDate = breadthLatest?.date ?? null;
 
-  // 盘中背离检测：regime 源自最近交易日收盘宽度（T-1），若与今日实时指数明显背离则显式提示。
+  // 可观测（结构化）：regime 来源 / 原始值 / 映射值 / regime_day / 基准日
+  console.log('[deep-analysis:regime]', JSON.stringify({ stockCode: selectedCode, source: regimeSource, rawRegime: calRegime, regime: marketRegime, regimeDay, regimeDate }));
+
+  // 盘中背离检测：regime 源自最近交易日（review-calendar 为 T-1 收盘口径），若与今日实时指数明显背离则显式提示。
   // 只提示不改 regimeFactor 数值——仓位公式未经回测验证，数值调整需单独评估。
   let regimeConflictNote = '';
   {
     const pcts = indexQuotes.map(q => q.changePercent).filter(Number.isFinite);
     const quoteDate = indexQuotes[0]?.updateTime?.slice(0, 10) || '';
+    const regimeSrcLabel = regimeSource === 'review-calendar' ? '复盘日历三态' : '收盘宽度';
     if (pcts.length >= 4 && quoteDate === beijingTodayStr()) {
       const avg = pcts.reduce((a, b) => a + b, 0) / pcts.length;
       if (marketRegime === 'strong' && avg <= -1) {
-        regimeConflictNote = `[盘中提示] 市场状态基于最近交易日收盘宽度判定为「强势」，但今日六大指数平均 ${avg.toFixed(2)}%，明显背离，仓位评估请按偏弱市场谨慎对待。\n\n`;
+        regimeConflictNote = `[盘中提示] 市场状态基于最近交易日${regimeSrcLabel}判定为「强势」，但今日六大指数平均 ${avg.toFixed(2)}%，明显背离，仓位评估请按偏弱市场谨慎对待。\n\n`;
       } else if (marketRegime === 'weak' && avg >= 1) {
-        regimeConflictNote = `[盘中提示] 市场状态基于最近交易日收盘宽度判定为「弱势」，但今日六大指数平均 +${avg.toFixed(2)}%，明显背离，仓位评估可适当乐观。\n\n`;
+        regimeConflictNote = `[盘中提示] 市场状态基于最近交易日${regimeSrcLabel}判定为「弱势」，但今日六大指数平均 +${avg.toFixed(2)}%，明显背离，仓位评估可适当乐观。\n\n`;
       }
     }
   }
@@ -174,8 +220,8 @@ export async function prepareDeepContext(
   const tushareBlock = formatTushareForPrompt(tushareData, indexQuotes, quote);
 
   const updatedKLines = kLines.length >= 5 ? buildUpdatedKLines(quote, kLines) : kLines;
-  const chip: ChipDistribution | null = await getChipData(selectedCode).catch(() => null);
-  const engineResults = checkAllRules(updatedKLines, quote, ALERT_RULES.filter(r => r.isEnabled), chip, undefined, isETF(selectedCode));
+  const chip: ChipDistribution | null = etf ? null : await getChipData(selectedCode).catch(() => null);
+  const engineResults = checkAllRules(updatedKLines, quote, ALERT_RULES.filter(r => r.isEnabled), chip, undefined, etf);
   const engineSummary = engineResults.length > 0
     ? engineResults.map(r => `${r.ruleId}:${r.message}`).join('; ')
     : '未触发任何破位/死叉/急跌等风险信号，技术面健康';
@@ -206,9 +252,11 @@ export async function prepareDeepContext(
     engineResults,
     quote,
     rps250: rpsRes && !rpsRes.error ? (rpsRes.rps250 ?? null) : null,
+    isETF: etf,
     positionPercent: stock.positionPercent,
     marketRegime,
-    breadthDate: breadthLatest?.date,
+    regimeDate,
+    regimeSource,
   });
   // 背离提示同时进裁决 prompt（stage3 只带 levelsText，不带 marketStatusNote）；MA60 压力提示也一并进入裁决
   const levelsText = formatLevelsForPrompt(tradeLevels) + (ma60PressureNote ? `\n${ma60PressureNote.trim()}` : '') + (regimeConflictNote ? `\n${regimeConflictNote.trim()}` : '');
@@ -229,36 +277,63 @@ export async function prepareDeepContext(
   const rpsNote = rpsRes && !rpsRes.error
     ? `[RPS强度] 20日:${rpsRes.rps20?.toFixed(1)} 60日:${rpsRes.rps60?.toFixed(1)} 120日:${rpsRes.rps120?.toFixed(1)} 250日:${rpsRes.rps250?.toFixed(1)}（${(rpsRes.rps250 ?? 0) >= 95 ? '全市场前5%极强' : (rpsRes.rps250 ?? 0) >= 87 ? '强势' : '中等偏弱'}${rpsDateStr ? `，数据截至 ${rpsDateStr} 收盘` : ''}）\n\n`
     : '';
-  const etf = isETF(selectedCode);
-  let etfHoldingsNote = '';
+
+  let etfContext = '';
   if (etf) {
     const em = selectedCode.match(/^([a-z]+)(\d+)$/i);
-    if (em) {
-      const thscode = `${em[2]}.${em[1].toUpperCase()}`;
-      const fundRes = await getJSONOr<FuyaoFundResp | null>(`/api/fuyao/fund?code=${thscode}`, null);
-      if (fundRes?.holdings && fundRes.holdings.length > 0) {
-        etfHoldingsNote = `[基金持仓] 前${fundRes.holdings.length}大重仓股：${fundRes.holdings.map((h: any) => `${h.stock_name}(${h.hold_ratio.toFixed(1)}%)`).join('、')}\n\n`;
-      }
+    const thscode = em ? `${em[2]}.${em[1].toUpperCase()}` : selectedCode.toUpperCase();
+    const fundRes = await getJSONOr<FuyaoFundResp | null>(`/api/fuyao/fund?code=${thscode}`, null);
+    const profile = fundProfileRes?.profile;
+    const assetClassLabel = profile?.assetClass === 'equity' ? '股票型' : profile?.assetClass === 'cross-border' ? '跨境' : profile?.assetClass === 'bond' ? '债券型' : profile?.assetClass === 'commodity' ? '商品型' : profile?.assetClass === 'money' ? '货币型' : '--';
+    const parts: string[] = ['[ETF 档案]'];
+    if (profile?.name) parts.push(`- 名称：${profile.name}`);
+    parts.push(`- 类型：${assetClassLabel}${profile?.tPlus0 ? '（T+0）' : ''}${profile?.limitPct ? `，涨跌幅 ${profile.limitPct}%` : ''}`);
+    if (profile?.benchmark) parts.push(`- 业绩基准：${profile.benchmark}`);
+    if (fundRes?.holdings && fundRes.holdings.length > 0) {
+      parts.push(`- 前${fundRes.holdings.length}大重仓股：${fundRes.holdings.map((h: any) => `${h.stock_name}(${h.hold_ratio.toFixed(1)}%)`).join('、')}`);
     }
+    const retOf = (n: number) => {
+      const bars = kLines.slice(-(n + 1));
+      if (bars.length < n + 1) return null;
+      const start = bars[0].close;
+      const end = bars[bars.length - 1].close;
+      return start > 0 ? ((end - start) / start) * 100 : null;
+    };
+    const ret20 = retOf(20), ret60 = retOf(60), ret120 = retOf(120);
+    const retText = [ret20, ret60, ret120].map((v, i) => v == null ? null : `${[20,60,120][i]}日 ${v > 0 ? '+' : ''}${v.toFixed(1)}%`).filter(Boolean).join('，');
+    parts.push(`- 区间涨幅（场内价格）：${retText || '样本不足'}`);
+    if (fundBarsRes?.bars && fundBarsRes.bars.length > 0) {
+      const recentBars = fundBarsRes.bars.slice(-5).reverse();
+      parts.push(`- 近期净值：${recentBars.map(b => `${b.tradeDate.slice(4)} ${b.close}${b.changePct != null ? `(${b.changePct > 0 ? '+' : ''}${b.changePct.toFixed(2)}%)` : ''}`).join('，')}`);
+    }
+    if (premiumRes && premiumRes.premiumPct != null) {
+      parts.push(`- 折溢价率：${premiumRes.premiumPct > 0 ? '+' : ''}${premiumRes.premiumPct.toFixed(2)}%（净值日期 ${premiumRes.navDate || '--'}）`);
+    } else {
+      parts.push('- 折溢价率：不适用（股票型 ETF 折溢价通常≈0）');
+    }
+    if (quote.turnover != null) parts.push(`- 今日换手率：${quote.turnover.toFixed(2)}%`);
+    if (quote.amount != null) parts.push(`- 今日成交额：${(quote.amount / 1e8).toFixed(2)} 亿`);
+    etfContext = parts.join('\n') + '\n';
   }
 
   const stage1 = {
     systemPrompt: buildAnalystSystemPrompt(etf),
-    userPrompt: marketStatusNote + rpsNote + etfHoldingsNote + chipNote + buildAnalystUserPrompt(selectedCode, stock.name, quoteJson, klineSummary, engineSummary, indicatorBlockWithNote, reflectionBlock, positionNote, etf, tushareBlock, getIndustry(selectedCode)),
+    userPrompt: marketStatusNote + (etf ? '' : rpsNote + chipNote) + buildAnalystUserPrompt(selectedCode, stock.name, quoteJson, klineSummary, engineSummary, indicatorBlockWithNote, reflectionBlock, positionNote, etf, etf ? '' : tushareBlock, etf ? undefined : getIndustry(selectedCode), etf ? etfContext : undefined),
   };
   const stage2 = {
     systemPrompt: '',
-    userPrompt: buildDebateDataPrompt(selectedCode, stock.name, quoteJson, indicatorBlockWithNote, marketStatusNote, engineSummary, klineSummary20, chipNote),
+    userPrompt: buildDebateDataPrompt(selectedCode, stock.name, quoteJson, indicatorBlockWithNote, marketStatusNote, engineSummary, klineSummary20, chipNote, etf ? etfContext : undefined),
   };
   const compactQuote = `当前价 ${quote.price} 元，涨跌 ${quote.changePercent.toFixed(2)}%（昨收 ${quote.preClose}，开盘 ${quote.open}，最高 ${quote.high}，最低 ${quote.low}）`;
   const stage3 = {
-    systemPrompt: buildVerdictSystemPrompt(),
+    systemPrompt: buildVerdictSystemPrompt(etf),
     userPrompt: buildVerdictUserPrompt(selectedCode, stock.name, '', '', compactQuote, positionNoteVerdict, engineSummary, levelsText),
   };
 
-  const entryDate = breadthLatest?.date || (rpsRes as any)?.calcDate || new Date().toISOString().slice(0, 10).replace(/-/g, '');
+  const etfLatestNavDate = fundBarsRes?.bars?.at(-1)?.tradeDate ?? null;
+  const entryDate = regimeDate || breadthLatest?.date || (etf ? etfLatestNavDate : (rpsRes as any)?.calcDate) || new Date().toISOString().slice(0, 10).replace(/-/g, '');
 
-  return { stockCode: selectedCode, stage1, stage2, stage3, tradeLevels, marketRegime, tushareIssues, entryDate, quote, engineSummary };
+  return { stockCode: selectedCode, isETF: etf, stage1, stage2, stage3, tradeLevels, marketRegime, regimeSource, regimeDay, regimeDate, tushareIssues, entryDate, quote, engineSummary };
 }
 
 // ── 深度分析执行：浏览器直连（主路径）+ 服务器中转（降级）──────────────
@@ -569,7 +644,7 @@ async function runDeepAnalysisDirect(opts: RunDeepOptions, completedMap: Record<
   const [t1, r1, x1] = await Promise.all([
     safeRun('tech', buildTechR1SystemPrompt(), debateData, 4096, true),
     safeRun('risk', buildRiskR1SystemPrompt(), debateData, 4096, true),
-    safeRun('xinjie', buildXinJieR1DebatePrompt(), debateData, 4096, true),
+    safeRun('xinjie', buildXinJieR1DebatePrompt(ctx.isETF), debateData, 4096, true),
   ]);
 
   // ===== R2：串行反驳链（宽容；前一步失败用空串占位，不阻断后续）=====
@@ -580,7 +655,7 @@ async function runDeepAnalysisDirect(opts: RunDeepOptions, completedMap: Record<
   const riskR2 = await safeRun('risk_r2', buildRiskR2RebuttalPrompt(), riskR2Ctx, 4096, true);
 
   const xinjieR2Ctx = `第一轮：\n${t1}\n${r1}\n\n第二轮回应：\n技术分析师："${techR2.slice(0, 200)}"\n风控专家："${riskR2.slice(0, 200)}"\n\n请给出你的最终判断。`;
-  const xinjieR2 = await safeRun('xinjie_r2', buildXinJieR2RebuttalPrompt(), xinjieR2Ctx, 4096, true);
+  const xinjieR2 = await safeRun('xinjie_r2', buildXinJieR2RebuttalPrompt(ctx.isETF), xinjieR2Ctx, 4096, true);
 
   // 裁决需要分析师报告：R2 链完成后收口等分析师结束（若分析师更快，这里已 resolve）
   const stage1Output = await analystPromise;
@@ -598,7 +673,7 @@ async function runDeepAnalysisDirect(opts: RunDeepOptions, completedMap: Record<
   }
 
   // ===== 阶段三：最终裁决（核心产出，三档降级 + 规则兜底，确保"最坏也有裁决"）=====
-  const s3System = ctx.stage3.systemPrompt || buildVerdictSystemPrompt();
+  const s3System = ctx.stage3.systemPrompt || buildVerdictSystemPrompt(ctx.isETF);
   const userViewVerdict = userView ? `\n\n[用户观点] 用户当前${userView}，理由：${userViewReason || '未说明'}。请在决策理由中评价用户观点是否成立（用数据说话，不要迎合用户）。` : '';
   // P2：历史校准注入（真实回测胜率，拼在 ## 分析师报告 前；样本不足/失败返回空串）
   const calibrationNote = await fetchCalibrationNote(ctx.stockCode);
@@ -812,6 +887,7 @@ async function runDeepAnalysisViaServer(opts: RunDeepOptions, completedMap: Reco
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({
       stockCode: ctx.stockCode,
+      isETF: ctx.isETF,
       stage1: ctx.stage1, stage2: ctx.stage2, stage3: ctx.stage3,
       baseUrl: cfg.baseUrl, apiKey: cfg.apiKey, model: cfg.model,
       // 直连已完成的阶段一并上送，服务器回放跳过（而不是重跑）
@@ -1011,8 +1087,20 @@ export async function saveDeepEval(params: {
   stockCode: string; stockName: string; entryDate: string; entryPrice: number;
   structured: DeepStructured | null;
   marketRegime?: MarketRegime;
+  regimeSource?: 'review-calendar' | 'breadth';
+  regimeDay?: number | null;
+  regimeDate?: string | null;
 }): Promise<void> {
   const { structured } = params;
+  // 可观测（结构化）：最终仓位档位 + regime 来源/值/持续天数（随时间累积即仓位档位分布）
+  const position = structured && Number.isFinite(structured.position) ? structured.position : null;
+  const positionBucket = position == null ? null : position < 20 ? '10-20' : position < 30 ? '20-30' : position < 40 ? '30-40' : '40-50';
+  console.log('[deep-analysis:save]', JSON.stringify({
+    stockCode: params.stockCode, entryDate: params.entryDate,
+    marketRegime: params.marketRegime ?? null, regimeSource: params.regimeSource ?? null,
+    regimeDay: params.regimeDay ?? null, regimeDate: params.regimeDate ?? null,
+    position, positionBucket,
+  }));
   try {
     await postJSON('/api/ai/deep-eval', {
       stockCode: params.stockCode, stockName: params.stockName,

@@ -87,6 +87,36 @@ export interface FuyaoFundResp {
   error?: string; [k: string]: any;
 }
 
+// ── /api/fund/daily ──────────────────────────────────────────────────
+export interface FundBarsResp {
+  bars: { tradeDate: string; close: number; changePct: number | null }[];
+  error?: string; [k: string]: any;
+}
+
+// ── /api/fund/premium ────────────────────────────────────────────────
+export interface FundPremiumResp {
+  premiumPct: number | null;
+  navDate?: string;
+  unitNav?: number;
+  error?: string; [k: string]: any;
+}
+
+// ── /api/fund/profile ────────────────────────────────────────────────
+export interface FundProfileResp {
+  profile: {
+    tsCode: string;
+    name: string;
+    fundType?: string | null;
+    investType?: string | null;
+    benchmark?: string | null;
+    listDate?: string | null;
+    assetClass?: string | null;
+    tPlus0: boolean;
+    limitPct?: number | null;
+  } | null;
+  error?: string; [k: string]: any;
+}
+
 // ── /api/tushare/stock-data ──────────────────────────────────────────
 export interface TushareStockDataResp {
   success: boolean;

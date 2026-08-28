@@ -34,7 +34,7 @@ const STUCK_THRESHOLD = 0.7;
 export async function POST(request: NextRequest) {
   try {
     const body = await request.json();
-    const { stockCode, stage1, stage2, stage3, baseUrl, apiKey, model, completed, userView, userViewReason } = body;
+    const { stockCode, isETF, stage1, stage2, stage3, baseUrl, apiKey, model, completed, userView, userViewReason } = body;
 
     if (!baseUrl || !model) {
       return NextResponse.json(
@@ -246,7 +246,7 @@ export async function POST(request: NextRequest) {
           const [t1, r1, x1] = await Promise.all([
             safeRunOrReplay('tech', buildTechR1SystemPrompt(), debateData, 4096, true),
             safeRunOrReplay('risk', buildRiskR1SystemPrompt(), debateData, 4096, true),
-            safeRunOrReplay('xinjie', buildXinJieR1DebatePrompt(), debateData, 4096, true),
+            safeRunOrReplay('xinjie', buildXinJieR1DebatePrompt(isETF), debateData, 4096, true),
           ]);
 
           // ===== R2：串行反驳链（宽容；前一步失败用空串占位）=====
@@ -258,7 +258,7 @@ export async function POST(request: NextRequest) {
           const riskR2 = await safeRunOrReplay('risk_r2', buildRiskR2RebuttalPrompt(), riskR2Ctx, 4096, true);
 
           const xinjieR2Ctx = `第一轮：\n${t1}\n${r1}\n\n第二轮回应：\n技术分析师："${techR2.slice(0, 200)}"\n风控专家："${riskR2.slice(0, 200)}"\n\n请给出你的最终判断。`;
-          const xinjieR2 = await safeRunOrReplay('xinjie_r2', buildXinJieR2RebuttalPrompt(), xinjieR2Ctx, 4096, true);
+          const xinjieR2 = await safeRunOrReplay('xinjie_r2', buildXinJieR2RebuttalPrompt(isETF), xinjieR2Ctx, 4096, true);
 
           // 裁决需要分析师报告：R2 链完成后收口等分析师结束（若分析师更快，这里已 resolve）
           const stage1Output = await analystPromise;
@@ -278,7 +278,7 @@ export async function POST(request: NextRequest) {
 
           // ===== 阶段三：最终裁决（三档降级重试；全失败由客户端规则兜底）=====
           console.log('[Deep AI Proxy] Stage 3: Final Verdict (with degrade)');
-          const s3System = stage3?.systemPrompt || buildVerdictSystemPrompt();
+          const s3System = stage3?.systemPrompt || buildVerdictSystemPrompt(isETF);
           const userViewVerdict = userView ? `\n\n[用户观点] 用户当前${userView}，理由：${userViewReason || '未说明'}。请在决策理由中评价用户观点是否成立（用数据说话，不要迎合用户）。` : '';
           // P2：历史校准注入（真实回测胜率，拼在 ## 分析师报告 前；样本不足/失败返回空串）
           const calibrationNote = await buildCalibrationNote(stockCode);

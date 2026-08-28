@@ -133,12 +133,15 @@ export function computeKeyLevels(params: {
   engineResults: RuleCheckResult[];
   quote: RealtimeQuote;
   rps250?: number | null;
+  isETF?: boolean;
   positionPercent?: number;
   marketRegime?: MarketRegime;
-  /** 市场宽度数据基准日（YYYYMMDD）——宽度表盘后计算，盘中恒为 T-1，rationale 需标注防误读 */
-  breadthDate?: string;
+  /** 市场状态基准日（YYYYMMDD）——review-calendar 为 T-1 收盘口径，rationale 需标注防误读 */
+  regimeDate?: string | null;
+  /** 市场状态来源：review-calendar（复盘日历三态）或 breadth（旧宽度口径 fallback） */
+  regimeSource?: 'review-calendar' | 'breadth';
 }): TradeLevels {
-  const { kLines, indicators, chip, engineResults, quote, rps250, positionPercent, marketRegime = 'neutral', breadthDate } = params;
+  const { kLines, indicators, chip, engineResults, quote, rps250, isETF = false, positionPercent, marketRegime = 'neutral', regimeDate, regimeSource = 'breadth' } = params;
   const price = quote.price || indicators.lastClose || kLines.at(-1)?.close || 0;
   const recent = kLines.slice(-60);
 
@@ -195,7 +198,8 @@ export function computeKeyLevels(params: {
   // --- 仓位区间 [low%, high%] ---
   const buyCount = countBuySignals(engineResults);
   let base: number;
-  if (buyCount >= 2 && (rps250 ?? 0) >= 90) base = 40;
+  const rpsBoost = !isETF && buyCount >= 2 && (rps250 ?? 0) >= 90;
+  if (rpsBoost) base = 40;
   else if (buyCount >= 1) base = 30;
   else base = 20;
   if (atrPct > 0.05) base *= 0.8;
@@ -211,17 +215,18 @@ export function computeKeyLevels(params: {
   posLow = Math.max(10, Math.min(posLow, 50));
   posHigh = Math.max(posLow, Math.min(posHigh, 50));
   const positionRange = { low: Math.round(posLow), high: Math.round(posHigh) };
-
   const regimeLabel = marketRegime === 'strong' ? '强势' : marketRegime === 'weak' ? '弱势' : '震荡';
-  const regimeDateStr = breadthDate && breadthDate.length === 8
-    ? `${breadthDate.slice(4, 6)}-${breadthDate.slice(6, 8)}`
+  const regimeDateStr = regimeDate && regimeDate.length === 8
+    ? `${regimeDate.slice(4, 6)}-${regimeDate.slice(6, 8)}`
     : '最近交易日';
+  const regimeSrcLabel = regimeSource === 'review-calendar' ? '复盘日历三态' : '市场宽度';
+  const strengthBasis = isETF ? 'ETF 不适用个股 RPS' : `RPS250 ${rps250 ?? '--'}`;
   const rationale = [
     `当前价 ${round2(price)}，ATR(14) ${round2(atr)}（${(atrPct * 100).toFixed(1)}% 波动率）`,
-    `市场状态：${regimeLabel}（基于 ${regimeDateStr} 收盘宽度，仓位基准 ×${regimeFactor.toFixed(1)}）`,
+    `市场状态：${regimeLabel}（基于 ${regimeDateStr} ${regimeSrcLabel}，仓位基准 ×${regimeFactor.toFixed(1)}）`,
     `止损区间 [${stopLossRange.low}, ${stopLossRange.high}] —— 依据：${supports.map(s => s.label).join(' / ') || '纯 ATR 推算'}`,
     `目标区间 [${targetRange.low}, ${targetRange.high}] —— 依据：${resistances.map(r => r.label).join(' / ') || '纯 ATR 推算'}`,
-    `仓位区间 [${positionRange.low}%, ${positionRange.high}%] —— 买入类信号 ${buyCount} 条，RPS250 ${rps250 ?? '--'}，基准 ${Math.round(base)}%`,
+    `仓位区间 [${positionRange.low}%, ${positionRange.high}%] —— 买入类信号 ${buyCount} 条，${strengthBasis}，基准 ${Math.round(base)}%`,
   ].join('\n');
 
   // 展示用：去重 + 按距现价排序（支撑近→远降序、压力近→远升序），每侧最多 4 个

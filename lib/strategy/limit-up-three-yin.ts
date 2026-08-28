@@ -21,7 +21,6 @@ export interface LimitUpThreeYinConfig {
   maxYinBodyPct: number;
   requireTrueYin: boolean;
   requireVolumeShrinking: boolean;
-  requireFirstYinBelowLimitUpVolume: boolean;
 }
 
 export const DEFAULT_LIMIT_UP_THREE_YIN_CONFIG: LimitUpThreeYinConfig = {
@@ -31,7 +30,6 @@ export const DEFAULT_LIMIT_UP_THREE_YIN_CONFIG: LimitUpThreeYinConfig = {
   maxYinBodyPct: 3.0,
   requireTrueYin: true,
   requireVolumeShrinking: true,
-  requireFirstYinBelowLimitUpVolume: true,
 };
 
 export interface LimitUpThreeYinSignal {
@@ -108,7 +106,6 @@ export function detectLimitUpThreeYinAt(
 
   const volumes: [number, number, number, number] = [b0.volume, b1.volume, b2.volume, b3.volume];
   if (cfg.requireVolumeShrinking && !(b1.volume > b2.volume && b2.volume > b3.volume)) fail.push('volume_not_shrinking');
-  if (cfg.requireFirstYinBelowLimitUpVolume && !(b0.volume > b1.volume)) fail.push('yin1_volume_not_below_limit_up');
 
   const matched = fail.length === 0;
   const entryClose = b3.close;

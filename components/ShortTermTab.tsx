@@ -6,7 +6,7 @@ import { useUiStore } from '@/store/ui-store';
 import { useStockStore } from '@/store';
 import { cn } from '@/lib/utils';
 import { Card } from '@/components/ui/card';
-import { ChevronDown, ChevronUp, Info, AlertTriangle, Loader2, Plus, Minus } from 'lucide-react';
+import { ChevronDown, ChevronUp, Info, AlertTriangle, Loader2, Plus, Minus, Copy } from 'lucide-react';
 import { toast } from 'sonner';
 
 /**
@@ -192,6 +192,34 @@ export function ShortTermTab() {
 
   const market = resp?.market ?? null;
   const candidates = resp?.candidates?.[selected] ?? [];
+
+  const copyCurrentCandidates = async () => {
+    if (!candidates.length) return;
+    const lines = candidates.map((c) => `${c.name} ${c.tsCode.replace(/\.(SH|SZ|BJ)$/, '')}`);
+    const text = lines.join('\n');
+    let ok = false;
+    try {
+      await navigator.clipboard.writeText(text);
+      ok = true;
+    } catch {
+      try {
+        const ta = document.createElement('textarea');
+        ta.value = text;
+        ta.style.position = 'fixed';
+        ta.style.opacity = '0';
+        document.body.appendChild(ta);
+        ta.focus();
+        ta.select();
+        ok = document.execCommand('copy');
+        document.body.removeChild(ta);
+      } catch {
+        ok = false;
+      }
+    }
+    if (ok) toast.success(`已复制 ${candidates.length} 只候选到剪贴板`);
+    else toast.error('复制失败，请手动复制');
+  };
+
   // 双龙打板口径局限：优先用后端 metrics.caveat（仅 double_dragon_board 有），缺省回退前端合规文案
   const boardCaveat = (() => {
     const dd = resp?.candidates?.['double-dragon'] ?? [];
@@ -407,12 +435,25 @@ export function ShortTermTab() {
       ) : resp && resp.generated ? (
         <div className="text-center py-16 text-gray-400">
           <p className="text-lg">今日无标的命中</p>
-          <p className="text-sm mt-2">形态未触发，宁缺毋滥</p>
+          <p className="text-sm mt-2">形态未触发</p>
         </div>
       ) : (
         <div className="text-center py-16 text-gray-400">
           <p className="text-lg">筛选尚未生成</p>
           <p className="text-sm mt-2">尾盘后自动生成，稍后查看</p>
+        </div>
+      )}
+
+      {candidates.length > 0 && (
+        <div className="mt-4 flex flex-col items-end gap-1">
+          <button
+            onClick={copyCurrentCandidates}
+            className="inline-flex items-center gap-1.5 px-3 py-2 rounded-lg bg-purple-600 text-white text-sm font-medium hover:bg-purple-700 transition"
+          >
+            <Copy className="w-4 h-4" />
+            一键复制本组候选 ({candidates.length})
+          </button>
+          <span className="text-xs text-gray-400">复制内容为「名称 代码」，可粘贴到同花顺自选文本识别</span>
         </div>
       )}
     </div>

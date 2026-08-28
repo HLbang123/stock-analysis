@@ -426,6 +426,9 @@ export default function AiPage() {
           entryDate: ctx.entryDate, entryPrice: ctx.quote.price,
           structured: finalResult.structured,
           marketRegime: ctx.marketRegime,
+          regimeSource: ctx.regimeSource,
+          regimeDay: ctx.regimeDay,
+          regimeDate: ctx.regimeDate,
         });
       }
 

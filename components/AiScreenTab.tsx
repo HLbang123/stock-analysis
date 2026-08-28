@@ -295,7 +295,7 @@ function ShortLineTab() {
         <div className="text-center py-16 text-gray-400">
           <Sparkles className="w-16 h-16 mx-auto mb-4 opacity-20" />
           <p className="text-lg">今日无标的过门槛</p>
-          <p className="text-sm mt-2">规则分未达门槛，宁缺毋滥</p>
+          <p className="text-sm mt-2">规则分未达门槛</p>
         </div>
       ) : (
         <div className="text-center py-16 text-gray-400">

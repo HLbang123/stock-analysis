@@ -119,9 +119,11 @@ function prefilterForToday(series: SeriesInput[], strategies: ShortTermStrategyI
     }
 
     if (strategies.includes("limit-up-three-yin")) {
-      if (n >= 4 && isLimitUpBar(bars, n - 4)) {
-        const y1 = bars[n - 3];
-        const y2 = bars[n - 2];
+      // 修正 off-by-one：prefilter 跑在"尚未合成今日 K 线"的历史序列上，
+      // 形态为 涨停@T-3 + 首阴@T-2 + 次阴@T-1，今日(T)为第三阴。
+      if (isLimitUpBar(bars, n - 3)) {
+        const y1 = bars[n - 2];
+        const y2 = bars[n - 1];
         if (y1 && y2 && y1.close < y1.open && y2.close < y2.open) return true;
       }
     }
