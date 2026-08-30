@@ -1,21 +1,19 @@
 /**
- * 短线策略 — 扫描编排（两阶段）
+ * 短线策略 — 扫描编排（单阶段）
  *
- *  - closing（T 日尾盘 14:30）：全量扫描三套策略，可选落库快照。
- *  - morning（T+1 早盘）：复用 closing 快照，只做实时过滤（不重扫全市场）。
+ *  - closing（T 日尾盘 14:55）：全量扫描五套策略，可选落库快照。
  *
  * 编排层依赖可注入的 ShortTermDataSource，便于纯逻辑单测。
  */
 
-import { ALL_STRATEGY_IDS, LOOKBACK_TRADING_DAYS } from "./config";
+import { ALL_STRATEGY_IDS, LOOKBACK_TRADING_DAYS, PREFILTER_TRADING_DAYS } from "./config";
 import { buildAllCandidates } from "./engine";
-import { PrismaShortTermDataSource, ShortTermDataSource } from "./data-source";
+import { isMainBoardNonST } from "@/lib/strategy/dragon-first-yin";
+import { PrefilterCode, PrismaShortTermDataSource, ShortTermDataSource } from "./data-source";
 import { buildMarketContext, loadMarketExtras } from "./market";
-import { ensureShortTermTables, loadSnapshot, saveSnapshot } from "./persist";
-import { applyRealtimeFilters, loadRealtimeContext } from "./realtime";
+import { ensureShortTermTables, loadScanLog, loadSnapshot, saveScanLog, saveSnapshot } from "./persist";
 import { getQuotesBatch } from "@/lib/server-quote-cache";
 import { beijingTodayStr } from "@/lib/stock-helpers";
-import { analyzeDragonRun } from "@/lib/strategy/dragon-first-yin";
 import type {
   MarketContext,
   SeriesInput,
@@ -28,23 +26,21 @@ import type {
 } from "./types";
 
 export interface ScanOptions {
-  phase?: ShortTermPhase;
   strategies?: ShortTermStrategyId[];
   tradeDate?: string; // 覆盖基准交易日（YYYYMMDD）
-  snapshotDate?: string; // morning 阶段指定要刷新的快照交易日（YYYYMMDD）
-  persist?: boolean; // closing 阶段是否落库快照
+  persist?: boolean; // 是否落库快照（仅尾盘自动任务为 true）
   dataSource?: ShortTermDataSource;
 }
 
 export function emptyStrategies(): Record<ShortTermStrategyId, ShortTermCandidate[]> {
-  return { "limit-up-three-yin": [], "dragon-first-yin": [], "double-dragon": [] };
+  return { "limit-up-three-yin": [], "dragon-first-yin": [], "double-dragon": [], "dragon-four-yin": [], "xian-ren-zhi-lu": [] };
 }
 
 export function groupByStrategy(
   candidates: ShortTermCandidate[]
 ): Record<ShortTermStrategyId, ShortTermCandidate[]> {
-  const out = emptyStrategies();
-  for (const c of candidates) out[c.strategy].push(c);
+  const out = emptyStrategies() as Record<string, ShortTermCandidate[]>;
+  for (const c of candidates) (out[c.strategy] ??= []).push(c);
   return out;
 }
 
@@ -98,41 +94,7 @@ function isLimitUpBar(bars: ShortBar[], i: number): boolean {
   return Math.abs(b.close - limitPrice) <= 0.01 && b.high >= limitPrice - 0.01;
 }
 
-/** 拉实时行情前先按历史 bar 做策略前置过滤，避免给全市场候选都合成今日 K 线。 */
-function prefilterForToday(series: SeriesInput[], strategies: ShortTermStrategyId[]): SeriesInput[] {
-  return series.filter((s) => {
-    const bars = s.bars;
-    const n = bars.length;
-    if (n < 3) return false;
-
-    if (strategies.includes("double-dragon")) {
-      // 今日二板：昨日须为首板；今日回踩：二板须在近 1~3 日内
-      if (isLimitUpBar(bars, n - 1) && !isLimitUpBar(bars, n - 2)) return true;
-      for (const b2 of [n - 2, n - 3]) {
-        if (b2 >= 1 && isLimitUpBar(bars, b2) && !isLimitUpBar(bars, b2 - 1)) return true;
-      }
-    }
-
-    if (strategies.includes("dragon-first-yin")) {
-      const run = analyzeDragonRun(bars as any, n - 2);
-      if (run && run.boardCount >= 3) return true;
-    }
-
-    if (strategies.includes("limit-up-three-yin")) {
-      // 修正 off-by-one：prefilter 跑在"尚未合成今日 K 线"的历史序列上，
-      // 形态为 涨停@T-3 + 首阴@T-2 + 次阴@T-1，今日(T)为第三阴。
-      if (isLimitUpBar(bars, n - 3)) {
-        const y1 = bars[n - 2];
-        const y2 = bars[n - 1];
-        if (y1 && y2 && y1.close < y1.open && y2.close < y2.open) return true;
-      }
-    }
-
-    return false;
-  });
-}
-
-/** 用实时行情合成今日 K 线并追加到各候选序列，让 14:30 扫描真正跑在 T 日。 */
+/** 用实时行情合成今日 K 线并追加到各候选序列，让扫描真正跑在 T 日。 */
 async function appendTodayBars(
   series: SeriesInput[]
 ): Promise<{ series: SeriesInput[]; today8: string | null; appended: number }> {
@@ -156,6 +118,11 @@ async function appendTodayBars(
       turnoverRate: q.turnover ?? null,
     };
     appended++;
+    // 若 DB 已含今日 bar（收盘后已同步），用实时数据替换最后一根，避免重复追加导致引擎错位
+    const lastBar = s.bars[s.bars.length - 1];
+    if (lastBar && lastBar.date === todayStr) {
+      return { ...s, bars: [...s.bars.slice(0, -1), bar] };
+    }
     return { ...s, bars: [...s.bars, bar] };
   });
   return { series: out, today8: appended > 0 ? todayStr.replace(/-/g, "") : null, appended };
@@ -184,26 +151,67 @@ export async function runClosingScan(opts: ScanOptions = {}): Promise<ShortTermS
 
   let candidates: ShortTermCandidate[] = [];
   let scanDate = latest;
-  if (market.tradable) {
-    let series = await ds.loadCandidateSeries(lookbackStart, latest);
-    // 先用历史 bar 做策略前置过滤，再对可能命中的标的合成今日 K 线
-    series = prefilterForToday(series, strategies);
+  let today8: string | null = null;
+  {
+    // SQL 前置：每套策略先筛出可能命中的 code，再只拉这些 code 的完整回看窗口 K 线
+    const prefilterStart =
+      datesDesc[Math.min(PREFILTER_TRADING_DAYS, Math.max(0, datesDesc.length - 1))] ?? lookbackStart;
+    const codeSets = await Promise.all(
+      strategies.map((s) => ds.prefilterCodes(s, prefilterStart, latest))
+    );
+    const codeMap = new Map<string, PrefilterCode>();
+    for (const set of codeSets) {
+      for (const c of set) if (!codeMap.has(c.tsCode)) codeMap.set(c.tsCode, c);
+    }
+
+    // 补「今日实时涨停池」：信号日=今天时，DB 尚无今天的日线，SQL 前置会漏掉
+    // 首板昨日 + 今日二板（双龙）等场景；这里把今天涨停标的并入候选。
+    try {
+      const { getLimitUpPool, normalizeThscode } = await import("@/lib/fuyao");
+      const pool = await getLimitUpPool();
+      for (const it of pool?.item ?? []) {
+        const code = normalizeThscode(String(it.thscode ?? ""));
+        if (!code || codeMap.has(code)) continue;
+        if (!isMainBoardNonST(code, it.name)) continue;
+        codeMap.set(code, { tsCode: code, name: it.name ?? "" });
+      }
+    } catch {
+      /* 忽略：实时涨停池不可用时仅靠 DB 前置 */
+    }
+
+    // 补「昨日涨停池」：覆盖昨日连板、今日首阴（龙首阴）等今天信号。
+    try {
+      const { getLimitListD } = await import("@/lib/tushare");
+      const yday = datesDesc[1] ?? latest;
+      const rows = await getLimitListD(yday, "U");
+      for (const row of rows) {
+        const code = String(row.ts_code ?? "");
+        if (!code || codeMap.has(code)) continue;
+        if (!isMainBoardNonST(code, row.name)) continue;
+        codeMap.set(code, { tsCode: code, name: row.name ? String(row.name) : "" });
+      }
+    } catch {
+      /* 忽略：昨日涨停池不可用时仅靠 DB 前置 */
+    }
+
+    const codes = Array.from(codeMap.values());
+
+    let series = await ds.loadSeriesForCodes(codes, lookbackStart, latest);
     const today = await appendTodayBars(series);
     series = today.series;
-    if (today.today8) scanDate = today.today8;
+    if (today.today8) { scanDate = today.today8; today8 = today.today8; }
     candidates = buildAllCandidates(series, strategies);
-  }
-
-  // 双龙战法实时把关：连板高度==2 + 二板早于首板封板
-  if (candidates.some((c) => c.strategy === "double-dragon")) {
-    const yesterdayTradeDate = datesDesc[1] ?? latest;
-    const ctx = await loadRealtimeContext(yesterdayTradeDate);
-    candidates = applyRealtimeFilters(candidates, ctx);
   }
 
   if (opts.persist) {
     await ensureShortTermTables();
-    await saveSnapshot(candidates.map((c) => candidateToRow(c, "closing", scanDate)));
+    await saveSnapshot({
+      rows: candidates.map((c) => candidateToRow(c, "closing", scanDate)),
+      tradeDate: scanDate,
+      phase: "closing",
+      clearStrategies: strategies,
+    });
+    await saveScanLog(scanDate, "closing", candidates.length);
   }
 
   return {
@@ -212,47 +220,6 @@ export async function runClosingScan(opts: ScanOptions = {}): Promise<ShortTermS
     generatedAt: new Date().toISOString(),
     market,
     strategies: groupByStrategy(candidates),
-  };
-}
-
-/** T+1 早盘：复用 closing 快照 + 实时过滤，不重扫 */
-export async function runMorningRefresh(opts: ScanOptions = {}): Promise<ShortTermScanResult> {
-  const strategies = opts.strategies?.length ? opts.strategies : ALL_STRATEGY_IDS;
-  const ds = opts.dataSource ?? new PrismaShortTermDataSource();
-  const latest = opts.tradeDate ?? (await ds.getLatestTradeDate());
-  if (!latest) throw new Error("无可用日线数据");
-
-  await ensureShortTermTables();
-  const rows = await loadSnapshot({ phase: "closing" });
-  const dates = Array.from(new Set(rows.map((r) => r.tradeDate))).sort().reverse();
-  const snapDate = opts.snapshotDate ?? dates[0];
-  const snapRows = snapDate ? rows.filter((r) => r.tradeDate === snapDate) : [];
-  const candidates = snapRows
-    .map(rowToCandidate)
-    .filter((c) => strategies.includes(c.strategy));
-
-  const datesDesc = await ds.getTradeDates(2);
-  const yesterdayTradeDate = datesDesc[1] ?? snapDate ?? latest;
-  const ctx = await loadRealtimeContext(yesterdayTradeDate);
-  const filtered = applyRealtimeFilters(candidates, ctx);
-
-  const [breadth, extras] = await Promise.all([
-    ds.loadMarketBreadth(latest),
-    loadMarketExtras(latest),
-  ]);
-  const market = await buildMarketContext(
-    breadth?.limitUp ?? 0,
-    breadth?.limitDown ?? 0,
-    extras.brokenCount,
-    extras.highestBoard
-  );
-
-  return {
-    phase: "morning",
-    tradeDate: snapDate ?? latest,
-    generatedAt: new Date().toISOString(),
-    market,
-    strategies: groupByStrategy(filtered),
   };
 }
 
@@ -265,10 +232,9 @@ export interface SnapshotResult {
   market: MarketContext | null;
 }
 
-/** 读取落库快照（UI 展示用；空态区分「未到运行时间/尚未生成」= generated:false） */
+/** 读取落库快照（UI 展示用；generated 看扫描日志，0 命中当天也能正确区分） */
 export async function loadSnapshotResult(opts: {
   strategy?: ShortTermStrategyId;
-  phase?: ShortTermPhase;
   tradeDate?: string;
 } = {}): Promise<SnapshotResult> {
   const ds = new PrismaShortTermDataSource();
@@ -276,11 +242,15 @@ export async function loadSnapshotResult(opts: {
   await ensureShortTermTables();
   const rows = await loadSnapshot({
     strategy: opts.strategy,
-    phase: opts.phase,
+    phase: "closing",
     tradeDate: opts.tradeDate,
   });
-  const dates = Array.from(new Set(rows.map((r) => r.tradeDate))).sort().reverse();
-  const snapDate = opts.tradeDate ?? dates[0] ?? "";
+  const logRows = await loadScanLog();
+
+  const snapDates = Array.from(new Set(rows.map((r) => r.tradeDate)));
+  const logDates = logRows.map((l) => l.tradeDate);
+  const allDates = Array.from(new Set([...snapDates, ...logDates])).sort().reverse();
+  const snapDate = opts.tradeDate ?? allDates[0] ?? "";
   const snapRows = snapDate ? rows.filter((r) => r.tradeDate === snapDate) : [];
   const candidates = snapRows.map(rowToCandidate);
 
@@ -295,12 +265,16 @@ export async function loadSnapshotResult(opts: {
     );
   }
 
+  const logRow = logRows.find((l) => l.tradeDate === snapDate);
+  const generated = snapRows.length > 0 || !!logRow;
+  const generatedAt = logRow?.createdAt ?? (snapRows.length ? snapRows[0].createdAt ?? null : null);
+
   return {
     strategies: groupByStrategy(candidates),
     tradeDate: snapDate || latest,
-    phase: opts.phase ?? "closing",
-    generatedAt: snapRows.length ? snapRows[0].createdAt ?? null : null,
-    generated: snapRows.length > 0,
+    phase: "closing",
+    generatedAt,
+    generated,
     market,
   };
 }

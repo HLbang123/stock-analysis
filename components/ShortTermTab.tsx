@@ -6,7 +6,7 @@ import { useUiStore } from '@/store/ui-store';
 import { useStockStore } from '@/store';
 import { cn } from '@/lib/utils';
 import { Card } from '@/components/ui/card';
-import { ChevronDown, ChevronUp, Info, AlertTriangle, Loader2, Plus, Minus, Copy } from 'lucide-react';
+import { ChevronDown, ChevronUp, Info, AlertTriangle, Loader2, Plus, Minus, Copy, RefreshCw } from 'lucide-react';
 import { toast } from 'sonner';
 
 /**
@@ -15,7 +15,7 @@ import { toast } from 'sonner';
  * 只读展示：形态符合 + 强度分级，不输出操作指引。
  */
 
-export type ShortTermStrategyId = 'limit-up-three-yin' | 'dragon-first-yin' | 'double-dragon';
+export type ShortTermStrategyId = 'limit-up-three-yin' | 'dragon-first-yin' | 'double-dragon' | 'dragon-four-yin' | 'xian-ren-zhi-lu';
 
 interface ShortTermStrategyMeta {
   id: ShortTermStrategyId;
@@ -27,9 +27,9 @@ interface ShortTermStrategyMeta {
 const STRATEGIES: ShortTermStrategyMeta[] = [
   {
     id: 'limit-up-three-yin',
-    name: '涨停+三连阴',
-    description: '涨停后连续三根缩量小阴线',
-    rulesText: '涨停日非一字板；随后三日小阴线、收盘逐日走低、量能递减，尾盘不急速拉升时形态符合。',
+    name: '板三阴',
+    description: '涨停后连续三根小阴线',
+    rulesText: '涨停日非一字板；随后三日小阴线（第一根可假阴）、收盘逐日走低，尾盘不急速拉升时形态符合。',
   },
   {
     id: 'dragon-first-yin',
@@ -39,9 +39,21 @@ const STRATEGIES: ShortTermStrategyMeta[] = [
   },
   {
     id: 'double-dragon',
-    name: '双龙战法',
+    name: '双龙',
     description: '首板非一字实体板，二板连续涨停',
-    rulesText: '首板为非一字实体板；二板连续涨停且只认恰好二板；封板早于首板更稳，二板一字板不作为硬性剔除。',
+    rulesText: '首板为非一字实体板；二板连续涨停且只认恰好二板；二板一字板不作为硬性剔除。',
+  },
+  {
+    id: 'dragon-four-yin',
+    name: '龙四阴',
+    description: '涨停首板放量近新高后四连阴',
+    rulesText: '涨停需首板、非一字、放量1.5倍、接近20日新高；随后四连阴，第四阴尾盘关注。',
+  },
+  {
+    id: 'xian-ren-zhi-lu',
+    name: '仙人指路',
+    description: '试盘长上影后确认日反包',
+    rulesText: '试盘日长上影（≥实体1.2倍、上影≥1.5%）、小实体、收红、量比≥1.2、不破昨收；次日反包上影≥40%且收高位、不高开，确认日尾盘关注。',
   },
 ];
 
@@ -69,7 +81,7 @@ interface ShortTermCandidate {
 
 interface ShortTermResponse {
   strategies: { id: string; name: string; description: string }[];
-  phase: 'closing' | 'morning';
+  phase: 'closing';
   tradeDate: string; // YYYYMMDD
   generated: boolean;
   generatedAt: string | null;
@@ -115,15 +127,19 @@ function signalLabel(signalType: string): string | null {
   if (signalType === 'firstYinYesterday') return '首阴次日';
   if (signalType === 'double_dragon_board') return '二板封板';
   if (signalType === 'double_dragon_pullback') return '回踩';
+  if (signalType === 'dragon_four_yin') return '第四阴';
+  if (signalType === 'xian_ren_zhi_lu') return '确认日';
   return null;
 }
 
 function hitLine(strategy: ShortTermStrategyId, signalType: string): string {
-  if (strategy === 'limit-up-three-yin') return '涨停+三连阴形态符合';
+  if (strategy === 'limit-up-three-yin') return '板三阴形态符合';
   if (strategy === 'dragon-first-yin') return '龙首阴形态符合';
   if (strategy === 'double-dragon') {
     return signalType === 'double_dragon_pullback' ? '回踩形态符合' : '二板封板形态符合';
   }
+  if (strategy === 'dragon-four-yin') return '龙四阴形态符合';
+  if (strategy === 'xian-ren-zhi-lu') return '仙人指路形态符合';
   return '形态符合';
 }
 
@@ -157,6 +173,7 @@ export function ShortTermTab() {
   const [resp, setResp] = useState<ShortTermResponse | null>(null);
   const [loading, setLoading] = useState(true);
   const [showRules, setShowRules] = useState(false);
+  const [scanning, setScanning] = useState(false);
 
   const meta = STRATEGIES.find((s) => s.id === selected) ?? STRATEGIES[0];
 
@@ -190,6 +207,36 @@ export function ShortTermTab() {
     toast.success(`已移除 ${name}`);
   };
 
+  // 手动触发：一次扫描全部五套策略，仅本地展示，不落库（当天正式结果以尾盘自动任务为准）
+  const runScan = async () => {
+    if (scanning) return;
+    setScanning(true);
+    try {
+      const r = await fetch('/api/short-term-strategies', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ persist: false }),
+        signal: AbortSignal.timeout(45000),
+      });
+      const d = await r.json();
+      if (!r.ok) {
+        toast.error(d?.error ?? '扫描失败');
+        return;
+      }
+      if (d && d.candidates) {
+        setResp({ ...d, generated: true });
+        toast.success('五套策略扫描完成');
+      } else {
+        toast.error('扫描结果为空');
+      }
+    } catch (e) {
+      const name = (e as any)?.name;
+      toast.error(name === 'TimeoutError' || name === 'AbortError' ? '扫描超时，请稍后重试' : '扫描失败，请稍后重试');
+    } finally {
+      setScanning(false);
+    }
+  };
+
   const market = resp?.market ?? null;
   const candidates = resp?.candidates?.[selected] ?? [];
 
@@ -220,14 +267,6 @@ export function ShortTermTab() {
     else toast.error('复制失败，请手动复制');
   };
 
-  // 双龙打板口径局限：优先用后端 metrics.caveat（仅 double_dragon_board 有），缺省回退前端合规文案
-  const boardCaveat = (() => {
-    const dd = resp?.candidates?.['double-dragon'] ?? [];
-    const board = dd.find((c) => c.signalType === 'double_dragon_board');
-    const caveat = board ? strMetric(board.metrics, 'caveat') : null;
-    return caveat ?? '打板口径按历史基线，未计入一字板成交受限与封板先后等盘口条件，结果偏乐观，仅供参考';
-  })();
-
   const coreChips = (c: ShortTermCandidate): { label: string; tone?: 'red' | 'green' | 'gray' }[] => {
     const m = c.metrics;
     switch (c.strategy) {
@@ -237,8 +276,7 @@ export function ShortTermTab() {
         return [
           yinBodies && yinBodies.length === 3
             ? { label: `三阴实体 ${yinBodies.map((b) => b.toFixed(1)).join(' / ')}%` }
-            : { label: '三阴缩量' },
-          { label: '量能递减' },
+            : { label: '三阴形态' },
           entryClose != null ? { label: `尾盘价 ${entryClose.toFixed(2)}` } : { label: '尾盘观察' },
         ];
       }
@@ -260,10 +298,37 @@ export function ShortTermTab() {
       }
       case 'double-dragon': {
         const chips: { label: string; tone?: 'red' | 'green' | 'gray' }[] = [];
-        const realtime = strMetric(m, 'realtime');
         const entryPrice = numMetric(m, 'entryPrice');
-        if (realtime === 'passed') chips.push({ label: '封板早于一板', tone: 'green' });
-        else if (realtime === 'unavailable') chips.push({ label: '封板待确认', tone: 'gray' });
+        if (entryPrice != null) chips.push({ label: `参考价 ${entryPrice.toFixed(2)}` });
+        return chips;
+      }
+      case 'dragon-four-yin': {
+        const chips: { label: string; tone?: 'red' | 'green' | 'gray' }[] = [];
+        const yinBodies = arrMetric(m, 'yinBodies');
+        const volRatio = numMetric(m, 'volRatio');
+        const nearHighPct = numMetric(m, 'nearHighPct');
+        const entryPrice = numMetric(m, 'entryPrice');
+        if (yinBodies && yinBodies.length === 4) chips.push({ label: `四阴 ${yinBodies.map((b) => b.toFixed(1)).join('/')}%` });
+        if (volRatio != null) chips.push({ label: `放量 ${volRatio.toFixed(1)}x` });
+        if (nearHighPct != null) chips.push({ label: `近新高 ${nearHighPct.toFixed(1)}%`, tone: nearHighPct >= 100 ? 'red' : 'gray' });
+        if (entryPrice != null) chips.push({ label: `参考价 ${entryPrice.toFixed(2)}` });
+        return chips;
+      }
+      case 'xian-ren-zhi-lu': {
+        const chips: { label: string; tone?: 'red' | 'green' | 'gray' }[] = [];
+        const upperShadowPct = numMetric(m, 'upperShadowPct');
+        const volRatio = numMetric(m, 'volRatio');
+        const gain60 = numMetric(m, 'gain60');
+        const confPct = numMetric(m, 'confPct');
+        const confDayGain = numMetric(m, 'confDayGain');
+        const confClosePos = numMetric(m, 'confClosePos');
+        const entryPrice = numMetric(m, 'entryPrice');
+        if (upperShadowPct != null) chips.push({ label: `上影 ${upperShadowPct.toFixed(1)}%` });
+        if (volRatio != null) chips.push({ label: `量比 ${volRatio.toFixed(1)}` });
+        if (gain60 != null) chips.push({ label: `60日 ${gain60.toFixed(1)}%` });
+        if (confPct != null) chips.push({ label: `反包 ${confPct.toFixed(0)}%`, tone: confPct >= 100 ? 'red' : 'gray' });
+        if (confDayGain != null) chips.push({ label: `确认涨 ${confDayGain.toFixed(1)}%`, tone: confDayGain > 0 ? 'green' : 'gray' });
+        if (confClosePos != null) chips.push({ label: `收位 ${(confClosePos * 100).toFixed(0)}%`, tone: confClosePos >= 0.7 ? 'red' : 'gray' });
         if (entryPrice != null) chips.push({ label: `参考价 ${entryPrice.toFixed(2)}` });
         return chips;
       }
@@ -273,22 +338,36 @@ export function ShortTermTab() {
 
   return (
     <div>
-      {/* 三个子 tab */}
-      <div className="flex gap-1 mb-4 p-1 bg-gray-100 dark:bg-gray-800 rounded-lg w-fit flex-wrap">
-        {STRATEGIES.map((s) => (
+      {/* 手动扫描 + 子 tab */}
+      <div className="mb-4">
+        <div className="flex items-center gap-2 mb-2">
           <button
-            key={s.id}
-            onClick={() => setSelected(s.id)}
-            className={cn(
-              'px-3 py-1.5 rounded-md text-sm transition',
-              selected === s.id
-                ? 'bg-white dark:bg-gray-900 shadow-sm font-medium text-gray-900 dark:text-white'
-                : 'text-gray-500 hover:text-gray-700 dark:hover:text-gray-200',
-            )}
+            onClick={runScan}
+            disabled={scanning}
+            className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-md text-sm bg-purple-100 text-purple-700 dark:bg-purple-950/40 dark:text-purple-300 hover:opacity-80 disabled:opacity-50 disabled:cursor-not-allowed transition"
+            title="扫描五套策略，仅本地展示（不落库）"
           >
-            {s.name}
+            {scanning ? <Loader2 className="w-3.5 h-3.5 animate-spin" /> : <RefreshCw className="w-3.5 h-3.5" />}
+            {scanning ? '扫描中…' : '立即扫描'}
           </button>
-        ))}
+          <span className="text-xs text-gray-400">仅预览，不落库；正式结果以尾盘自动任务为准</span>
+        </div>
+        <div className="flex gap-1 p-1 bg-gray-100 dark:bg-gray-800 rounded-lg w-fit flex-wrap">
+          {STRATEGIES.map((s) => (
+            <button
+              key={s.id}
+              onClick={() => setSelected(s.id)}
+              className={cn(
+                'px-3 py-1.5 rounded-md text-sm transition',
+                selected === s.id
+                  ? 'bg-white dark:bg-gray-900 shadow-sm font-medium text-gray-900 dark:text-white'
+                  : 'text-gray-500 hover:text-gray-700 dark:hover:text-gray-200',
+              )}
+            >
+              {s.name}
+            </button>
+          ))}
+        </div>
       </div>
 
       {/* 策略说明（默认折叠） */}
@@ -304,14 +383,6 @@ export function ShortTermTab() {
           </div>
         )}
       </div>
-
-      {/* 双龙打板口径局限提示 */}
-      {selected === 'double-dragon' && (
-        <div className="mb-4 text-xs text-amber-600 flex items-start gap-1">
-          <AlertTriangle className="w-3.5 h-3.5 mt-0.5 shrink-0" />
-          <span>{boardCaveat}</span>
-        </div>
-      )}
 
       {/* 运行概况 */}
       {resp && (
@@ -440,7 +511,7 @@ export function ShortTermTab() {
       ) : (
         <div className="text-center py-16 text-gray-400">
           <p className="text-lg">筛选尚未生成</p>
-          <p className="text-sm mt-2">尾盘后自动生成，稍后查看</p>
+          <p className="text-sm mt-2">尾盘自动生成（约 14:55），稍后查看</p>
         </div>
       )}
 

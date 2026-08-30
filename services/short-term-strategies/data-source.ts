@@ -4,15 +4,17 @@
  * 关键点：
  *  - daily_bars 列名陷阱："tsCode" / "tradeDate" 是 camelCase（raw SQL 带双引号），
  *    pre_close / turnover_rate 是 snake_case（裸用）。
- *  - 候选集预筛：只用 change_pct >= 9.5 的标的（涨停候选超集），再在 JS 里用
- *    isMainBoardNonST 精确过滤主板非 ST，避免全市场拉全历史。
- *  - 日期双边界：lookbackStart <= tradeDate <= endDate。
+ *  - 两段式取数：
+ *    1) prefilterCodes：每套策略用「最小触发条件」在 SQL 层筛出可能命中的 ts_code，
+ *       把候选从「近 120 日出现过涨停的几千只」压到「几十只」。
+ *    2) loadSeriesForCodes：只拉这些 code 的完整回看窗口 K 线，交给引擎精算。
+ *  - 日期双边界：start <= tradeDate <= end。
  */
 
 import { prisma } from "@/lib/db";
 import { isMainBoardNonST } from "@/lib/strategy/dragon-first-yin";
 import { LIMIT_UP_CANDIDATE_PCT } from "./config";
-import type { SeriesInput, ShortBar } from "./types";
+import type { SeriesInput, ShortBar, ShortTermStrategyId } from "./types";
 
 export interface MarketBreadthRow {
   tradeDate: string;
@@ -20,17 +22,95 @@ export interface MarketBreadthRow {
   limitDown: number | null;
 }
 
+export interface PrefilterCode {
+  tsCode: string;
+  name: string;
+}
+
 export interface ShortTermDataSource {
   getLatestTradeDate(): Promise<string | null>;
   getTradeDates(count: number): Promise<string[]>; // 降序 YYYYMMDD
   loadMarketBreadth(tradeDate: string): Promise<MarketBreadthRow | null>;
-  loadCandidateSeries(lookbackStart: string, endDate: string): Promise<SeriesInput[]>;
+  prefilterCodes(strategy: ShortTermStrategyId, start: string, end: string): Promise<PrefilterCode[]>;
+  loadSeriesForCodes(codes: PrefilterCode[], lookbackStart: string, endDate: string): Promise<SeriesInput[]>;
 }
 
 /** YYYYMMDD → YYYY-MM-DD */
 export function fmtDate(d: string): string {
   return d && d.length === 8 ? d.slice(0, 4) + "-" + d.slice(4, 6) + "-" + d.slice(6, 8) : d;
 }
+
+/**
+ * 前置筛选 CTE：对每个标的按 tradeDate 倒序编号 rn（rn=1 为窗口内最新交易日），
+ * 窗口取「近 20 个交易日」即可覆盖各策略的最小触发窗口（含实时 bar 错位缓冲）。
+ * $1/$2 = 前置窗口起止日期，$3 = 涨停候选阈值（change_pct >= 9.5 视作涨停超集）。
+ */
+const PREFILTER_CTE = [
+  "WITH t AS (",
+  '  SELECT db."tsCode" AS ts_code, db.change_pct, db.open, db.close, db.pre_close, db.high, db.low, s.name AS name,',
+  '         ROW_NUMBER() OVER (PARTITION BY db."tsCode" ORDER BY db."tradeDate" DESC) AS rn',
+  "  FROM daily_bars db",
+  '  JOIN stocks s ON s.ts_code = db."tsCode"',
+  '  WHERE db."tradeDate" >= $1 AND db."tradeDate" <= $2 AND s.is_active = true',
+  ")",
+].join("\n");
+
+const PREFILTER_TAIL: Record<ShortTermStrategyId, string> = {
+  // 涨停+三连阴：近 5 日内有涨停，且最新/次新两日都是真阴（close<open）。
+  // 盘中实时 bar 尚未入库时，信号可能落在「今日(实时)」，此时 DB 只看到前两阴，故只卡最近两日收阴。
+  "limit-up-three-yin": [
+    "SELECT ts_code, MAX(name) AS name",
+    "FROM t",
+    "GROUP BY ts_code",
+    "HAVING COUNT(*) FILTER (WHERE rn <= 5 AND change_pct >= $3) > 0",
+    "   AND MAX(CASE WHEN rn = 1 AND close < open THEN 1 ELSE 0 END) = 1",
+    "   AND MAX(CASE WHEN rn = 2 AND close < open THEN 1 ELSE 0 END) = 1",
+  ].join("\n"),
+  // 龙首阴：近 6 日内至少两次涨停（有连板段），且最新或次新日相对昨收下跌（真阴/假阴皆可）。
+  "dragon-first-yin": [
+    "SELECT ts_code, MAX(name) AS name",
+    "FROM t",
+    "GROUP BY ts_code",
+    "HAVING COUNT(*) FILTER (WHERE rn <= 6 AND change_pct >= $3) >= 2",
+    "   AND (MAX(CASE WHEN rn = 1 AND close < pre_close THEN 1 ELSE 0 END) = 1",
+    "        OR MAX(CASE WHEN rn = 2 AND close < pre_close THEN 1 ELSE 0 END) = 1)",
+  ].join("\n"),
+  // 双龙战法：恰好二板；前置只要求近 6 日内至少两次涨停（连板段），引擎再精确判「恰好二板」。
+  "double-dragon": [
+    "SELECT ts_code, MAX(name) AS name",
+    "FROM t",
+    "GROUP BY ts_code",
+    "HAVING COUNT(*) FILTER (WHERE rn <= 6 AND change_pct >= $3) >= 2",
+  ].join("\n"),
+  // 龙四阴：近 6 日内有涨停，且最近 3 日都收阴（第 4 阴为今日实时或 DB 最新，前 3 阴在 DB 可见）。
+  "dragon-four-yin": [
+    "SELECT ts_code, MAX(name) AS name",
+    "FROM t",
+    "GROUP BY ts_code",
+    "HAVING COUNT(*) FILTER (WHERE rn <= 6 AND change_pct >= $3) > 0",
+    "   AND MAX(CASE WHEN rn = 1 AND close < open THEN 1 ELSE 0 END) = 1",
+    "   AND MAX(CASE WHEN rn = 2 AND close < open THEN 1 ELSE 0 END) = 1",
+    "   AND MAX(CASE WHEN rn = 3 AND close < open THEN 1 ELSE 0 END) = 1",
+  ].join("\n"),
+  // 仙人指路：预筛只做「最小触发超集」，确认日的收盘位/反包交给引擎用实时 bar 精算。
+  "xian-ren-zhi-lu": [
+    "SELECT ts_code, MAX(name) AS name",
+    "FROM t",
+    "GROUP BY ts_code",
+    "HAVING (",
+    "  -- 今日确认 + 昨日试盘（今日日线已入库）",
+    "  (MAX(CASE WHEN rn = 1 AND close >= pre_close AND close >= low + 0.6 * (high - low) THEN 1 ELSE 0 END) = 1",
+    "   AND MAX(CASE WHEN rn = 2 AND (high - GREATEST(open, close)) >= 0.012 * open AND close >= pre_close AND low >= pre_close AND change_pct < $3 THEN 1 ELSE 0 END) = 1)",
+    ") OR (",
+    "  -- 昨日确认 + 前日试盘",
+    "  (MAX(CASE WHEN rn = 2 AND close >= pre_close AND close >= low + 0.6 * (high - low) THEN 1 ELSE 0 END) = 1",
+    "   AND MAX(CASE WHEN rn = 3 AND (high - GREATEST(open, close)) >= 0.012 * open AND close >= pre_close AND low >= pre_close AND change_pct < $3 THEN 1 ELSE 0 END) = 1)",
+    ") OR (",
+    "  -- 盘中：最新 DB 日(rn=1)就是试盘日，确认日=今日实时(未入库)，交由引擎用实时 bar 精算",
+    "  (MAX(CASE WHEN rn = 1 AND (high - GREATEST(open, close)) >= 0.012 * open AND close >= pre_close AND low >= pre_close AND change_pct < $3 THEN 1 ELSE 0 END) = 1)",
+    ")",
+  ].join("\n"),
+};
 
 export class PrismaShortTermDataSource implements ShortTermDataSource {
   async getLatestTradeDate(): Promise<string | null> {
@@ -63,31 +143,33 @@ export class PrismaShortTermDataSource implements ShortTermDataSource {
     };
   }
 
-  async loadCandidateSeries(lookbackStart: string, endDate: string): Promise<SeriesInput[]> {
-    // 1) 候选集：窗口内出现过涨停（change_pct >= 9.5）且 is_active 的标的
-    const candRows: any[] = await prisma.$queryRawUnsafe(
-      [
-        "SELECT DISTINCT db.\"tsCode\" AS ts_code, s.name AS name",
-        "FROM daily_bars db",
-        "JOIN stocks s ON s.ts_code = db.\"tsCode\"",
-        "WHERE db.\"tradeDate\" >= $1 AND db.\"tradeDate\" <= $2",
-        "  AND db.change_pct >= $3",
-        "  AND s.is_active = true",
-      ].join("\n"),
-      lookbackStart,
-      endDate,
-      LIMIT_UP_CANDIDATE_PCT
-    );
+  async prefilterCodes(
+    strategy: ShortTermStrategyId,
+    start: string,
+    end: string
+  ): Promise<PrefilterCode[]> {
+    const sql = PREFILTER_CTE + "\n" + PREFILTER_TAIL[strategy];
+    const rows: any[] = await prisma.$queryRawUnsafe(sql, start, end, LIMIT_UP_CANDIDATE_PCT);
+    return rows
+      .map((r) => ({ tsCode: String(r.ts_code), name: r.name ? String(r.name) : "" }))
+      .filter((r) => isMainBoardNonST(r.tsCode, r.name));
+  }
 
-    const codes = candRows
-      .filter((r) => isMainBoardNonST(String(r.ts_code), r.name ?? null))
-      .map((r) => String(r.ts_code));
-    const nameOf = new Map<string, string>();
-    for (const r of candRows) nameOf.set(String(r.ts_code), r.name ?? "");
-
+  async loadSeriesForCodes(
+    codes: PrefilterCode[],
+    lookbackStart: string,
+    endDate: string
+  ): Promise<SeriesInput[]> {
     if (codes.length === 0) return [];
+    const nameOf = new Map<string, string>();
+    const codeList: string[] = [];
+    for (const c of codes) {
+      if (!nameOf.has(c.tsCode)) {
+        nameOf.set(c.tsCode, c.name);
+        codeList.push(c.tsCode);
+      }
+    }
 
-    // 2) 拉取候选集窗口内日线（带日期双边界）
     const barRows: any[] = await prisma.$queryRawUnsafe(
       [
         "SELECT \"tsCode\" AS ts_code, \"tradeDate\" AS trade_date,",
@@ -96,7 +178,7 @@ export class PrismaShortTermDataSource implements ShortTermDataSource {
         "WHERE \"tsCode\" = ANY($1) AND \"tradeDate\" >= $2 AND \"tradeDate\" <= $3",
         "ORDER BY \"tsCode\", \"tradeDate\"",
       ].join("\n"),
-      codes,
+      codeList,
       lookbackStart,
       endDate
     );

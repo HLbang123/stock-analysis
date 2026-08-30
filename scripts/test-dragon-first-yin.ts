@@ -3,7 +3,6 @@ import {
   detectLatestDragonFirstYin,
   scanDragonFirstYinSignals,
   evaluateDragonRegime,
-  evaluateDoubleDragon,
   isMainBoardNonST,
   DragonBar,
   DragonFirstYinConfig,
@@ -108,28 +107,10 @@ assert(attack.tradable === true, '进攻期可交易');
 // 范围过滤
 assert(isMainBoardNonST('600519.SH', '贵州茅台') === true, '沪主板通过');
 assert(isMainBoardNonST('002415.SZ', '海康威视') === true, '深主板通过');
-assert(isMainBoardNonST('300750.SZ', '宁德时代') === false, '创业板排除');
-assert(isMainBoardNonST('688981.SH', '中芯国际') === false, '科创板排除');
+assert(isMainBoardNonST('300750.SZ', '宁德时代') === true, '创业板通过');
+assert(isMainBoardNonST('688981.SH', '中芯国际') === true, '科创板通过');
 assert(isMainBoardNonST('830799.BJ', '艾融软件') === false, '北交所排除');
 assert(isMainBoardNonST('600000.SH', 'ST某某') === false, 'ST排除');
-
-// 双龙战法：二板早于一板封板 + 二板一字板加分
-const dd1 = evaluateDoubleDragon(
-  { boardNumber: 1, firstLimitTime: '10:00', isOneWord: false },
-  { boardNumber: 2, firstLimitTime: '09:25', isOneWord: true }
-);
-console.log('double dragon 1:', JSON.stringify(dd1, null, 2));
-assert(dd1.secondEarlier === true, '二板早于一板封板');
-assert(dd1.oneWordBonus === true, '二板一字板加分');
-assert(dd1.score === 2, '双龙满分为 2');
-
-const dd2 = evaluateDoubleDragon(
-  { boardNumber: 1, firstLimitTime: '09:25', isOneWord: true },
-  { boardNumber: 2, firstLimitTime: '10:00', isOneWord: false }
-);
-console.log('double dragon 2:', JSON.stringify(dd2, null, 2));
-assert(dd2.secondEarlier === false, '二板晚于一板不满足');
-assert(dd2.score === 0, '二板晚于一板得 0 分');
 
 // 日内洗盘变体：地天板式长下影，分歧转一致
 const washBars = run3.map((b, i) => (i === 4 ? { ...b, open: 13.20, high: 13.50, low: 12.00, close: 13.45 } : b));

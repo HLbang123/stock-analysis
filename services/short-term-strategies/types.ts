@@ -4,10 +4,10 @@
  * 对外文案禁「股」字，统一用「标的/筛选」。
  */
 
-export type ShortTermStrategyId = "limit-up-three-yin" | "dragon-first-yin" | "double-dragon";
+export type ShortTermStrategyId = "limit-up-three-yin" | "dragon-first-yin" | "double-dragon" | "dragon-four-yin" | "xian-ren-zhi-lu";
 
-/** T 日尾盘（落库快照） / T+1 早盘（复用快照做实时刷新） */
-export type ShortTermPhase = "closing" | "morning";
+/** T 日尾盘落库快照（唯一阶段） */
+export type ShortTermPhase = "closing";
 
 export type ShortTermPriority = "high" | "medium" | "low";
 

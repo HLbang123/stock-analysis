@@ -1,9 +1,9 @@
 /**
- * 短线策略 — T+N 回测回填与统计读取（raw SQL 表 short_term_evals）
+ * 短线策略 — T+1 次日三档（开/高/收）回测回填与统计读取（raw SQL 表 short_term_evals）
  *
- * 口径与 AiScreenEval 对齐：以 matched_date 当日收盘价为 entryPrice，
- * 持有 N 个交易日后取该日收盘价为 exitPrice，returnPct = (exit/entry - 1) * 100。
- * N ∈ [1,5,20]，主口径 T+5。
+ * 口径：以 matched_date 当日收盘价为 entryPrice；
+ * 次日（T+1）分别按 开盘价 / 最高价 / 收盘价 卖出，returnPct = (exit/entry - 1) * 100。
+ * 主口径 = 次日最高价卖出（冲高卖、不格局）。
  */
 
 import { prisma } from "@/lib/db";
@@ -11,24 +11,18 @@ import { prisma } from "@/lib/db";
 export const SHORT_TERM_EVALS_DDL = [
   "CREATE TABLE IF NOT EXISTS short_term_evals (" +
     "signal_id VARCHAR(36) NOT NULL," +
-    "n_days INTEGER NOT NULL," +
-    "exit_date VARCHAR(10)," +
+    "exit_type VARCHAR(8) NOT NULL," +
     "exit_price DOUBLE PRECISION," +
     "return_pct DOUBLE PRECISION," +
-    "max_runup_pct DOUBLE PRECISION," +
-    "max_drawdown_pct DOUBLE PRECISION," +
     "created_at VARCHAR(32) NOT NULL," +
-    "PRIMARY KEY (signal_id, n_days))",
-  "CREATE INDEX IF NOT EXISTS idx_short_term_evals_signal ON short_term_evals (signal_id)",
+    "PRIMARY KEY (signal_id, exit_type))",
 ];
 
 export async function ensureShortTermEvalTable(): Promise<void> {
   for (const sql of SHORT_TERM_EVALS_DDL) await prisma.$executeRawUnsafe(sql);
 }
 
-const NS = [1, 5, 20];
-const PAIR_CHUNK = 5000;
-const WRITE_BATCH = 500;
+const EXIT_TYPES = ["open", "high", "low", "close"] as const;
 
 function defaultSince(): string {
   const d = new Date();
@@ -51,7 +45,7 @@ interface SignalRow {
   signalType: string;
 }
 
-interface BarPoint { close: number; high: number; low: number }
+interface BarPoint { open: number; high: number; low: number; close: number }
 
 /** 交易日历：递归 CTE 松散索引扫描（升序返回） */
 async function loadCalendar(): Promise<{ sortedDays: string[]; dayIndex: Map<string, number> }> {
@@ -90,13 +84,15 @@ function returnStats(returns: number[]) {
   };
 }
 
-export async function backfillShortTermEval(opts: { since?: string; ns?: number[] } = {}) {
-  const ns = (opts.ns?.length ? opts.ns : NS).filter((n) => NS.includes(n));
+const PAIR_CHUNK = 5000;
+const WRITE_BATCH = 500;
+
+export async function backfillShortTermEval(opts: { since?: string } = {}) {
   const since = opts.since ?? defaultSince();
   await ensureShortTermEvalTable();
 
   const { sortedDays, dayIndex } = await loadCalendar();
-  console.log(`[backfill-short-term-eval] 交易日序列 ${sortedDays.length} 天, since=${since}, n=${ns.join("/")}`);
+  console.log(`[backfill-short-term-eval] 交易日序列 ${sortedDays.length} 天, since=${since}`);
 
   const signals = await prisma.$queryRawUnsafe<SignalRow[]>(
     `SELECT id, ts_code AS "tsCode", matched_date AS "matchedDate", strategy, signal_type AS "signalType"
@@ -104,21 +100,18 @@ export async function backfillShortTermEval(opts: { since?: string; ns?: number[
     since
   );
   console.log(`[backfill-short-term-eval] 待回填信号 ${signals.length} 条`);
-  if (!signals.length) return { signals: 0, computed: 0, skipped: 0, pending: 0 };
+  if (!signals.length) return { signals: 0, computed: 0, pending: 0 };
 
-  const tasks: { sig: SignalRow; n: number; entryIdx: number; targetIdx: number }[] = [];
+  // 收集需要的 (tsCode, tradeDate)：信号日 + 次日
   const pairSet = new Set<string>();
   let pending = 0;
   for (const sig of signals) {
-    const entryDate = ymd8(sig.matchedDate);
-    const entryIdx = dayIndex.get(entryDate);
+    const entryIdx = dayIndex.get(ymd8(sig.matchedDate));
     if (entryIdx == null) { pending++; continue; }
-    for (const n of ns) {
-      const targetIdx = entryIdx + n;
-      if (targetIdx >= sortedDays.length) { pending++; continue; }
-      tasks.push({ sig, n, entryIdx, targetIdx });
-      for (let j = entryIdx; j <= targetIdx; j++) pairSet.add(`${sig.tsCode}|${sortedDays[j]}`);
-    }
+    pairSet.add(`${sig.tsCode}|${sortedDays[entryIdx]}`);
+    const nextIdx = entryIdx + 1;
+    if (nextIdx < sortedDays.length) pairSet.add(`${sig.tsCode}|${sortedDays[nextIdx]}`);
+    else pending++;
   }
 
   const pairs = [...pairSet].map((s) => s.split("|") as [string, string]);
@@ -126,110 +119,137 @@ export async function backfillShortTermEval(opts: { since?: string; ns?: number[
   for (let i = 0; i < pairs.length; i += PAIR_CHUNK) {
     const chunk = pairs.slice(i, i + PAIR_CHUNK);
     const placeholders = chunk.map((_, j) => `($${j * 2 + 1}, $${j * 2 + 2})`).join(",");
-    const rows = await prisma.$queryRawUnsafe<{ tsCode: string; tradeDate: string; close: number | null; high: number | null; low: number | null }[]>
-      (`SELECT "tsCode" AS "tsCode", "tradeDate" AS "tradeDate", close, high, low FROM daily_bars WHERE ("tsCode", "tradeDate") IN (${placeholders})`,
+    const rows = await prisma.$queryRawUnsafe<{ tsCode: string; tradeDate: string; open: number | null; high: number | null; low: number | null; close: number | null }[]>
+      (`SELECT "tsCode" AS "tsCode", "tradeDate" AS "tradeDate", open, high, low, close FROM daily_bars WHERE ("tsCode", "tradeDate") IN (${placeholders})`,
       ...chunk.flat());
     for (const r of rows) {
       if (r.close == null) continue;
-      barBy.set(`${r.tsCode}|${r.tradeDate}`, { close: r.close, high: r.high ?? r.close, low: r.low ?? r.close });
+      barBy.set(`${r.tsCode}|${r.tradeDate}`, { open: r.open ?? r.close, high: r.high ?? r.close, low: r.low ?? r.close, close: r.close });
     }
   }
 
-  const toWrite: {
-    signalId: string; n: number; exitDate: string; exitPrice: number; returnPct: number;
-    maxRunupPct: number | null; maxDrawdownPct: number | null;
-  }[] = [];
-  for (const t of tasks) {
-    const entryKey = `${t.sig.tsCode}|${sortedDays[t.entryIdx]}`;
-    const entryBar = barBy.get(entryKey);
-    const exitDate = sortedDays[t.targetIdx];
-    const exitBar = barBy.get(`${t.sig.tsCode}|${exitDate}`);
-    if (!entryBar || !exitBar || entryBar.close <= 0) { pending++; continue; }
-    const returnPct = (exitBar.close / entryBar.close - 1) * 100;
-    const highs: number[] = [];
-    const lows: number[] = [];
-    for (let j = t.entryIdx + 1; j <= t.targetIdx; j++) {
-      const b = barBy.get(`${t.sig.tsCode}|${sortedDays[j]}`);
-      if (b) { highs.push(b.high); lows.push(b.low); }
+  const toWrite: { signalId: string; exitType: string; exitPrice: number; returnPct: number }[] = [];
+  for (const sig of signals) {
+    const entryIdx = dayIndex.get(ymd8(sig.matchedDate));
+    if (entryIdx == null) { pending++; continue; }
+    const nextIdx = entryIdx + 1;
+    if (nextIdx >= sortedDays.length) { pending++; continue; }
+    const entryBar = barBy.get(`${sig.tsCode}|${sortedDays[entryIdx]}`);
+    const nextBar = barBy.get(`${sig.tsCode}|${sortedDays[nextIdx]}`);
+    if (!entryBar || !nextBar || entryBar.close <= 0) { pending++; continue; }
+    const entry = entryBar.close;
+    for (const t of EXIT_TYPES) {
+      const exit = nextBar[t] ?? entry;
+      const returnPct = (exit / entry - 1) * 100;
+      toWrite.push({
+        signalId: sig.id,
+        exitType: t,
+        exitPrice: Math.round(exit * 10000) / 10000,
+        returnPct: Math.round(returnPct * 10000) / 10000,
+      });
     }
-    const maxRunup = highs.length ? (Math.max(...highs) / entryBar.close - 1) * 100 : null;
-    const maxDrawdown = lows.length ? (Math.min(...lows) / entryBar.close - 1) * 100 : null;
-    toWrite.push({
-      signalId: t.sig.id,
-      n: t.n,
-      exitDate,
-      exitPrice: Math.round(exitBar.close * 10000) / 10000,
-      returnPct: Math.round(returnPct * 10000) / 10000,
-      maxRunupPct: maxRunup != null ? Math.round(Math.max(maxRunup, 0) * 10000) / 10000 : null,
-      maxDrawdownPct: maxDrawdown != null ? Math.round(Math.min(maxDrawdown, 0) * 10000) / 10000 : null,
-    });
   }
 
-  const upsert = `INSERT INTO short_term_evals
-    (signal_id, n_days, exit_date, exit_price, return_pct, max_runup_pct, max_drawdown_pct, created_at)
-    VALUES ($1,$2,$3,$4,$5,$6,$7,$8)
-    ON CONFLICT (signal_id, n_days) DO UPDATE SET
-      exit_date = EXCLUDED.exit_date,
+  const upsert = `INSERT INTO short_term_evals (signal_id, exit_type, exit_price, return_pct, created_at)
+    VALUES ($1,$2,$3,$4,$5)
+    ON CONFLICT (signal_id, exit_type) DO UPDATE SET
       exit_price = EXCLUDED.exit_price,
       return_pct = EXCLUDED.return_pct,
-      max_runup_pct = EXCLUDED.max_runup_pct,
-      max_drawdown_pct = EXCLUDED.max_drawdown_pct,
       created_at = EXCLUDED.created_at`;
   const createdAt = new Date().toISOString();
   for (let i = 0; i < toWrite.length; i += WRITE_BATCH) {
     const chunk = toWrite.slice(i, i + WRITE_BATCH);
     await prisma.$transaction(
-      chunk.map((u) =>
-        prisma.$executeRawUnsafe(upsert, u.signalId, u.n, u.exitDate, u.exitPrice, u.returnPct, u.maxRunupPct, u.maxDrawdownPct, createdAt)
-      )
+      chunk.map((u) => prisma.$executeRawUnsafe(upsert, u.signalId, u.exitType, u.exitPrice, u.returnPct, createdAt))
     );
   }
 
-  return { signals: signals.length, computed: toWrite.length, skipped: 0, pending };
+  return { signals: signals.length, computed: toWrite.length, pending };
 }
 
 const STRATEGY_NAMES: Record<string, string> = {
-  "limit-up-three-yin": "涨停+三连阴",
+  "limit-up-three-yin": "板三阴",
   "dragon-first-yin": "龙首阴",
-  "double-dragon": "双龙战法",
+  "double-dragon": "双龙",
+  "dragon-four-yin": "龙四阴",
+  "xian-ren-zhi-lu": "仙人指路",
 };
 
 export async function loadShortTermStats() {
   await ensureShortTermEvalTable();
-  const rows = await prisma.$queryRawUnsafe<{ strategy: string; nDays: number; returnPct: number }[]>(
-    `SELECT s.strategy, e.n_days AS "nDays", e.return_pct AS "returnPct"
+  const rows = await prisma.$queryRawUnsafe<{ strategy: string; exitType: string; returnPct: number }[]>(
+    `SELECT s.strategy, e.exit_type AS "exitType", e.return_pct AS "returnPct"
      FROM short_term_evals e
      JOIN short_term_signals s ON s.id = e.signal_id
-     WHERE e.return_pct IS NOT NULL
-     ORDER BY s.strategy, e.n_days`
+     WHERE e.return_pct IS NOT NULL AND s.strategy <> 'double-shot'
+     ORDER BY s.strategy, e.exit_type`
   );
 
-  const byStrategy = new Map<string, Map<number, number[]>>();
+  const byStrategy = new Map<string, Map<string, number[]>>();
   for (const r of rows) {
     if (!byStrategy.has(r.strategy)) byStrategy.set(r.strategy, new Map());
-    const byN = byStrategy.get(r.strategy)!;
-    if (!byN.has(Number(r.nDays))) byN.set(Number(r.nDays), []);
-    byN.get(Number(r.nDays))!.push(Number(r.returnPct));
+    const byT = byStrategy.get(r.strategy)!;
+    if (!byT.has(r.exitType)) byT.set(r.exitType, []);
+    byT.get(r.exitType)!.push(Number(r.returnPct));
   }
 
-  const strategies = [...byStrategy.entries()].map(([sid, byN]) => {
-    const byHoldingPeriod: Record<number, any> = {};
-    for (const n of NS) byHoldingPeriod[n] = returnStats(byN.get(n) ?? []);
-    const primary = byHoldingPeriod[5];
+  const strategies = [...byStrategy.entries()].map(([sid, byT]) => {
+    const high = byT.get("high") ?? [];
+    const byExit: Record<string, any> = {};
+    for (const t of EXIT_TYPES) byExit[t] = returnStats(byT.get(t) ?? []);
+    const primary = returnStats(high);
     return {
       strategyId: sid,
       strategyName: STRATEGY_NAMES[sid] ?? sid,
       evaluatedCount: primary.count,
       avgReturn: primary.avg,
       winRate: primary.winRate,
-      byHoldingPeriod,
+      byExit,
     };
   }).sort((a, b) => (b.evaluatedCount || 0) - (a.evaluatedCount || 0));
 
-  const allReturns = rows
-    .filter((r) => Number(r.nDays) === 5)
-    .map((r) => Number(r.returnPct))
-    .filter((r) => Number.isFinite(r));
-  const summary = returnStats(allReturns);
-  return { primaryN: 5, summary, strategies };
+  const allHigh = rows.filter((r) => r.exitType === "high").map((r) => Number(r.returnPct)).filter((r) => Number.isFinite(r));
+  const summary = returnStats(allHigh);
+  return { primaryExit: "high", summary, strategies };
+}
+
+/**
+ * 复盘历史明细：按信号日（matched_date）分组，返回每只标的次日（T+1）四档涨幅。
+ * 四档：open / high / low / close（相对信号日收盘价）。
+ */
+export async function loadShortTermHistory() {
+  await ensureShortTermEvalTable();
+  const rows = await prisma.$queryRawUnsafe<{
+    id: string; strategy: string; name: string; tsCode: string;
+    matchedDate: string; signalType: string; exitType: string; returnPct: number;
+  }[]>(
+    `SELECT s.id, s.strategy, s.name, s.ts_code AS "tsCode", s.matched_date AS "matchedDate",
+            s.signal_type AS "signalType", e.exit_type AS "exitType", e.return_pct AS "returnPct"
+     FROM short_term_evals e
+     JOIN short_term_signals s ON s.id = e.signal_id
+     WHERE e.return_pct IS NOT NULL AND s.strategy <> 'double-shot'
+     ORDER BY s.matched_date DESC, s.strategy, s.ts_code, e.exit_type`
+  );
+
+  const bySignal = new Map<string, {
+    id: string; strategy: string; strategyName: string; name: string; tsCode: string;
+    matchedDate: string; signalType: string; t1: Record<string, number>;
+  }>();
+  for (const r of rows) {
+    if (!bySignal.has(r.id)) {
+      bySignal.set(r.id, {
+        id: r.id, strategy: r.strategy, strategyName: STRATEGY_NAMES[r.strategy] ?? r.strategy,
+        name: r.name, tsCode: r.tsCode, matchedDate: r.matchedDate, signalType: r.signalType, t1: {},
+      });
+    }
+    bySignal.get(r.id)!.t1[r.exitType] = Number(r.returnPct);
+  }
+
+  const byDate = new Map<string, any[]>();
+  for (const s of bySignal.values()) {
+    if (!byDate.has(s.matchedDate)) byDate.set(s.matchedDate, []);
+    byDate.get(s.matchedDate)!.push(s);
+  }
+  const dates = [...byDate.keys()].sort().reverse();
+  return { dates, byDate: Object.fromEntries(byDate) };
 }

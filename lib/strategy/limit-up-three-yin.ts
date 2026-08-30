@@ -20,16 +20,14 @@ export interface LimitUpThreeYinConfig {
   minYinBodyPct: number;
   maxYinBodyPct: number;
   requireTrueYin: boolean;
-  requireVolumeShrinking: boolean;
 }
 
 export const DEFAULT_LIMIT_UP_THREE_YIN_CONFIG: LimitUpThreeYinConfig = {
   limitPct: 0.10,
   limitTolerance: 0.01,
   minYinBodyPct: 0.05,
-  maxYinBodyPct: 3.0,
+  maxYinBodyPct: 6.0, // 2026-09-01 回测：5%→6% 样本+33%、次日最高胜率 89.1%→87.8%，可接受
   requireTrueYin: true,
-  requireVolumeShrinking: true,
 };
 
 export interface LimitUpThreeYinSignal {
@@ -101,11 +99,12 @@ export function detectLimitUpThreeYinAt(
     const isYin = b.close < b.open;
     if (!isYin) fail.push('yin' + (i + 1) + '_not_yin');
     else if (yinBodies[i] < cfg.minYinBodyPct || yinBodies[i] > cfg.maxYinBodyPct) fail.push('yin' + (i + 1) + '_not_small');
-    if (cfg.requireTrueYin && !(b.close < prevCloses[i])) fail.push('yin' + (i + 1) + '_not_true');
+    // 第一根允许假阴（收阴线但收盘未跌破涨停收盘），第二、三根仍要求真阴（收盘逐日走低）
+    const requireTrue = cfg.requireTrueYin && i >= 1;
+    if (requireTrue && !(b.close < prevCloses[i])) fail.push('yin' + (i + 1) + '_not_true');
   });
 
   const volumes: [number, number, number, number] = [b0.volume, b1.volume, b2.volume, b3.volume];
-  if (cfg.requireVolumeShrinking && !(b1.volume > b2.volume && b2.volume > b3.volume)) fail.push('volume_not_shrinking');
 
   const matched = fail.length === 0;
   const entryClose = b3.close;

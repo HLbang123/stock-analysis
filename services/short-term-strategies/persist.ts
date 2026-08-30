@@ -28,8 +28,16 @@ export const SHORT_TERM_SIGNALS_DDL: string[] = [
   "CREATE UNIQUE INDEX IF NOT EXISTS uq_short_term_signals ON short_term_signals (strategy, phase, trade_date, ts_code, signal_type)",
 ];
 
+export const SHORT_TERM_SCAN_LOG_DDL: string[] = [
+  "CREATE TABLE IF NOT EXISTS short_term_scan_log (" +
+    "trade_date VARCHAR(8) PRIMARY KEY," +
+    "phase VARCHAR(16) NOT NULL," +
+    "candidate_count INTEGER NOT NULL," +
+    "created_at VARCHAR(32) NOT NULL)",
+];
+
 export async function ensureShortTermTables(): Promise<void> {
-  for (const sql of SHORT_TERM_SIGNALS_DDL) {
+  for (const sql of [...SHORT_TERM_SIGNALS_DDL, ...SHORT_TERM_SCAN_LOG_DDL]) {
     await prisma.$executeRawUnsafe(sql);
   }
 }
@@ -43,12 +51,19 @@ const UPSERT_SQL = [
   "reason = EXCLUDED.reason, summary = EXCLUDED.summary, metrics = EXCLUDED.metrics, created_at = EXCLUDED.created_at",
 ].join(" ");
 
-export async function saveSnapshot(rows: SnapshotRow[]): Promise<number> {
-  if (rows.length === 0) return 0;
-  // 只清空本次涉及的策略，避免单策略 persist 时误删同 phase/trade_date 的其他策略快照
-  const phase = rows[0].phase;
-  const tradeDate = rows[0].tradeDate;
-  const strategies = Array.from(new Set(rows.map((r) => r.strategy)));
+export interface SaveSnapshotInput {
+  rows: SnapshotRow[];
+  tradeDate: string;
+  phase: ShortTermPhase;
+  /** 本次扫描覆盖的策略范围；即使 0 命中也要清空这些策略当天的旧行 */
+  clearStrategies: ShortTermStrategyId[];
+}
+
+export async function saveSnapshot(input: SaveSnapshotInput): Promise<number> {
+  const { rows, tradeDate, phase, clearStrategies } = input;
+  const strategies = clearStrategies.length
+    ? clearStrategies
+    : Array.from(new Set(rows.map((r) => r.strategy)));
   await prisma.$executeRawUnsafe(
     "DELETE FROM short_term_signals WHERE phase = $1 AND trade_date = $2 AND strategy = ANY($3)",
     phase,
@@ -77,12 +92,48 @@ export async function saveSnapshot(rows: SnapshotRow[]): Promise<number> {
   return rows.length;
 }
 
+export interface ScanLogRow {
+  tradeDate: string;
+  phase: string;
+  candidateCount: number;
+  createdAt: string;
+}
+
+const UPSERT_SCAN_LOG_SQL = [
+  "INSERT INTO short_term_scan_log (trade_date, phase, candidate_count, created_at)",
+  "VALUES ($1, $2, $3, $4)",
+  "ON CONFLICT (trade_date) DO UPDATE SET phase = EXCLUDED.phase, candidate_count = EXCLUDED.candidate_count, created_at = EXCLUDED.created_at",
+].join(" ");
+
+export async function saveScanLog(tradeDate: string, phase: ShortTermPhase, candidateCount: number): Promise<void> {
+  await prisma.$executeRawUnsafe(
+    UPSERT_SCAN_LOG_SQL,
+    tradeDate,
+    phase,
+    candidateCount,
+    new Date().toISOString()
+  );
+}
+
+export async function loadScanLog(): Promise<ScanLogRow[]> {
+  const rows: any[] = await prisma.$queryRawUnsafe(
+    "SELECT trade_date, phase, candidate_count, created_at FROM short_term_scan_log ORDER BY trade_date DESC"
+  );
+  return rows.map((r) => ({
+    tradeDate: String(r.trade_date),
+    phase: String(r.phase),
+    candidateCount: Number(r.candidate_count),
+    createdAt: String(r.created_at),
+  }));
+}
+
 const SELECT_SQL = [
   "SELECT strategy, phase, trade_date, ts_code, name, signal_type, matched_date, priority, reason, summary, metrics, created_at",
   "FROM short_term_signals",
   "WHERE ($1::text IS NULL OR strategy = $1)",
   "AND ($2::text IS NULL OR phase = $2)",
   "AND ($3::text IS NULL OR trade_date = $3)",
+  "AND strategy <> 'double-shot'",
   "ORDER BY strategy, trade_date DESC, ts_code, signal_type",
 ].join(" ");
 

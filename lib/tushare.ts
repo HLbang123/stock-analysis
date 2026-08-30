@@ -144,6 +144,7 @@ export async function callTushare<T = any>(
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify(body),
+        signal: AbortSignal.timeout(20000), // 单次请求 20s 上限，避免外部接口挂起拖死手动扫描
       });
 
       if (!response.ok) {

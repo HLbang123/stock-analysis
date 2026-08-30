@@ -4,7 +4,6 @@
  * 用法：
  *   npx tsx scripts/backfill-short-term-eval.ts               # 近 120 天增量
  *   npx tsx scripts/backfill-short-term-eval.ts --since=2026-01-01
- *   npx tsx scripts/backfill-short-term-eval.ts --N=5
  */
 
 import { prisma } from "../lib/db";
@@ -13,10 +12,8 @@ import { backfillShortTermEval } from "../services/short-term-strategies/eval";
 async function main() {
   const sinceArg = process.argv.find((a) => a.startsWith("--since="));
   const since = sinceArg ? sinceArg.slice(8) : undefined;
-  const argN = process.argv.find((a) => a.startsWith("--N="));
-  const ns = argN ? [parseInt(argN.slice(4), 10)].filter((n) => Number.isFinite(n)) : undefined;
 
-  const result = await backfillShortTermEval({ since, ns });
+  const result = await backfillShortTermEval({ since });
   console.log("[backfill-short-term-eval] 完成", JSON.stringify(result));
 }
 

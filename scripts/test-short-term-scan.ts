@@ -2,16 +2,14 @@
  * 短线策略扫描编排烟雾测试（纯逻辑，无 DB/网络）
  *
  * 验证：
- *  1. 三套策略（涨停+三连阴 / 龙首阴 / 双龙战法）都能通过扫描引擎产出候选；
- *  2. 退潮期把关（跌停家数多 → 不输出）；
- *  3. T+1 早盘实时过滤（双龙封板时间先后）。
+ *  1. 扫描引擎能产出板三阴 / 龙首阴 / 双龙候选；
+ *  2. 退潮期把关（跌停家数多 → 不输出）。
  *
  * 用法：npx tsx scripts/test-short-term-scan.ts
  */
 
 import { buildAllCandidates } from "../services/short-term-strategies/engine";
 import { buildMarketContext } from "../services/short-term-strategies/market";
-import { applyRealtimeFilters } from "../services/short-term-strategies/realtime";
 import { ALL_STRATEGY_IDS } from "../services/short-term-strategies/config";
 import type { SeriesInput, ShortBar, ShortTermCandidate } from "../services/short-term-strategies/types";
 
@@ -85,30 +83,5 @@ const defense = buildMarketContext(30, 15, 5, 4);
 assert(defense.mode === "defense" && defense.tradable === false, "跌停家数多应判定退潮期且不可交易");
 const attack = buildMarketContext(80, 2, 5, 6);
 assert(attack.mode === "attack" && attack.tradable === true, "涨停多跌停少应判定进攻期且可交易");
-
-// ── 5. T+1 早盘实时过滤（双龙封板时间先后）──
-const boardCandidate: ShortTermCandidate = {
-  strategy: "double-dragon",
-  tsCode: "002001.SZ",
-  name: "测试主板标的",
-  signalType: "double_dragon_board",
-  matchedDate: isoDay(-8),
-  priority: "high",
-  reason: "双龙二板打板形态符合",
-  summary: "实体首板突破放量，二板连续涨停",
-  metrics: {},
-};
-const ctx = {
-  todayLimitUp: new Map([["002001.SZ", { firstTime: "09:45", isOneWord: false, continueDayCnt: 2 }]]),
-  yesterdayFirstBoard: new Map([["002001.SZ", "10:30"]]),
-};
-const kept = applyRealtimeFilters([boardCandidate], ctx);
-assert(kept.length === 1 && kept[0].metrics.realtime === "passed", "二板早于一板封板应保留");
-const lateCtx = {
-  todayLimitUp: new Map([["002001.SZ", { firstTime: "11:00", isOneWord: false, continueDayCnt: 2 }]]),
-  yesterdayFirstBoard: new Map([["002001.SZ", "10:30"]]),
-};
-const dropped = applyRealtimeFilters([boardCandidate], lateCtx);
-assert(dropped.length === 1 && dropped[0].metrics.realtime === "seal_failed", "二板晚于一板封板应标记为 seal_failed 但保留");
 
 console.log("ALL SHORT-TERM SCAN TESTS PASSED");

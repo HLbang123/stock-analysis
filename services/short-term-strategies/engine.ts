@@ -9,6 +9,8 @@
 import { detectLimitUpThreeYinAt, ThreeYinBar } from "@/lib/strategy/limit-up-three-yin";
 import { detectDragonFirstYinAt } from "@/lib/strategy/dragon-first-yin";
 import { detectDoubleDragonBoard, detectDoubleDragonPullback } from "@/lib/strategy/double-dragon";
+import { detectDragonFourYinAt } from "@/lib/strategy/dragon-four-yin";
+import { detectXianRenAt } from "@/lib/strategy/xian-ren-zhi-lu";
 import type { SeriesInput, ShortBar, ShortTermCandidate, ShortTermStrategyId } from "./types";
 
 function toEngineBars(bars: ShortBar[]): ThreeYinBar[] {
@@ -40,9 +42,10 @@ export function buildCandidatesForSeries(
   const engineBars = toEngineBars(bars);
   const lastIdx = bars.length - 1;
   const lastDate = bars[lastIdx].date;
+  const limitPct = /^(300|301|688|689)/.test(series.tsCode) ? 0.20 : 0.10;
 
   if (strategies.includes("limit-up-three-yin")) {
-    const sig = detectLimitUpThreeYinAt(engineBars, lastIdx);
+    const sig = detectLimitUpThreeYinAt(engineBars, lastIdx, { limitPct });
     if (sig.matched) {
       out.push({
         strategy: "limit-up-three-yin",
@@ -64,19 +67,15 @@ export function buildCandidatesForSeries(
   }
 
   if (strategies.includes("dragon-first-yin")) {
-    const today = detectDragonFirstYinAt(engineBars, lastIdx);
+    // 只出「今天首阴」，不把昨天触发的首阴翻出来（历史信号归复盘，不混入当日候选）
+    const today = detectDragonFirstYinAt(engineBars, lastIdx, { limitPct });
     if (today.matched) {
       out.push(dragonCandidate(series, "firstYinToday", lastDate, today));
-    } else if (lastIdx >= 1) {
-      const yesterday = detectDragonFirstYinAt(engineBars, lastIdx - 1);
-      if (yesterday.matched) {
-        out.push(dragonCandidate(series, "firstYinYesterday", bars[lastIdx - 1].date, yesterday));
-      }
     }
   }
 
   if (strategies.includes("double-dragon")) {
-    const board = detectDoubleDragonBoard(engineBars, lastIdx);
+    const board = detectDoubleDragonBoard(engineBars, lastIdx, { limitPct });
     if (board.matched) {
       const ddPriority = board.secondOneWord || board.firstBoardBodyPct >= 5 ? "high" : "medium";
       out.push({
@@ -94,14 +93,13 @@ export function buildCandidatesForSeries(
           board2Date: board.entryDate,
           firstBoardBodyPct: board.firstBoardBodyPct,
           secondOneWord: board.secondOneWord,
-          caveat: "二板打板为日线基线口径，未过滤二板一字板可成交（封板先后在 T+1 早盘实时过滤）",
         },
       });
     }
     // 回踩买入：二板后的 1~3 个交易日内回踩到 5 日线附近；今日为回踩日
     for (const b2 of [lastIdx - 1, lastIdx - 2]) {
       if (b2 < 1) continue;
-      const pb = detectDoubleDragonPullback(engineBars, b2);
+      const pb = detectDoubleDragonPullback(engineBars, b2, { limitPct });
       if (pb.matched && pb.entryDate === lastDate) {
         out.push({
           strategy: "double-dragon",
@@ -115,6 +113,59 @@ export function buildCandidatesForSeries(
           metrics: { entryType: pb.entryType, entryPrice: pb.entryPrice, board2Date: pb.entryDate },
         });
       }
+    }
+  }
+
+  if (strategies.includes("dragon-four-yin")) {
+    const d4 = detectDragonFourYinAt(engineBars, lastIdx, { limitPct });
+    if (d4.matched) {
+      out.push({
+        strategy: "dragon-four-yin",
+        tsCode: series.tsCode,
+        name: series.name,
+        signalType: "dragon_four_yin",
+        matchedDate: d4.entryDate,
+        priority: d4.metrics.nearHighPct != null && d4.metrics.nearHighPct >= 100 ? "high" : "medium",
+        reason: d4.reason,
+        summary: "涨停首板放量近新高后四连阴，第四阴尾盘关注",
+        metrics: {
+          boardDate: d4.metrics.boardDate,
+          yinBodies: d4.metrics.yinBodies,
+          volRatio: d4.metrics.volRatio,
+          nearHighPct: d4.metrics.nearHighPct,
+          entryPrice: d4.entryPrice,
+        },
+      });
+    }
+  }
+
+  if (strategies.includes("xian-ren-zhi-lu")) {
+    const xr = detectXianRenAt(engineBars, lastIdx);
+    if (xr.matched) {
+      out.push({
+        strategy: "xian-ren-zhi-lu",
+        tsCode: series.tsCode,
+        name: series.name,
+        signalType: "xian_ren_zhi_lu",
+        matchedDate: xr.entryDate,
+        priority: xr.metrics.confPct != null && xr.metrics.confPct >= 100 ? "high" : "medium",
+        reason: xr.reason,
+        summary: "试盘长上影后确认日反包，确认日尾盘关注",
+        metrics: {
+          t0Date: xr.metrics.t0Date,
+          upperShadowPct: xr.metrics.upperShadowPct,
+          bodyAbsPct: xr.metrics.bodyAbsPct,
+          changePct: xr.metrics.changePct,
+          volRatio: xr.metrics.volRatio,
+          amplitudePct: xr.metrics.amplitudePct,
+          gain60: xr.metrics.gain60,
+          confPct: xr.metrics.confPct,
+          confDayGain: xr.metrics.confDayGain,
+          confClosePos: xr.metrics.confClosePos,
+          confOpenGap: xr.metrics.confOpenGap,
+          entryPrice: xr.entryPrice,
+        },
+      });
     }
   }
 

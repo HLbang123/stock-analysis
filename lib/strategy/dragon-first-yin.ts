@@ -64,7 +64,7 @@ export const DEFAULT_DRAGON_FIRST_YIN_CONFIG: DragonFirstYinConfig = {
   minTurnoverRate: 8,
   yinBodyMaxPct: 7,
   rejectLimitDownYin: true,
-  maxVolumeRatio: 2.0,
+  maxVolumeRatio: 2.5, // 2026-09-02 回测：2.0→2.5 样本+27%，次日最高胜率 83.47%→83.77% 不降
   maxYinTurnoverRate: 45,
   skipAllOneWordRun: false,
 };
@@ -359,54 +359,14 @@ export function detectLatestDragonFirstYin(
   return null;
 }
 
-/** 主板范围过滤：排除创业板、科创板、北交所、ST/退市。 */
+/** 短线策略范围过滤：主板 + 创业板 + 科创板；排除北交所、ST/退市。 */
 export function isMainBoardNonST(tsCode: string, name?: string | null): boolean {
   if (name && /ST|退/.test(name.toUpperCase())) return false;
   const upper = tsCode.toUpperCase();
   if (/.BJ$/.test(upper)) return false;
   const digits = upper.replace(/^[A-Z]+/, '').replace(/.(SH|SZ|BJ)$/, '');
-  if (/^(688|689|300|301)/.test(digits)) return false;
   if (/^(4|8|9)/.test(digits)) return false;
-  return /^(600|601|603|605|000|001|002|003)/.test(digits);
-}
-
-/**
- * 双龙战法（实时过滤，不回测）：
- * 二板要比一板封板时间更早；二板最好是一字板（一字板加分）。
- * 首板/二板封板时间来自涨停池 first_time / limit_list_d first_time。
- */
-export interface BoardSealInfo {
-  boardNumber: 1 | 2;
-  firstLimitTime: string; // 'HH:MM' 或 'HHMM'
-  isOneWord: boolean;
-}
-
-export interface DoubleDragonResult {
-  secondEarlier: boolean;
-  oneWordBonus: boolean;
-  score: number; // 0=不满足；1=二板更早；2=二板更早且一字板
-  reason: string;
-}
-
-function parseSealTimeToMinutes(t: string): number | null {
-  const s = t.trim();
-  const hm = s.match(/^([0-9]{1,2})[:：]([0-9]{2})$/);
-  if (hm) return Number(hm[1]) * 60 + Number(hm[2]);
-  const hhmm = s.match(/^([0-9]{4})$/);
-  if (hhmm) return Number(hhmm[1].slice(0, 2)) * 60 + Number(hhmm[1].slice(2, 4));
-  return null;
-}
-
-export function evaluateDoubleDragon(first: BoardSealInfo, second: BoardSealInfo): DoubleDragonResult {
-  const t1 = parseSealTimeToMinutes(first.firstLimitTime);
-  const t2 = parseSealTimeToMinutes(second.firstLimitTime);
-  const secondEarlier = t1 != null && t2 != null && t2 < t1;
-  const oneWordBonus = second.isOneWord;
-  const score = (secondEarlier ? 1 : 0) + (oneWordBonus ? 1 : 0);
-  let reason = '二板未早于一板封板';
-  if (t1 == null || t2 == null) reason = '封板时间数据不足';
-  else if (secondEarlier) reason = oneWordBonus ? '二板早于一板封板，且二板为一字板' : '二板早于一板封板';
-  return { secondEarlier, oneWordBonus, score, reason };
+  return /^(600|601|603|605|000|001|002|003|300|301|688|689)/.test(digits);
 }
 
 export type DragonRegime = 'attack' | 'neutral' | 'defense';

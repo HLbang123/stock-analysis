@@ -1,7 +1,7 @@
 /**
  * 双龙战法 策略引擎（纯逻辑）
  * 规则见 docs/short-term-strategies.md 策略三。
- * 二板早于首板封板为实时过滤，不在本日线引擎内。
+ * 二板封板时间先后由用户自行比对，不在引擎内过滤。
  */
 
 export interface DoubleDragonBar {
@@ -91,7 +91,7 @@ function firstBoardOk(bars: DoubleDragonBar[], firstIdx: number, cfg: DoubleDrag
   if (!isLimitUp(b0, prev0, cfg)) fail.push('first_board_not_limit_up');
   if (isOneWord(b0, prev0, cfg)) fail.push('first_board_one_word');
   // 2026-08-27 用户定稿：首板只看实体板/非一字（非一字即实体板），不卡实体大小、突破和放量。
-  // 连板数==2 与封板时间早晚由同花顺实时数据把关。
+  // 连板数==2 由日线硬过滤；封板时间早晚由用户自行比对。
   return fail;
 }
 

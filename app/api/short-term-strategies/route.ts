@@ -1,9 +1,9 @@
 /**
  * GET  /api/short-term-strategies — 读取落库快照（候选列表）
- * POST /api/short-term-strategies — 触发两阶段扫描
- *   body: { strategy?, phase? = "closing", persist? = false, tradeDate? }
- *   phase = "closing"：T 日尾盘全量扫描（persist=true 时落库快照）
- *   phase = "morning"：T+1 早盘复用快照 + 实时过滤
+ * POST /api/short-term-strategies — 触发全量扫描
+ *   body: { strategy?, persist? = false, tradeDate? }
+ *   persist=false：仅返回扫描结果展示，不落库（手动扫描）
+ *   persist=true：落库当日快照（尾盘自动任务专用）
  *
  * 权限：仅专用口令（tier=advanced）可读/可触发；普通口令返回空快照。
  * 对外文案禁「股」字（用「标的/筛选」），不输出买卖建议措辞。
@@ -14,11 +14,9 @@ import { AUTH_COOKIE, getTokenTier } from "@/lib/auth";
 import {
   SHORT_TERM_STRATEGIES,
   parseStrategyId,
-  isPhase,
 } from "@/services/short-term-strategies/config";
 import {
   runClosingScan,
-  runMorningRefresh,
   loadSnapshotResult,
 } from "@/services/short-term-strategies/scanner";
 
@@ -26,6 +24,8 @@ const EMPTY_CANDIDATES = {
   "limit-up-three-yin": [],
   "dragon-first-yin": [],
   "double-dragon": [],
+  "dragon-four-yin": [],
+  "xian-ren-zhi-lu": [],
 };
 
 async function isAdvanced(request: NextRequest): Promise<boolean> {
@@ -37,14 +37,12 @@ export async function GET(request: NextRequest) {
   try {
     const sp = request.nextUrl.searchParams;
     const strategy = parseStrategyId(sp.get("strategy"));
-    const phaseRaw = sp.get("phase");
-    const phase = isPhase(phaseRaw) ? phaseRaw : undefined;
     const tradeDate = sp.get("tradeDate") || undefined;
 
     if (!(await isAdvanced(request))) {
       return NextResponse.json({
         strategies: [],
-        phase: phase ?? "closing",
+        phase: "closing",
         tradeDate: tradeDate ?? "",
         generated: false,
         generatedAt: null,
@@ -53,7 +51,7 @@ export async function GET(request: NextRequest) {
       });
     }
 
-    const result = await loadSnapshotResult({ strategy: strategy ?? undefined, phase, tradeDate });
+    const result = await loadSnapshotResult({ strategy: strategy ?? undefined, tradeDate });
     return NextResponse.json({
       strategies: SHORT_TERM_STRATEGIES,
       phase: result.phase,
@@ -77,19 +75,14 @@ export async function POST(request: NextRequest) {
 
     const body = (await request.json().catch(() => ({}))) as {
       strategy?: string;
-      phase?: string;
       persist?: boolean;
       tradeDate?: string;
     };
     const strategy = parseStrategyId(body.strategy);
-    const phase = isPhase(body.phase) ? body.phase : "closing";
     const strategies = strategy ? [strategy] : undefined;
     const tradeDate = body.tradeDate || undefined;
 
-    const result =
-      phase === "morning"
-        ? await runMorningRefresh({ strategies, tradeDate })
-        : await runClosingScan({ strategies, tradeDate, persist: body.persist === true });
+    const result = await runClosingScan({ strategies, tradeDate, persist: body.persist === true });
 
     return NextResponse.json({
       strategies: SHORT_TERM_STRATEGIES,

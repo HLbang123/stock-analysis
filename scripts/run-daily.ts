@@ -9,6 +9,8 @@ import { execSync } from "child_process";
 
 const STEPS: { name: string; cmd: string; fatal?: boolean }[] = [
   { name: "日线同步", cmd: "npx tsx scripts/sync-daily.ts" },
+  // 超短线候选扫描落库：紧跟日线同步之后，确保「今日确认日」已在库，否则预筛会漏掉当天信号
+  { name: "超短线扫描落库", cmd: "npx tsx scripts/run-short-term-strategies.ts", fatal: false },
   { name: "RPS 计算", cmd: "npx tsx scripts/compute-rps.ts" },
   { name: "资金流向", cmd: "npx tsx scripts/sync-moneyflow.ts" },
   { name: "基金日线", cmd: "npx tsx scripts/sync-fund-daily.ts", fatal: false },
