@@ -148,6 +148,34 @@ function formatDate(ymd: string): string {
   return ymd;
 }
 
+// 手动扫描结果本地缓存：手动扫描 persist=false 不落库，刷新/重进会回退到最近落库日（可能是上个交易日）。
+// 这里按「当天」缓存一份手动扫描结果，挂载时兜底展示，避免数据日跳变。
+const SCAN_CACHE_KEY = 'short-term-scan-cache-v1';
+
+function beijingToday(): string {
+  return new Date(Date.now() + 8 * 3600 * 1000).toISOString().slice(0, 10).replace(/-/g, '');
+}
+
+function readScanCache(): { tradeDate: string; data: ShortTermResponse } | null {
+  try {
+    const raw = localStorage.getItem(SCAN_CACHE_KEY);
+    if (!raw) return null;
+    const parsed = JSON.parse(raw);
+    if (parsed && typeof parsed.tradeDate === 'string' && parsed.data?.candidates) return parsed;
+  } catch {
+    /* 忽略隐私模式等 localStorage 不可用场景 */
+  }
+  return null;
+}
+
+function writeScanCache(tradeDate: string, data: ShortTermResponse): void {
+  try {
+    localStorage.setItem(SCAN_CACHE_KEY, JSON.stringify({ tradeDate, data }));
+  } catch {
+    /* 忽略 */
+  }
+}
+
 function toStock(tsCodeFull: string, name: string) {
   const tsCode = tsCodeFull.replace(/\.(SH|SZ|BJ)$/, '');
   const isSH = tsCode.startsWith('6') || tsCode.startsWith('68');
@@ -180,15 +208,27 @@ export function ShortTermTab() {
   // 一次拉取三套策略的快照结果，子 tab 切换只做本地过滤（无需重复请求）
   useEffect(() => {
     let cancelled = false;
+    const today = beijingToday();
+    const cached = readScanCache();
     fetch('/api/short-term-strategies')
       .then((r) => r.json())
       .then((d: ShortTermResponse) => {
         if (cancelled) return;
-        if (d && d.candidates) setResp(d);
-        else setResp(null);
+        // 今天已正式落库 → 用落库结果；今天还没落库 → 用当天手动扫描缓存兜底；否则回退最近落库日
+        if (d && d.candidates && d.generated && d.tradeDate === today) {
+          setResp(d);
+        } else if (cached && cached.tradeDate === today) {
+          setResp(cached.data);
+        } else if (d && d.candidates) {
+          setResp(d);
+        } else {
+          setResp(null);
+        }
       })
       .catch(() => {
-        if (!cancelled) setResp(null);
+        if (cancelled) return;
+        if (cached && cached.tradeDate === today) setResp(cached.data);
+        else setResp(null);
       })
       .finally(() => {
         if (!cancelled) setLoading(false);
@@ -224,7 +264,9 @@ export function ShortTermTab() {
         return;
       }
       if (d && d.candidates) {
-        setResp({ ...d, generated: true });
+        const finalResp = { ...d, generated: true } as ShortTermResponse;
+        setResp(finalResp);
+        writeScanCache(d.tradeDate, finalResp);
         toast.success('五套策略扫描完成');
       } else {
         toast.error('扫描结果为空');
@@ -350,7 +392,6 @@ export function ShortTermTab() {
             {scanning ? <Loader2 className="w-3.5 h-3.5 animate-spin" /> : <RefreshCw className="w-3.5 h-3.5" />}
             {scanning ? '扫描中…' : '立即扫描'}
           </button>
-          <span className="text-xs text-gray-400">仅预览，不落库；正式结果以尾盘自动任务为准</span>
         </div>
         <div className="flex gap-1 p-1 bg-gray-100 dark:bg-gray-800 rounded-lg w-fit flex-wrap">
           {STRATEGIES.map((s) => (
