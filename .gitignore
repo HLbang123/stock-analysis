@@ -52,3 +52,6 @@ next-env.d.ts
 
 # DSH agent-teams 团队状态(本地产物,不入库)
 .agent-teams/
+
+# docs/ 本地记忆与项目笔记（个人留存，不入库）
+/docs/

@@ -350,7 +350,6 @@ export function ShortTermTab() {
             {scanning ? <Loader2 className="w-3.5 h-3.5 animate-spin" /> : <RefreshCw className="w-3.5 h-3.5" />}
             {scanning ? '扫描中…' : '立即扫描'}
           </button>
-          <span className="text-xs text-gray-400">仅预览，不落库；正式结果以尾盘自动任务为准</span>
         </div>
         <div className="flex gap-1 p-1 bg-gray-100 dark:bg-gray-800 rounded-lg w-fit flex-wrap">
           {STRATEGIES.map((s) => (
