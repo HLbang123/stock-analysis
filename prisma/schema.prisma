@@ -574,3 +574,17 @@ model ShareSubscriber {
   @@index([code])
   @@map("share_subscribers")
 }
+
+/// 意见反馈（首页汉堡菜单「意见反馈」提交；文本 + 可选截图，截图为 data URL 数组 JSONB）
+model Feedback {
+  id        String   @id @default(uuid()) @db.VarChar(36)
+  content   String   @db.Text
+  contact   String?  @db.VarChar(80)
+  images    Json?    // ["data:image/png;base64,..."]
+  meta      Json?    // { path, ua, referer, ip }
+  status    String   @default("new") @db.VarChar(16) // new / read / resolved
+  createdAt DateTime @default(now()) @map("created_at")
+
+  @@index([createdAt(sort: Desc)])
+  @@map("feedbacks")
+}

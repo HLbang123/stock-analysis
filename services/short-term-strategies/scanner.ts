@@ -12,6 +12,8 @@ import { isMainBoardNonST } from "@/lib/strategy/dragon-first-yin";
 import { PrefilterCode, PrismaShortTermDataSource, ShortTermDataSource } from "./data-source";
 import { buildMarketContext, loadMarketExtras } from "./market";
 import { ensureShortTermTables, loadScanLog, loadSnapshot, saveScanLog, saveSnapshot } from "./persist";
+import { scoreCandidate, type MarketSentiment } from "./score";
+import { computeChipDistribution, type ChipBar } from "@/lib/chip";
 import { getQuotesBatch } from "@/lib/server-quote-cache";
 import { beijingTodayStr } from "@/lib/stock-helpers";
 import type {
@@ -41,6 +43,11 @@ export function groupByStrategy(
 ): Record<ShortTermStrategyId, ShortTermCandidate[]> {
   const out = emptyStrategies() as Record<string, ShortTermCandidate[]>;
   for (const c of candidates) (out[c.strategy] ??= []).push(c);
+  // 组内按强弱分（score 0-100）降序，同分再按 priority（强→中→弱）
+  const rank: Record<string, number> = { high: 0, medium: 1, low: 2 };
+  for (const key of Object.keys(out)) {
+    out[key].sort((a, b) => (b.score - a.score) || (rank[a.priority] - rank[b.priority]));
+  }
   return out;
 }
 
@@ -56,7 +63,7 @@ function candidateToRow(c: ShortTermCandidate, phase: ShortTermPhase, tradeDate:
     priority: c.priority,
     reason: c.reason,
     summary: c.summary,
-    metrics: c.metrics,
+    metrics: { ...c.metrics, score: c.score },
   };
 }
 
@@ -70,8 +77,24 @@ export function rowToCandidate(r: SnapshotRow): ShortTermCandidate {
     priority: r.priority,
     reason: r.reason,
     summary: r.summary,
+    score: typeof r.metrics?.score === "number" ? r.metrics.score : r.priority === "high" ? 80 : r.priority === "medium" ? 55 : 30,
     metrics: r.metrics,
   };
+}
+
+/** 仙人指路 peakPos：T-1 筹码分布（信号日前 90 根，不含信号日）+ 信号日价。盘中换手率不完整，故用 T-1 收盘口径。 */
+function computePeakPosT1(bars: ShortBar[]): number | null {
+  const n = bars.length;
+  if (n < 2) return null;
+  const end = n - 2; // 信号日前一日（T0 试盘日）
+  const start = Math.max(0, end - 90 + 1);
+  const chipBars: ChipBar[] = [];
+  for (let j = start; j <= end; j++) {
+    const b = bars[j];
+    chipBars.push({ high: b.high, low: b.low, close: b.close, vol: b.volume, turnoverRate: b.turnoverRate ?? null });
+  }
+  const chip = computeChipDistribution(chipBars, bars[n - 1].close);
+  return chip ? chip.peakPos : null;
 }
 
 function tsCodeToSymbol(tsCode: string): string {
@@ -152,6 +175,7 @@ export async function runClosingScan(opts: ScanOptions = {}): Promise<ShortTermS
   let candidates: ShortTermCandidate[] = [];
   let scanDate = latest;
   let today8: string | null = null;
+  let realtimeLimitUpCount: number | null = null;
   {
     // SQL 前置：每套策略先筛出可能命中的 code，再只拉这些 code 的完整回看窗口 K 线
     const prefilterStart =
@@ -169,6 +193,10 @@ export async function runClosingScan(opts: ScanOptions = {}): Promise<ShortTermS
     try {
       const { getLimitUpPool, normalizeThscode } = await import("@/lib/fuyao");
       const pool = await getLimitUpPool();
+      realtimeLimitUpCount = (pool?.item ?? []).filter((it) => {
+        const c = normalizeThscode(String(it.thscode ?? ""));
+        return !!c && isMainBoardNonST(c, it.name);
+      }).length;
       for (const it of pool?.item ?? []) {
         const code = normalizeThscode(String(it.thscode ?? ""));
         if (!code || codeMap.has(code)) continue;
@@ -201,6 +229,20 @@ export async function runClosingScan(opts: ScanOptions = {}): Promise<ShortTermS
     series = today.series;
     if (today.today8) { scanDate = today.today8; today8 = today.today8; }
     candidates = buildAllCandidates(series, strategies);
+
+    // 补强弱分：市场情绪（实时涨停家数 + 实时最高连板）+ 仙人指路 peakPos（T-1 筹码）
+    const sentiment: MarketSentiment = {
+      limitUpCount: realtimeLimitUpCount,
+      highestBoard: extras.highestBoard,
+    };
+    const seriesByCode = new Map(series.map((s) => [s.tsCode, s]));
+    for (const c of candidates) {
+      if (c.strategy === "xian-ren-zhi-lu") {
+        const sr = seriesByCode.get(c.tsCode);
+        if (sr) c.metrics["peakPos"] = computePeakPosT1(sr.bars);
+      }
+      c.score = scoreCandidate(c, sentiment);
+    }
   }
 
   if (opts.persist) {

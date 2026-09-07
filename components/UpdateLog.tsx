@@ -1,8 +1,10 @@
 'use client';
 
 import { useState, useEffect, useRef, type FormEvent } from 'react';
+import { useRouter } from 'next/navigation';
 import { Menu, X, Loader2 } from 'lucide-react';
 import { Modal } from '@/components/ui/modal';
+import { ROUTES } from '@/lib/constants';
 import { getAuthInfo, remainingDays } from '@/lib/client-auth';
 
 /**
@@ -17,6 +19,12 @@ interface ChangeEntry {
 }
 
 const CHANGELOG: ChangeEntry[] = [
+  {
+    date: '2026-09-07',
+    items: [
+      '首页菜单新增「意见反馈」：可描述问题、附截图，并查看大家的反馈与处理进度',
+    ],
+  },
   {
     date: '2026-08-28',
     items: [
@@ -373,6 +381,7 @@ const THANKS = `这个小工具能跑起来，离不开群里大家的支持。
 • 合计：1549 元`;
 
 export function UpdateLog({ onShowRules }: { onShowRules?: () => void }) {
+  const router = useRouter();
   const [menuOpen, setMenuOpen] = useState(false);
   const [panel, setPanel] = useState<'log' | 'thanks' | null>(null);
   const wrapRef = useRef<HTMLDivElement>(null);
@@ -385,8 +394,15 @@ export function UpdateLog({ onShowRules }: { onShowRules?: () => void }) {
 
   useEffect(() => {
     const info = getAuthInfo();
-    setDaysLeft(remainingDays(info.expSec));
-    try { setStoredPw(localStorage.getItem('auth_password') || ''); } catch {}
+    const days = remainingDays(info.expSec);
+    let stored = '';
+    try { stored = localStorage.getItem('auth_password') || ''; } catch {}
+    // 延后一拍再落 state：避免在 effect 内同步 setState（React 会连续重渲染）
+    const t = setTimeout(() => {
+      setDaysLeft(days);
+      setStoredPw(stored);
+    }, 0);
+    return () => clearTimeout(t);
   }, []);
 
   // 点外部关闭小菜单
@@ -468,6 +484,12 @@ export function UpdateLog({ onShowRules }: { onShowRules?: () => void }) {
               规则说明
             </button>
           )}
+          <button
+            onClick={() => { setMenuOpen(false); router.push(ROUTES.feedback); }}
+            className="w-full px-3 py-2 text-sm text-left text-gray-600 dark:text-gray-300 hover:bg-gray-50 dark:hover:bg-gray-800 transition border-t border-gray-100 dark:border-gray-800"
+          >
+            意见反馈
+          </button>
           <button
             onClick={() => { setMenuOpen(false); setPw(''); setPwError(''); setPwOpen(true); }}
             className="w-full px-3 py-2 text-sm text-left text-gray-600 dark:text-gray-300 hover:bg-gray-50 dark:hover:bg-gray-800 transition border-t border-gray-100 dark:border-gray-800"

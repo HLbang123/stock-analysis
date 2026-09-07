@@ -54,6 +54,7 @@ export function buildCandidatesForSeries(
         signalType: "limit_up_three_yin",
         matchedDate: lastDate,
         priority: "medium",
+        score: 0,
         reason: sig.reason,
         summary: "涨停后三连阴，第三根阴线为尾盘买点",
         metrics: {
@@ -78,6 +79,7 @@ export function buildCandidatesForSeries(
     const board = detectDoubleDragonBoard(engineBars, lastIdx, { limitPct });
     if (board.matched) {
       const ddPriority = board.secondOneWord || board.firstBoardBodyPct >= 5 ? "high" : "medium";
+      const prevVol = bars[lastIdx - 1]?.volume ?? 0;
       out.push({
         strategy: "double-dragon",
         tsCode: series.tsCode,
@@ -85,6 +87,7 @@ export function buildCandidatesForSeries(
         signalType: "double_dragon_board",
         matchedDate: board.entryDate,
         priority: ddPriority,
+        score: 0,
         reason: board.reason,
         summary: board.secondOneWord ? "二板一字/秒板，抢筹更强" : "实体首板，二板连续涨停",
         metrics: {
@@ -93,6 +96,7 @@ export function buildCandidatesForSeries(
           board2Date: board.entryDate,
           firstBoardBodyPct: board.firstBoardBodyPct,
           secondOneWord: board.secondOneWord,
+          board2VolRatio: prevVol > 0 ? Math.round((bars[lastIdx].volume / prevVol) * 100) / 100 : null,
         },
       });
     }
@@ -108,6 +112,7 @@ export function buildCandidatesForSeries(
           signalType: "double_dragon_pullback",
           matchedDate: pb.entryDate,
           priority: "medium",
+          score: 0,
           reason: pb.reason,
           summary: "二板后回踩 5 日线且缩量",
           metrics: { entryType: pb.entryType, entryPrice: pb.entryPrice, board2Date: pb.entryDate },
@@ -126,6 +131,7 @@ export function buildCandidatesForSeries(
         signalType: "dragon_four_yin",
         matchedDate: d4.entryDate,
         priority: d4.metrics.nearHighPct != null && d4.metrics.nearHighPct >= 100 ? "high" : "medium",
+        score: 0,
         reason: d4.reason,
         summary: "涨停首板放量近新高后四连阴，第四阴尾盘关注",
         metrics: {
@@ -149,6 +155,7 @@ export function buildCandidatesForSeries(
         signalType: "xian_ren_zhi_lu",
         matchedDate: xr.entryDate,
         priority: xr.metrics.confPct != null && xr.metrics.confPct >= 100 ? "high" : "medium",
+        score: 0,
         reason: xr.reason,
         summary: "试盘长上影后确认日反包，确认日尾盘关注",
         metrics: {
@@ -185,6 +192,7 @@ function dragonCandidate(
     signalType,
     matchedDate,
     priority: sig.priority,
+    score: 0,
     reason: sig.reason,
     summary: sig.summary ?? null,
     metrics: {

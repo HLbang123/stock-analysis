@@ -16,5 +16,6 @@ export const ROUTES = {
   watchlist: "/watchlist",
   ai: "/ai",
   scanner: "/scanner",
+  feedback: "/feedback",
   stockDetail: (code: string) => `/stock/${code}`,
 } as const;

@@ -36,6 +36,7 @@ export interface ShortTermCandidate {
   signalType: string; // firstYinToday / firstYinYesterday / limit_up_three_yin / double_dragon_board / double_dragon_pullback
   matchedDate: string; // YYYY-MM-DD 形态触发日
   priority: ShortTermPriority;
+  score: number; // 0-100 强弱分（与 AI 筛选打分对齐），组内排序用
   reason: string;
   summary: string | null;
   metrics: Record<string, unknown>;

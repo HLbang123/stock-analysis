@@ -74,6 +74,7 @@ interface ShortTermCandidate {
   signalType: string;
   matchedDate: string;
   priority: 'high' | 'medium' | 'low';
+  score: number;
   reason: string;
   summary: string | null;
   metrics: Record<string, unknown>;
@@ -152,16 +153,19 @@ function formatDate(ymd: string): string {
 // 这里按「当天」缓存一份手动扫描结果，挂载时兜底展示，避免数据日跳变。
 const SCAN_CACHE_KEY = 'short-term-scan-cache-v1';
 
+function beijingDate(ts: number): string {
+  return new Date(ts + 8 * 3600 * 1000).toISOString().slice(0, 10).replace(/-/g, '');
+}
 function beijingToday(): string {
-  return new Date(Date.now() + 8 * 3600 * 1000).toISOString().slice(0, 10).replace(/-/g, '');
+  return beijingDate(Date.now());
 }
 
-function readScanCache(): { tradeDate: string; data: ShortTermResponse } | null {
+function readScanCache(): { tradeDate: string; savedAt: number; data: ShortTermResponse } | null {
   try {
     const raw = localStorage.getItem(SCAN_CACHE_KEY);
     if (!raw) return null;
     const parsed = JSON.parse(raw);
-    if (parsed && typeof parsed.tradeDate === 'string' && parsed.data?.candidates) return parsed;
+    if (parsed && typeof parsed.tradeDate === 'string' && typeof parsed.savedAt === 'number' && parsed.data?.candidates) return parsed;
   } catch {
     /* 忽略隐私模式等 localStorage 不可用场景 */
   }
@@ -170,7 +174,7 @@ function readScanCache(): { tradeDate: string; data: ShortTermResponse } | null 
 
 function writeScanCache(tradeDate: string, data: ShortTermResponse): void {
   try {
-    localStorage.setItem(SCAN_CACHE_KEY, JSON.stringify({ tradeDate, data }));
+    localStorage.setItem(SCAN_CACHE_KEY, JSON.stringify({ tradeDate, savedAt: Date.now(), data }));
   } catch {
     /* 忽略 */
   }
@@ -217,7 +221,7 @@ export function ShortTermTab() {
         // 今天已正式落库 → 用落库结果；今天还没落库 → 用当天手动扫描缓存兜底；否则回退最近落库日
         if (d && d.candidates && d.generated && d.tradeDate === today) {
           setResp(d);
-        } else if (cached && cached.tradeDate === today) {
+        } else if (cached && beijingDate(cached.savedAt) === today) {
           setResp(cached.data);
         } else if (d && d.candidates) {
           setResp(d);
@@ -227,7 +231,7 @@ export function ShortTermTab() {
       })
       .catch(() => {
         if (cancelled) return;
-        if (cached && cached.tradeDate === today) setResp(cached.data);
+        if (cached && beijingDate(cached.savedAt) === today) setResp(cached.data);
         else setResp(null);
       })
       .finally(() => {
@@ -486,18 +490,33 @@ export function ShortTermTab() {
                     </div>
                   </div>
                   <div className="flex items-center gap-2 shrink-0">
-                    <span
-                      className={cn(
-                        'px-1.5 py-0.5 rounded text-xs',
-                        c.priority === 'high'
-                          ? 'bg-red-100 text-red-700 dark:bg-red-950/40 dark:text-red-400'
-                          : c.priority === 'medium'
-                            ? 'bg-amber-100 text-amber-700 dark:bg-amber-950/40 dark:text-amber-400'
-                            : 'bg-gray-100 text-gray-600',
-                      )}
-                    >
-                      {PRIORITY_LABEL[c.priority]}
-                    </span>
+                    {c.strategy === 'xian-ren-zhi-lu' ? (
+                      <span
+                        className={cn(
+                          'px-1.5 py-0.5 rounded text-xs font-medium',
+                          c.score >= 80
+                            ? 'bg-red-100 text-red-700 dark:bg-red-950/40 dark:text-red-400'
+                            : c.score >= 55
+                              ? 'bg-amber-100 text-amber-700 dark:bg-amber-950/40 dark:text-amber-400'
+                              : 'bg-gray-100 text-gray-600',
+                        )}
+                      >
+                        {c.score}
+                      </span>
+                    ) : c.strategy === 'double-dragon' || c.strategy === 'dragon-first-yin' ? (
+                      <span
+                        className={cn(
+                          'px-1.5 py-0.5 rounded text-xs',
+                          c.priority === 'high'
+                            ? 'bg-red-100 text-red-700 dark:bg-red-950/40 dark:text-red-400'
+                            : c.priority === 'medium'
+                              ? 'bg-amber-100 text-amber-700 dark:bg-amber-950/40 dark:text-amber-400'
+                              : 'bg-gray-100 text-gray-600',
+                        )}
+                      >
+                        {PRIORITY_LABEL[c.priority]}
+                      </span>
+                    ) : null}
                     {isInWatchlist(appCode) ? (
                       <button
                         onClick={() => removeWatch(c.tsCode, c.name)}
