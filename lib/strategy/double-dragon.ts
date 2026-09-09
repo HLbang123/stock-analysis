@@ -2,6 +2,14 @@
  * 双龙战法 策略引擎（纯逻辑）
  * 规则见 docs/short-term-strategies.md 策略三。
  * 二板封板时间先后由用户自行比对，不在引擎内过滤。
+ *
+ * ⚠️ 2026-09-11「双龙·回踩」已**完全删除**，仅保留「二板打板」一种买入方式。
+ *    删除依据（十年 2017~2026，6,986 条回踩信号）：
+ *      · 可实现超额 −0.741pp（逐日等权 t=−9.43），**十年 0/10 年为正**
+ *      · 每笔期望（挂6%止盈、扣 0.15% 成本）**−1.081%**，真实胜率仅 42.2%，盈亏比 0.80
+ *      · 文档旧口径「次日最高价 +2.61%、胜率 74.5%」是**不可实现的冲高幻觉**
+ *        （全市场随机票的同一口径胜率就有 87.2%）
+ *    证据与复现脚本见 docs/memory/backtest-metric-and-limitup.md。
  */
 
 export interface DoubleDragonBar {
@@ -21,10 +29,6 @@ export interface DoubleDragonConfig {
   firstBoardBodyPct: number;
   breakoutLookback: number;
   firstBoardVolRatio: number;
-  pullbackWindowMax: number;
-  pullbackMaPeriod: number;
-  pullbackVolRatio: number;
-  pullbackTouchTolerance: number;
 }
 
 export const DEFAULT_DOUBLE_DRAGON_CONFIG: DoubleDragonConfig = {
@@ -33,10 +37,6 @@ export const DEFAULT_DOUBLE_DRAGON_CONFIG: DoubleDragonConfig = {
   firstBoardBodyPct: 5.0,
   breakoutLookback: 60,
   firstBoardVolRatio: 1.5,
-  pullbackWindowMax: 3,
-  pullbackMaPeriod: 5,
-  pullbackVolRatio: 0.8,
-  pullbackTouchTolerance: 0.02,
 };
 
 export interface DoubleDragonSignal {
@@ -44,7 +44,6 @@ export interface DoubleDragonSignal {
   board2Index: number;
   reason: string;
   failedChecks: string[];
-  entryType: 'board' | 'pullback';
   entryPrice: number;
   entryDate: string;
   exitOpen: number | null;
@@ -74,13 +73,6 @@ function isLimitUp(b: DoubleDragonBar, prev: number, cfg: DoubleDragonConfig): b
 function isOneWord(b: DoubleDragonBar, prev: number, cfg: DoubleDragonConfig): boolean {
   const limit = round(prev * (1 + cfg.limitPct));
   return b.open >= limit - cfg.limitTolerance && (b.high - b.low) <= limit * 0.0015;
-}
-
-function ma(bars: DoubleDragonBar[], i: number, period: number): number {
-  if (i < period - 1) return 0;
-  let sum = 0;
-  for (let k = i - period + 1; k <= i; k++) sum += bars[k].close;
-  return sum / period;
 }
 
 function firstBoardOk(bars: DoubleDragonBar[], firstIdx: number, cfg: DoubleDragonConfig): string[] {
@@ -135,67 +127,8 @@ export function detectDoubleDragonBoard(
     board2Index: board2Idx,
     reason: matched ? '双龙二板打板形态符合' : fail[0],
     failedChecks: fail,
-    entryType: 'board',
     entryPrice,
     entryDate: bars[board2Idx]?.date ?? '',
-    exitOpen,
-    exitHigh,
-    retOpen,
-    retHigh,
-    firstBoardBodyPct,
-    secondOneWord,
-  };
-}
-
-export function detectDoubleDragonPullback(
-  bars: DoubleDragonBar[],
-  board2Idx: number,
-  config: Partial<DoubleDragonConfig> = {}
-): DoubleDragonSignal {
-  const cfg = { ...DEFAULT_DOUBLE_DRAGON_CONFIG, ...config };
-  const fail: string[] = [];
-  if (board2Idx < 1) fail.push('data_insufficient');
-  else {
-    const firstIdx = board2Idx - 1;
-    fail.push(...firstBoardOk(bars, firstIdx, cfg));
-    const b1 = bars[board2Idx];
-    const prev1 = prevCloseOf(bars, board2Idx);
-    if (prev1 == null) fail.push('no_prev_close_board2');
-    else if (!isLimitUp(b1, prev1, cfg)) fail.push('second_board_not_limit_up');
-  }
-  let entryIdx = -1;
-  if (fail.length === 0) {
-    for (let j = board2Idx + 1; j <= board2Idx + cfg.pullbackWindowMax && j < bars.length; j++) {
-      const m = ma(bars, j, cfg.pullbackMaPeriod);
-      if (m <= 0) continue;
-      const prev5 = bars.slice(Math.max(0, j - 5), j);
-      const avg5 = prev5.length ? prev5.reduce((a, b) => a + b.volume, 0) / prev5.length : 0;
-      if (bars[j].low <= m * (1 + cfg.pullbackTouchTolerance) && (avg5 <= 0 || bars[j].volume < avg5 * cfg.pullbackVolRatio)) {
-        entryIdx = j;
-        break;
-      }
-    }
-  }
-  if (entryIdx < 0) fail.push('no_pullback');
-  const entryPrice = entryIdx >= 0 ? bars[entryIdx].close : 0;
-  const next = entryIdx >= 0 ? bars[entryIdx + 1] ?? null : null;
-  const exitOpen = next ? next.open : null;
-  const exitHigh = next ? next.high : null;
-  const retOpen = exitOpen != null && entryPrice > 0 ? round(((exitOpen - entryPrice) / entryPrice) * 100) : null;
-  const retHigh = exitHigh != null && entryPrice > 0 ? round(((exitHigh - entryPrice) / entryPrice) * 100) : null;
-  const matched = fail.length === 0;
-  const firstBoard = board2Idx >= 1 ? bars[board2Idx - 1] : null;
-  const firstPrev = firstBoard ? prevCloseOf(bars, board2Idx - 1) : null;
-  const firstBoardBodyPct = firstBoard && firstPrev ? round(((firstBoard.close - firstBoard.open) / firstPrev) * 100) : 0;
-  const secondOneWord = board2Idx >= 1 && prevCloseOf(bars, board2Idx) != null ? isOneWord(bars[board2Idx], prevCloseOf(bars, board2Idx)!, cfg) : false;
-  return {
-    matched,
-    board2Index: board2Idx,
-    reason: matched ? '双龙回踩形态符合' : fail[0],
-    failedChecks: fail,
-    entryType: 'pullback',
-    entryPrice,
-    entryDate: entryIdx >= 0 ? bars[entryIdx].date : '',
     exitOpen,
     exitHigh,
     retOpen,
@@ -212,18 +145,6 @@ export function scanDoubleDragonBoardSignals(
   const out: DoubleDragonSignal[] = [];
   for (let i = 1; i < bars.length; i++) {
     const sig = detectDoubleDragonBoard(bars, i, config);
-    if (sig.matched) out.push(sig);
-  }
-  return out;
-}
-
-export function scanDoubleDragonPullbackSignals(
-  bars: DoubleDragonBar[],
-  config: Partial<DoubleDragonConfig> = {}
-): DoubleDragonSignal[] {
-  const out: DoubleDragonSignal[] = [];
-  for (let i = 1; i < bars.length; i++) {
-    const sig = detectDoubleDragonPullback(bars, i, config);
     if (sig.matched) out.push(sig);
   }
   return out;

@@ -346,7 +346,7 @@ function ManualScan() {
           <div className="flex items-center gap-2">
             <Filter className="w-5 h-5 text-blue-600" />
             <span className="font-medium">
-              行业（{rpsIndustry ? rpsIndustry : '全市场'}）
+              概念（{rpsIndustry ? rpsIndustry : '全市场'}）
             </span>
           </div>
           {showSectors ? <ChevronUp className="w-4 h-4 text-gray-400" /> : <ChevronDown className="w-4 h-4 text-gray-400" />}
@@ -359,7 +359,7 @@ function ManualScan() {
                 <input
                   value={sectorQuery}
                   onChange={(e) => setSectorQuery(e.target.value)}
-                  placeholder="搜索行业直达，如：半导体"
+                  placeholder="搜索概念直达，如：人工智能"
                   className="w-full pl-8 pr-3 py-1.5 border border-gray-200 dark:border-gray-700 rounded-lg bg-white dark:bg-gray-800 text-sm"
                 />
               </div>
@@ -378,7 +378,7 @@ function ManualScan() {
                         ? "bg-blue-600 text-white border-blue-600"
                         : "bg-gray-50 dark:bg-gray-800 text-gray-600 dark:text-gray-300 border-gray-200 dark:border-gray-700 hover:border-blue-300")}>
                     {ind.name}
-                    <span className="opacity-60 ml-1">一级 · {ind.count}</span>
+                    <span className="opacity-60 ml-1">概念 · {ind.count}</span>
                   </button>
                 ))}
                 {sectorResults.l2.map((item) => (

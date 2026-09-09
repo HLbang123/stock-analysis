@@ -42,8 +42,8 @@ export async function GET(request: Request) {
     let whereClause = `WHERE r."calcDate" = $1 AND r.${col} >= $2`;
 
     if (industry) {
-      whereClause += ` AND s.industry LIKE $${params.length + 1}`;
-      params.push(`%${industry}%`);
+      whereClause += ` AND s.ts_code IN (SELECT m.ts_code FROM ths_index_member m JOIN ths_index i ON i.thscode = m.thscode WHERE i.tag = 'cn_concept' AND i.name = $${params.length + 1})`;
+      params.push(industry);
     }
 
     params.push(limit);

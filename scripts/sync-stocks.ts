@@ -49,7 +49,6 @@ async function main() {
       where: { tsCode: s.ts_code },
       update: {
         name: s.name,
-        industry: s.industry || undefined,
         isActive: true,
       },
       create: {

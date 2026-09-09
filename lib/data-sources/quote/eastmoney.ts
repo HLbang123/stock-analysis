@@ -9,12 +9,13 @@ function symbolToSecid(symbol: string): string | null {
   return `${prefix}.${parsed.pureCode}`;
 }
 
-/** 东方财富实时行情（成交量单位：手，与腾讯一致） */
+/** 东方财富实时行情（成交量单位：手，与腾讯一致；成交额 f48 为「元」，此处归一成「万元」） */
 export async function fetchEastmoneyQuote(symbol: string, signal: AbortSignal): Promise<RealtimeQuote | null> {
   const secid = symbolToSecid(symbol);
   if (!secid) return null;
   try {
-    const url = `https://push2.eastmoney.com/api/qt/stock/get?secid=${secid}&fields=f43,f44,f45,f46,f47,f48,f57,f58,f60,f86&fltt=2&invt=2`;
+    // f168 = 换手率(%)，必须写进 fields 才会返回（此前漏了 → 东财源的 turnover 一直是 undefined）
+    const url = `https://push2.eastmoney.com/api/qt/stock/get?secid=${secid}&fields=f43,f44,f45,f46,f47,f48,f57,f58,f60,f86,f168&fltt=2&invt=2`;
     const res = await fetch(url, {
       headers: { Referer: 'https://quote.eastmoney.com' },
       signal,
@@ -42,7 +43,7 @@ export async function fetchEastmoneyQuote(symbol: string, signal: AbortSignal): 
       high: Number(d.f44),
       low: Number(d.f45),
       volume: Number(d.f47) || 0,
-      amount: Number(d.f48) || 0,
+      amount: (Number(d.f48) || 0) / 10000, // 元 → 万元（与腾讯对齐）
       // f168 = 换手率(%)（东财自带，盘中实时）
       turnover: Number(d.f168) || undefined,
       updateTime,

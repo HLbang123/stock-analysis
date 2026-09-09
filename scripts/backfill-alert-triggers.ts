@@ -102,10 +102,13 @@ async function main() {
   }
 
   // 批量更新（500 一批单事务，避免逐条往返）
+  // timeout 必须显式给：Prisma 事务默认 5s，500 条 update 在负载高时会超过，
+  // 报 "A rollback cannot be executed on an expired transaction"（2026-09 起日任务天天失败就是这个）。
   for (let i = 0; i < toApply.length; i += 500) {
     const chunk = toApply.slice(i, i + 500);
     await prisma.$transaction(
-      chunk.map((u) => prisma.alertRuleTrigger.update({ where: { id: u.id }, data: u.data }))
+      chunk.map((u) => prisma.alertRuleTrigger.update({ where: { id: u.id }, data: u.data })),
+      { timeout: 30_000 }
     );
   }
 

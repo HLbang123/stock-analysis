@@ -39,7 +39,7 @@ export interface DragonFirstYinConfig {
   requireFakeYinAtHighBoards: boolean;
   /** 一字板判定：high-low 相对涨停价的百分比上限 */
   oneWordRangePct: number;
-  /** 换手板判定：换手率达到该值视为充分换手 */
+  /** 换手板门槛：连板中「至少有一个」非一字板的换手率达到该值（取非一字板换手率的 MAX） */
   minTurnoverRate: number;
   /** 首阴实体上限（%，超过视为核按钮级大阴线） */
   yinBodyMaxPct: number;
@@ -293,11 +293,15 @@ export function detectDragonFirstYinAt(
     if (run.boardCount < cfg.minBoards) fail.push('board_count_out_of_range');
     if (cfg.skipAllOneWordRun && run.quality === 'oneWord') fail.push('continuous_one_word_run');
     if (cfg.minTurnoverRate > 0) {
+      // 2026-09-09 剔924五年复检修正口径：文档写「连板中至少有一个非一字板，且换手率 ≥ 8%」，
+      // 旧实现取 MIN（每个非一字板都要达标）比文档严得多；改为 MAX（至少一个换手板达标）。
+      // 复检：样本 201→453（2.25 倍），T+1 冲高胜率 85.07%→84.77%（噪声内），T+5 累计 88.06%→89.40%。
       const changeBoards = run.boards.filter((b) => !b.oneWord);
-      const minChangeTurnover = changeBoards.length > 0
-        ? Math.min(...changeBoards.map((b) => b.turnoverRate ?? Infinity))
-        : Infinity;
-      if (!Number.isFinite(minChangeTurnover) || minChangeTurnover < cfg.minTurnoverRate) {
+      const changeTurnovers = changeBoards
+        .map((b) => b.turnoverRate)
+        .filter((x): x is number => x != null);
+      const maxChangeTurnover = changeTurnovers.length > 0 ? Math.max(...changeTurnovers) : -Infinity;
+      if (!Number.isFinite(maxChangeTurnover) || maxChangeTurnover < cfg.minTurnoverRate) {
         fail.push('turnover_board_too_low');
       }
     }

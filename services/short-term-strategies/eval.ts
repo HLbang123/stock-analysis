@@ -173,6 +173,7 @@ const STRATEGY_NAMES: Record<string, string> = {
   "double-dragon": "双龙",
   "dragon-four-yin": "龙四阴",
   "xian-ren-zhi-lu": "仙人指路",
+  "limit-up-board": "封板",
 };
 
 export async function loadShortTermStats() {

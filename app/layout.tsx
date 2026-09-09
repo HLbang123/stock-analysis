@@ -1,17 +1,25 @@
 import type { Metadata, Viewport } from "next";
-import { Geist, Geist_Mono } from "next/font/google";
+import localFont from "next/font/local";
 import { Providers } from "./providers";
 import { Shell } from "@/components/layout/shell";
 import "./globals.css";
 
-const geistSans = Geist({
+// 字体自托管（2026-09-10 由 next/font/google 改为 local）：
+// 原来每次 next build 都要联网去 Google Fonts 拉 Geist，且 .next/cache 里没有字体缓存
+// → 网络一抖构建就失败（当天已发生一次）。改为仓库内自带的 latin 变量字体后，构建彻底离线。
+// 字体文件：app/fonts/*.woff2（Geist / Geist Mono 的 latin 子集，可变字重 100-900）。
+const geistSans = localFont({
+  src: "./fonts/Geist-latin.woff2",
   variable: "--font-geist-sans",
-  subsets: ["latin"],
+  display: "swap",
+  weight: "100 900",
 });
 
-const geistMono = Geist_Mono({
+const geistMono = localFont({
+  src: "./fonts/GeistMono-latin.woff2",
   variable: "--font-geist-mono",
-  subsets: ["latin"],
+  display: "swap",
+  weight: "100 900",
 });
 
 export const metadata: Metadata = {

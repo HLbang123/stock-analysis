@@ -20,7 +20,15 @@ import { fetchEastmoneyQuote } from '@/lib/data-sources/quote/eastmoney';
 const TTL = 5_000;
 const MAX_AGE = 60_000;
 const CACHE_CAP = 5000;
-const BATCH_CHUNK = 50;
+/**
+ * 腾讯批量行情单次携带的代码数。
+ * 2026-09-10 由 50 提到 200：短线扫描要拉全市场 ~5000 只，50/批会拆成 101 个并发请求
+ * （连接池挤压 + 上游限流 → 非线性退化）。实测（服务器，5015 只全量）：
+ *   50/批 → 2157ms / 101 个请求；200/批 → 930ms / 26 个请求；500/批 → 1124ms / 11 个请求；
+ *   1000/批 → URL 约 9KB 超出上游长度限制，直接失败。
+ * 三种可用批次均返回 5015/5015 完整；取 200 作为速度与 URL 长度的平衡点。
+ */
+const BATCH_CHUNK = 200;
 const FALLBACK_CONCURRENCY = 8;
 
 const cache = new Map<string, { quote: RealtimeQuote; ts: number }>();

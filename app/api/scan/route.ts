@@ -141,7 +141,7 @@ export async function GET(request: Request) {
     const candParams: (string | number)[] = [];
     const candWhere: string[] = [`s.is_active = true`];
     if (filterRps) { for (const p of periods) { candParams.push(minRps); candWhere.push(`r.rps_${p} >= $${candParams.length}`); } }
-    if (industry) { candParams.push(industry); candWhere.push(`s.ts_code IN (SELECT member_code FROM sw_index_member WHERE index_level = '${industryLevel}' AND index_name = $${candParams.length})`); }
+    if (industry) { candParams.push(industry); candWhere.push(`s.ts_code IN (SELECT m.ts_code FROM ths_index_member m JOIN ths_index i ON i.thscode = m.thscode WHERE i.tag = 'cn_concept' AND i.name = $${candParams.length})`); }
     if (board === "main") candWhere.push(`s.ts_code ~ '^(600|601|603|605|000|001|002|003)'`);
     else if (board === "gem") candWhere.push(`s.ts_code ~ '^(300|301)'`);
     else if (board === "star") candWhere.push(`s.ts_code ~ '^(688|689)'`);

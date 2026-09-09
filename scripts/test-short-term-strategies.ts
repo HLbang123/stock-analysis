@@ -4,7 +4,6 @@ import {
 } from '../lib/strategy/limit-up-three-yin';
 import {
   detectDoubleDragonBoard,
-  detectDoubleDragonPullback,
   DoubleDragonBar,
 } from '../lib/strategy/double-dragon';
 
@@ -42,8 +41,8 @@ const ddBoard = detectDoubleDragonBoard(ddBars, board2Idx);
 console.log('dd board:', JSON.stringify(ddBoard, null, 2));
 assert(ddBoard.matched === true, '双龙二板打板形态命中');
 
-const ddPull = detectDoubleDragonPullback(ddBars, board2Idx);
-console.log('dd pullback:', JSON.stringify(ddPull, null, 2));
-assert(ddPull.matched === true, '双龙回踩形态命中');
+// 【2026-09-11 已删除】双龙回踩断言。该买入方式十年实测为负 alpha
+// （可实现超额 −0.741pp / t=−9.43 / 0/10 年为正 / 每笔期望 −1.081%），
+// 已从策略引擎、打分、UI 全链路移除。详见 docs/memory/backtest-metric-and-limitup.md。
 
 console.log('ALL SHORT-TERM STRATEGY TESTS PASSED');

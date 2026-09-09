@@ -87,7 +87,7 @@ export async function fetchCandidates(preset: StrategyPreset): Promise<Candidate
     SELECT c.ts_code, c.name, c.industry, c.rps, c.ret60d,
            c.close, c.change_pct, c.vol, c.amount,
            f.roe, f.grossprofit_margin, f.or_yoy,
-           ind.pct_chg AS industry_change_pct,
+           ind.pct AS industry_change_pct,
            array_agg(d.close ORDER BY d."tradeDate") AS closes,
            array_agg(d.high ORDER BY d."tradeDate") AS highs,
            array_agg(d.low ORDER BY d."tradeDate") AS lows,
@@ -96,14 +96,22 @@ export async function fetchCandidates(preset: StrategyPreset): Promise<Candidate
     FROM cand c
     LEFT JOIN stock_fundamentals f ON f.ts_code = c.ts_code
     LEFT JOIN LATERAL (
-      SELECT m.index_code FROM sw_index_member m
-      WHERE m.member_code = c.ts_code AND m.index_level = 'L1' LIMIT 1
-    ) m ON true
-    LEFT JOIN sw_index_daily ind ON ind.ts_code = m.index_code AND ind.trade_date = $3
+      SELECT i.name AS ind_name
+      FROM ths_index_member m
+      JOIN ths_index i ON i.thscode = m.thscode
+      WHERE m.ts_code = c.ts_code AND i.tag = 'industry' AND i.thscode LIKE '881%' LIMIT 1
+    ) mi ON true
+    LEFT JOIN LATERAL (
+      SELECT AVG(db.change_pct) AS pct
+      FROM ths_index_member mm
+      JOIN ths_index ii ON ii.thscode = mm.thscode
+      JOIN daily_bars db ON db."tsCode" = mm.ts_code AND db."tradeDate" = $3
+      WHERE ii.tag = 'industry' AND ii.thscode LIKE '881%' AND ii.name = mi.ind_name
+    ) ind ON true
     LEFT JOIN daily_bars d ON d."tsCode" = c.ts_code AND d."tradeDate" >= $2
     GROUP BY c.ts_code, c.name, c.industry, c.rps, c.ret60d,
              c.close, c.change_pct, c.vol, c.amount,
-             f.roe, f.grossprofit_margin, f.or_yoy, ind.pct_chg
+             f.roe, f.grossprofit_margin, f.or_yoy, ind.pct
     ORDER BY c.rps DESC NULLS LAST
     LIMIT 200
   `;

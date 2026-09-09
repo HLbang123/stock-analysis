@@ -1,43 +1,13 @@
-/** GET /api/industries — 申万一级行业及股票数 + 其下二级子行业（各带股票数）
- *  L2→L1 父子关系用成分股重叠推导：L2 的成分股属于哪个 L1，即其父级
- *  （每只股票 L1/L2 各唯一，故 MAX(l1) 即父级）。前端扫描页平铺 L1、手风琴展开 L2 用。
+/** GET /api/industries — 同花顺概念板块清单（含活跃成分数）
+ *  板块口径已切换为同花顺 cn_concept（lib/concepts.ts），扁平清单、无 L1/L2 层级。
+ *  前端扫描页平铺展示；返回结构保留 l2 字段（恒空）以兼容旧前端。
  */
 export async function GET() {
   try {
-    const { prisma } = await import("@/lib/db");
-    // L1 列表 + 股票数
-    const l1Rows: any[] = await prisma.$queryRawUnsafe(
-      `SELECT m.index_name AS name, COUNT(DISTINCT m.member_code)::int AS count
-       FROM sw_index_member m
-       JOIN stocks s ON m.member_code = s.ts_code
-       WHERE m.index_level = 'L1' AND s.is_active = true
-         AND m.index_name IS NOT NULL
-       GROUP BY m.index_name
-       ORDER BY count DESC`
-    );
-    // L2 → L1 父级映射 + L2 股票数（成分股重叠，MAX 取父级；只数活跃标的）
-    const l2Rows: any[] = await prisma.$queryRawUnsafe(
-      `SELECT l2.index_name AS l2, MAX(l1.index_name) AS l1,
-              COUNT(DISTINCT l2.member_code)::int AS count
-       FROM sw_index_member l2
-       JOIN sw_index_member l1
-         ON l1.member_code = l2.member_code AND l1.index_level = 'L1'
-       JOIN stocks s ON l2.member_code = s.ts_code AND s.is_active = true
-       WHERE l2.index_level = 'L2' AND l2.index_name IS NOT NULL
-       GROUP BY l2.index_name`
-    );
-    const l2byL1: Record<string, { name: string; count: number }[]> = {};
-    for (const r of l2Rows) {
-      if (!r.l1) continue;
-      (l2byL1[r.l1] ||= []).push({ name: r.l2, count: r.count });
-    }
+    const { listConcepts } = await import("@/lib/concepts");
+    const concepts = await listConcepts();
     return Response.json({
-      industries: l1Rows.map((r) => ({
-        name: r.name,
-        count: r.count,
-        // 按标的数降序，大行业在前，便于平铺浏览
-        l2: (l2byL1[r.name] || []).sort((a, b) => b.count - a.count),
-      })),
+      industries: concepts.map((c) => ({ name: c.name, count: c.count, l2: [] })),
     });
   } catch (e: any) {
     return Response.json({ error: e.message }, { status: 500 });

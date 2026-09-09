@@ -8,9 +8,10 @@
 
 import { detectLimitUpThreeYinAt, ThreeYinBar } from "@/lib/strategy/limit-up-three-yin";
 import { detectDragonFirstYinAt } from "@/lib/strategy/dragon-first-yin";
-import { detectDoubleDragonBoard, detectDoubleDragonPullback } from "@/lib/strategy/double-dragon";
+import { detectDoubleDragonBoard } from "@/lib/strategy/double-dragon";
 import { detectDragonFourYinAt } from "@/lib/strategy/dragon-four-yin";
-import { detectXianRenAt } from "@/lib/strategy/xian-ren-zhi-lu";
+import { detectXianRenAt, computeMacdQuadAt } from "@/lib/strategy/xian-ren-zhi-lu";
+import { detectLimitUpBoardAt } from "@/lib/strategy/limit-up-board";
 import type { SeriesInput, ShortBar, ShortTermCandidate, ShortTermStrategyId } from "./types";
 
 function toEngineBars(bars: ShortBar[]): ThreeYinBar[] {
@@ -91,7 +92,6 @@ export function buildCandidatesForSeries(
         reason: board.reason,
         summary: board.secondOneWord ? "二板一字/秒板，抢筹更强" : "实体首板，二板连续涨停",
         metrics: {
-          entryType: board.entryType,
           entryPrice: board.entryPrice,
           board2Date: board.entryDate,
           firstBoardBodyPct: board.firstBoardBodyPct,
@@ -100,25 +100,9 @@ export function buildCandidatesForSeries(
         },
       });
     }
-    // 回踩买入：二板后的 1~3 个交易日内回踩到 5 日线附近；今日为回踩日
-    for (const b2 of [lastIdx - 1, lastIdx - 2]) {
-      if (b2 < 1) continue;
-      const pb = detectDoubleDragonPullback(engineBars, b2, { limitPct });
-      if (pb.matched && pb.entryDate === lastDate) {
-        out.push({
-          strategy: "double-dragon",
-          tsCode: series.tsCode,
-          name: series.name,
-          signalType: "double_dragon_pullback",
-          matchedDate: pb.entryDate,
-          priority: "medium",
-          score: 0,
-          reason: pb.reason,
-          summary: "二板后回踩 5 日线且缩量",
-          metrics: { entryType: pb.entryType, entryPrice: pb.entryPrice, board2Date: pb.entryDate },
-        });
-      }
-    }
+    // 【2026-09-11 已删除】原「回踩买入」分支（二板后 1~3 日回踩 5 日线且缩量）。
+    // 删除依据：十年 6,986 条样本，可实现超额 −0.741pp（t=−9.43）、0/10 年为正、
+    // 每笔期望 −1.081%、真实胜率 42.2%。详见 docs/memory/backtest-metric-and-limitup.md。
   }
 
   if (strategies.includes("dragon-four-yin")) {
@@ -148,6 +132,15 @@ export function buildCandidatesForSeries(
   if (strategies.includes("xian-ren-zhi-lu")) {
     const xr = detectXianRenAt(engineBars, lastIdx);
     if (xr.matched) {
+      // 流通市值（取最近一根有值的 bar；实时合成的今日 bar 无 circMv）→ 打分层小市值加分，不做硬门槛
+      let circMvYi: number | null = null;
+      for (let k = bars.length - 1; k >= 0; k--) {
+        const cv = bars[k].circMv;
+        if (cv != null && cv > 0) { circMvYi = Math.round((cv / 10000) * 10) / 10; break; }
+      }
+      // 试盘日 MACD 象限（单一事实源见 lib/strategy/xian-ren-zhi-lu.ts 的 computeMacdQuadAt）
+      // 零轴下方金叉 g1 = 打分层加分项（控制 gain60/试盘日涨幅后仍有增量，详见 docs/xianren-newdim-scan.md）
+      const macdQuad = computeMacdQuadAt(engineBars, lastIdx - 1).quad;
       out.push({
         strategy: "xian-ren-zhi-lu",
         tsCode: series.tsCode,
@@ -170,7 +163,41 @@ export function buildCandidatesForSeries(
           confDayGain: xr.metrics.confDayGain,
           confClosePos: xr.metrics.confClosePos,
           confOpenGap: xr.metrics.confOpenGap,
+          confVolRatio: xr.metrics.confVolRatio,
+          macdQuad,
+          circMvYi,
           entryPrice: xr.entryPrice,
+        },
+      });
+    }
+  }
+
+  if (strategies.includes("limit-up-board")) {
+    const board = detectLimitUpBoardAt(engineBars, lastIdx, { limitPct });
+    if (board.matched) {
+      const m = board.metrics;
+      out.push({
+        strategy: "limit-up-board",
+        tsCode: series.tsCode,
+        name: series.name,
+        signalType: "limit_up_board",
+        matchedDate: board.matchedDate,
+        // 换手率是「可买性闸门之上期望单调递减」；量比（缩量优先）是十年/五年最强的排序因子
+        priority: m.confVolRatio != null && m.confVolRatio < 1.5 ? "high" : "medium",
+        score: 0,
+        reason: board.reason,
+        summary: m.boardCount > 1 ? `${m.boardCount} 连板封板，次日开盘或冲高离场` : "首板封板，次日开盘或冲高离场",
+        metrics: {
+          limitPrice: m.limitPrice,
+          sealPrice: m.sealPrice,
+          turnoverRate: m.turnoverRate,
+          boardCount: m.boardCount,
+          openBoard: m.openBoard,
+          amplitudePct: m.amplitudePct,
+          confVolRatio: m.confVolRatio,
+          confOpenGap: m.confOpenGap,
+          macdQuad: m.macdQuad,
+          entryPrice: board.entryPrice,
         },
       });
     }

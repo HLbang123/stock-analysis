@@ -15,7 +15,7 @@ import { toast } from 'sonner';
  * 只读展示：形态符合 + 强度分级，不输出操作指引。
  */
 
-export type ShortTermStrategyId = 'limit-up-three-yin' | 'dragon-first-yin' | 'double-dragon' | 'dragon-four-yin' | 'xian-ren-zhi-lu';
+export type ShortTermStrategyId = 'limit-up-three-yin' | 'dragon-first-yin' | 'double-dragon' | 'dragon-four-yin' | 'xian-ren-zhi-lu' | 'limit-up-board';
 
 interface ShortTermStrategyMeta {
   id: ShortTermStrategyId;
@@ -54,6 +54,12 @@ const STRATEGIES: ShortTermStrategyMeta[] = [
     name: '仙人指路',
     description: '试盘长上影后确认日反包',
     rulesText: '试盘日长上影（≥实体1.2倍、上影≥1.5%）、小实体、收红、量比≥1.2、不破昨收；次日反包上影≥40%且收高位、不高开，确认日尾盘关注。',
+  },
+  {
+    id: 'limit-up-board',
+    name: '封板',
+    description: '当日封于涨停且换手充分',
+    rulesText: '当日封于涨停价（盘中现价触及即成立）；换手率不低于可买性下限（默认 10%）——换手越低历史期望越高，但过低说明封死、基本买不进。',
   },
 ];
 
@@ -108,6 +114,111 @@ const QUALITY_LABEL: Record<string, string> = {
   oneWord: '一字板',
 };
 
+/**
+ * 标签口径：给人扫一眼用的，克制数字。
+ * 能转成档位词就转词，原始数值放 hint（悬停可见）；门槛型指标达标时不占位，异常才出现。
+ */
+type ChipTone = 'red' | 'gray';
+
+interface Chip {
+  label: string;
+  tone?: ChipTone;
+  hint?: string;
+  /** 合并出来的明细条，渲染时压暗一档 */
+  detail?: boolean;
+}
+
+const CONF_STRONG = 70; // 反包上影 ≥70% 记「强」
+const CONF_OVER = 100; // 反包上影 ≥100% 表示收上试盘日最高
+const SHADOW_LONG = 3; // 试盘日上影 ≥3% 记「长」
+const BODY_TIGHT = 5.5; // 阴线实体 ≤5.5% 属正常，越界才提示
+
+/** 反包档位：确认日反包试盘日上影的比例 */
+function confChip(pct: number): Chip {
+  const hint = `反包试盘日上影 ${pct.toFixed(0)}%`;
+  if (pct >= CONF_OVER) return { label: '反包过顶', tone: 'red', hint: `${hint}，收上试盘日最高` };
+  if (pct >= CONF_STRONG) return { label: '强反包', tone: 'red', hint };
+  return { label: '弱反包', hint };
+}
+
+/** 试盘日上影 */
+function shadowChip(pct: number): Chip {
+  return pct >= SHADOW_LONG
+    ? { label: `长上影 ${pct.toFixed(1)}%`, hint: '试盘日上影' }
+    : { label: '试盘影', hint: `试盘日上影 ${pct.toFixed(1)}%` };
+}
+
+/** 量能档位 */
+function volumeChip(ratio: number): Chip {
+  const hint = `量比 ${ratio.toFixed(1)}`;
+  if (ratio >= 3) return { label: '巨量', hint };
+  if (ratio >= 2) return { label: '显著放量', hint };
+  if (ratio >= 1.2) return { label: '温和放量', hint };
+  return { label: '缩量', hint };
+}
+
+/** 60 日位置（描述性，不上色） */
+function positionChip(gain60: number): Chip {
+  const hint = `60日 ${gain60 >= 0 ? '+' : ''}${gain60.toFixed(1)}%`;
+  if (gain60 <= 5) return { label: '低位', hint };
+  if (gain60 <= 30) return { label: '中位', hint };
+  return { label: '高位', hint };
+}
+
+/**
+ * 封板票的换手率：这是「可买性」和「期望」的取舍——
+ * 换手越低历史期望越高，但越低越可能是封死板、根本排不进去。
+ * 所以这里只描述事实，不下"好/坏"判断（判断交给打分，口径见 services/.../score.ts）。
+ */
+function turnoverChip(pct: number): Chip {
+  const hint = `当日换手 ${pct.toFixed(1)}%`;
+  if (pct < 7) return { label: '换手适中', tone: 'red', hint: `${hint}，历史期望最高的一档` };
+  if (pct < 10) return { label: '换手充分', hint };
+  if (pct < 15) return { label: '换手偏高', hint: `${hint}，越容易成交、历史期望越低` };
+  return { label: '换手过高', hint: `${hint}，容易成交但历史期望已明显走低` };
+}
+
+/**
+ * 封板日量比：本策略**权重最大**的排序因子，方向是「缩量优先」。
+ * 依据是排序口径实测（Top5 日度等权）：缩量组显著优于放量组，五年/十年一致，
+ * 且控制换手率后每个换手档内仍单调有效（与换手率相关系数仅 +0.087，是独立信息）。
+ */
+function sealVolChip(ratio: number): Chip {
+  const hint = `封板日量比 ${ratio.toFixed(2)}（当日量 / 前5日均量）`;
+  if (ratio < 1) return { label: '缩量封板', tone: 'red', hint: `${hint}，历史最优档` };
+  if (ratio < 2) return { label: '温和封板', hint };
+  if (ratio < 3) return { label: '放量封板', hint: `${hint}，历史期望偏低` };
+  return { label: '巨量封板', hint: `${hint}，历史期望最差档` };
+}
+
+/** 把零散指标压成一条灰色明细，原始数值仍留在悬停里 */
+function detailChip(parts: (Chip | null)[]): Chip | null {
+  const kept = parts.filter((p): p is Chip => p != null);
+  if (kept.length === 0) return null;
+  return {
+    label: kept.map((p) => p.label).join(' · '),
+    hint: kept.map((p) => p.hint ?? p.label).join('；'),
+    detail: true,
+  };
+}
+
+/**
+ * 板块热度：仙人指路打分里权重最大的一项。
+ * 口径是该标的所属概念板块里，有几个板块指数自己也走出了「T-1 长上影 → T 反包上影」
+ * ——即板块当天确实在往上收，不只是形态相似，所以按「热度」表达。
+ */
+function sectorChip(m: Record<string, unknown>): Chip | null {
+  const hitCount = numMetric(m, 'hitCount');
+  if (hitCount == null || hitCount < 1) return null;
+  const maxShadow = numMetric(m, 'maxShadow');
+  const hint =
+    `同形态概念板块 ${hitCount} 个` +
+    (maxShadow != null ? `，最强板块上影 ${maxShadow.toFixed(1)}%` : '');
+  if (hitCount >= 4) return { label: '板块爆发', tone: 'red', hint };
+  if (hitCount >= 2) return { label: '板块发酵', tone: 'red', hint };
+  return { label: '板块异动', hint };
+}
+
 function numMetric(m: Record<string, unknown>, k: string): number | null {
   const v = m[k];
   return typeof v === 'number' ? v : null;
@@ -127,20 +238,19 @@ function signalLabel(signalType: string): string | null {
   if (signalType === 'firstYinToday') return '首阴当日';
   if (signalType === 'firstYinYesterday') return '首阴次日';
   if (signalType === 'double_dragon_board') return '二板封板';
-  if (signalType === 'double_dragon_pullback') return '回踩';
   if (signalType === 'dragon_four_yin') return '第四阴';
   if (signalType === 'xian_ren_zhi_lu') return '确认日';
+  if (signalType === 'limit_up_board') return '封板当日';
   return null;
 }
 
-function hitLine(strategy: ShortTermStrategyId, signalType: string): string {
+function hitLine(strategy: ShortTermStrategyId): string {
   if (strategy === 'limit-up-three-yin') return '板三阴形态符合';
   if (strategy === 'dragon-first-yin') return '龙首阴形态符合';
-  if (strategy === 'double-dragon') {
-    return signalType === 'double_dragon_pullback' ? '回踩形态符合' : '二板封板形态符合';
-  }
+  if (strategy === 'double-dragon') return '二板封板形态符合';
   if (strategy === 'dragon-four-yin') return '龙四阴形态符合';
   if (strategy === 'xian-ren-zhi-lu') return '仙人指路形态符合';
+  if (strategy === 'limit-up-board') return '封板形态符合';
   return '形态符合';
 }
 
@@ -251,7 +361,7 @@ export function ShortTermTab() {
     toast.success(`已移除 ${name}`);
   };
 
-  // 手动触发：一次扫描全部五套策略，仅本地展示，不落库（当天正式结果以尾盘自动任务为准）
+  // 手动触发：一次扫描全部六套策略，仅本地展示，不落库（当天正式结果以尾盘自动任务为准）
   const runScan = async () => {
     if (scanning) return;
     setScanning(true);
@@ -260,7 +370,7 @@ export function ShortTermTab() {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ persist: false }),
-        signal: AbortSignal.timeout(45000),
+        signal: AbortSignal.timeout(120000),
       });
       const d = await r.json();
       if (!r.ok) {
@@ -271,7 +381,7 @@ export function ShortTermTab() {
         const finalResp = { ...d, generated: true } as ShortTermResponse;
         setResp(finalResp);
         writeScanCache(d.tradeDate, finalResp);
-        toast.success('五套策略扫描完成');
+        toast.success('六套策略扫描完成');
       } else {
         toast.error('扫描结果为空');
       }
@@ -313,69 +423,120 @@ export function ShortTermTab() {
     else toast.error('复制失败，请手动复制');
   };
 
-  const coreChips = (c: ShortTermCandidate): { label: string; tone?: 'red' | 'green' | 'gray' }[] => {
+  const coreChips = (c: ShortTermCandidate): Chip[] => {
     const m = c.metrics;
     switch (c.strategy) {
       case 'limit-up-three-yin': {
+        const chips: Chip[] = [];
         const yinBodies = arrMetric(m, 'yinBodies');
-        const entryClose = numMetric(m, 'entryClose');
-        return [
-          yinBodies && yinBodies.length === 3
-            ? { label: `三阴实体 ${yinBodies.map((b) => b.toFixed(1)).join(' / ')}%` }
-            : { label: '三阴形态' },
-          entryClose != null ? { label: `尾盘价 ${entryClose.toFixed(2)}` } : { label: '尾盘观察' },
-        ];
+        if (yinBodies && yinBodies.length === 3) {
+          const falling = yinBodies.every((b, i) => i === 0 || (yinBodies[i - 1] ?? 0) > b);
+          chips.push({
+            label: falling ? '三阴递降' : '三阴形态',
+            hint: `三日实体 ${yinBodies.map((b) => b.toFixed(1)).join(' / ')}%`,
+          });
+        } else {
+          chips.push({ label: '三阴形态' });
+        }
+        return chips;
       }
       case 'dragon-first-yin': {
-        const chips: { label: string; tone?: 'red' | 'green' | 'gray' }[] = [];
+        const chips: Chip[] = [];
         const boardCount = numMetric(m, 'boardCount');
         const yinType = strMetric(m, 'yinType');
         const quality = strMetric(m, 'quality');
         const volumeRatio = numMetric(m, 'volumeRatio');
         const turnoverRate = numMetric(m, 'turnoverRate');
         const bodyPct = numMetric(m, 'bodyPct');
-        if (boardCount != null) chips.push({ label: `${boardCount}板` });
+        if (boardCount != null) chips.push({ label: `${boardCount}连板` });
         if (yinType) chips.push({ label: yinType });
-        if (quality && QUALITY_LABEL[quality]) chips.push({ label: QUALITY_LABEL[quality] });
-        if (volumeRatio != null) chips.push({ label: `量比 ${volumeRatio.toFixed(1)}` });
-        if (turnoverRate != null) chips.push({ label: `换手 ${turnoverRate.toFixed(1)}%` });
-        if (bodyPct != null) chips.push({ label: `实体 ${bodyPct.toFixed(1)}%` });
+        const d = detailChip([
+          quality && QUALITY_LABEL[quality] ? { label: QUALITY_LABEL[quality] } : null,
+          volumeRatio != null ? volumeChip(volumeRatio) : null,
+          turnoverRate != null ? { label: `换手 ${turnoverRate.toFixed(1)}%` } : null,
+          bodyPct != null && bodyPct > BODY_TIGHT
+            ? { label: '实体偏大', hint: `实体 ${bodyPct.toFixed(1)}%（形态上限 7%）` }
+            : null,
+        ]);
+        if (d) chips.push(d);
         return chips;
       }
       case 'double-dragon': {
-        const chips: { label: string; tone?: 'red' | 'green' | 'gray' }[] = [];
-        const entryPrice = numMetric(m, 'entryPrice');
-        if (entryPrice != null) chips.push({ label: `参考价 ${entryPrice.toFixed(2)}` });
+        const chips: Chip[] = [];
+        if (m['secondOneWord'] === true) {
+          chips.push({ label: '二板一字', tone: 'red', hint: '二板为一字板' });
+        }
+        const board2VolRatio = numMetric(m, 'board2VolRatio');
+        if (board2VolRatio != null && board2VolRatio <= 0.7) {
+          chips.push({ label: '二板缩量', tone: 'red', hint: `二板量比 ${board2VolRatio.toFixed(2)}` });
+        } else if (board2VolRatio != null && board2VolRatio <= 1) {
+          chips.push({ label: '二板温和', hint: `二板量比 ${board2VolRatio.toFixed(2)}` });
+        }
         return chips;
       }
       case 'dragon-four-yin': {
-        const chips: { label: string; tone?: 'red' | 'green' | 'gray' }[] = [];
+        const chips: Chip[] = [];
         const yinBodies = arrMetric(m, 'yinBodies');
         const volRatio = numMetric(m, 'volRatio');
         const nearHighPct = numMetric(m, 'nearHighPct');
-        const entryPrice = numMetric(m, 'entryPrice');
-        if (yinBodies && yinBodies.length === 4) chips.push({ label: `四阴 ${yinBodies.map((b) => b.toFixed(1)).join('/')}%` });
-        if (volRatio != null) chips.push({ label: `放量 ${volRatio.toFixed(1)}x` });
-        if (nearHighPct != null) chips.push({ label: `近新高 ${nearHighPct.toFixed(1)}%`, tone: nearHighPct >= 100 ? 'red' : 'gray' });
-        if (entryPrice != null) chips.push({ label: `参考价 ${entryPrice.toFixed(2)}` });
+        if (yinBodies && yinBodies.length === 4) {
+          chips.push({
+            label: '四连阴',
+            hint: `四阴实体 ${yinBodies.map((b) => b.toFixed(1)).join(' / ')}%`,
+          });
+        }
+        if (nearHighPct != null) {
+          chips.push(
+            nearHighPct >= 100
+              ? { label: '创20日新高', tone: 'red', hint: `涨停日高点达 20 日高点的 ${nearHighPct.toFixed(1)}%` }
+              : { label: '逼近新高', hint: `涨停日高点达 20 日高点的 ${nearHighPct.toFixed(1)}%` },
+          );
+        }
+        const d = detailChip([volRatio != null ? volumeChip(volRatio) : null]);
+        if (d) chips.push(d);
         return chips;
       }
       case 'xian-ren-zhi-lu': {
-        const chips: { label: string; tone?: 'red' | 'green' | 'gray' }[] = [];
+        const chips: Chip[] = [];
         const upperShadowPct = numMetric(m, 'upperShadowPct');
         const volRatio = numMetric(m, 'volRatio');
         const gain60 = numMetric(m, 'gain60');
         const confPct = numMetric(m, 'confPct');
-        const confDayGain = numMetric(m, 'confDayGain');
-        const confClosePos = numMetric(m, 'confClosePos');
-        const entryPrice = numMetric(m, 'entryPrice');
-        if (upperShadowPct != null) chips.push({ label: `上影 ${upperShadowPct.toFixed(1)}%` });
-        if (volRatio != null) chips.push({ label: `量比 ${volRatio.toFixed(1)}` });
-        if (gain60 != null) chips.push({ label: `60日 ${gain60.toFixed(1)}%` });
-        if (confPct != null) chips.push({ label: `反包 ${confPct.toFixed(0)}%`, tone: confPct >= 100 ? 'red' : 'gray' });
-        if (confDayGain != null) chips.push({ label: `确认涨 ${confDayGain.toFixed(1)}%`, tone: confDayGain > 0 ? 'green' : 'gray' });
-        if (confClosePos != null) chips.push({ label: `收位 ${(confClosePos * 100).toFixed(0)}%`, tone: confClosePos >= 0.7 ? 'red' : 'gray' });
-        if (entryPrice != null) chips.push({ label: `参考价 ${entryPrice.toFixed(2)}` });
+        if (confPct != null) chips.push(confChip(confPct));
+        const sec = sectorChip(m);
+        if (sec) chips.push(sec);
+        const d = detailChip([
+          upperShadowPct != null ? shadowChip(upperShadowPct) : null,
+          gain60 != null ? positionChip(gain60) : null,
+          volRatio != null ? volumeChip(volRatio) : null,
+        ]);
+        if (d) chips.push(d);
+        return chips;
+      }
+      case 'limit-up-board': {
+        const chips: Chip[] = [];
+        const boardCount = numMetric(m, 'boardCount');
+        const turnoverRate = numMetric(m, 'turnoverRate');
+        const sealVol = numMetric(m, 'confVolRatio');
+        const gap = numMetric(m, 'confOpenGap');
+        const openBoard = m['openBoard'] === true;
+        if (boardCount != null && boardCount >= 2) {
+          chips.push({ label: `${boardCount}连板`, tone: 'red', hint: `含当日连续 ${boardCount} 个封板` });
+        } else {
+          chips.push({ label: '首板', hint: '当日为第 1 个封板' });
+        }
+        // 量比是权重最大的排序因子，放在最前
+        if (sealVol != null) chips.push(sealVolChip(sealVol));
+        chips.push(
+          openBoard
+            ? { label: '板上开合', hint: '当日曾跌破涨停价，盘中有买入窗口' }
+            : { label: '未开板', hint: '当日未跌破涨停价，需排队' },
+        );
+        const d = detailChip([
+          turnoverRate != null ? turnoverChip(turnoverRate) : null,
+          gap != null && gap >= 0 ? { label: '高开', hint: `封板日开盘跳空 +${gap.toFixed(1)}%` } : null,
+        ]);
+        if (d) chips.push(d);
         return chips;
       }
     }
@@ -391,7 +552,7 @@ export function ShortTermTab() {
             onClick={runScan}
             disabled={scanning}
             className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-md text-sm bg-purple-100 text-purple-700 dark:bg-purple-950/40 dark:text-purple-300 hover:opacity-80 disabled:opacity-50 disabled:cursor-not-allowed transition"
-            title="扫描五套策略，仅本地展示（不落库）"
+            title="扫描六套策略，仅本地展示（不落库）"
           >
             {scanning ? <Loader2 className="w-3.5 h-3.5 animate-spin" /> : <RefreshCw className="w-3.5 h-3.5" />}
             {scanning ? '扫描中…' : '立即扫描'}
@@ -494,9 +655,12 @@ export function ShortTermTab() {
                       <span
                         className={cn(
                           'px-1.5 py-0.5 rounded text-xs font-medium',
-                          c.score >= 80
+                          // 阈值随 2026-09-10 口径切换同步重标定：新分 = 原始分/180 线性归一到 0-100
+                          // （180 ≈ 历史 p96）。70 ≈ 前 12%、50 ≈ 中位——按此设置后「红/琥珀/灰」
+                          // 占比 ≈12/40/48%，与旧刻度（13.0/40.5/46.5%）一致。改动锚点须同步改这两个数。
+                          c.score >= 70
                             ? 'bg-red-100 text-red-700 dark:bg-red-950/40 dark:text-red-400'
-                            : c.score >= 55
+                            : c.score >= 50
                               ? 'bg-amber-100 text-amber-700 dark:bg-amber-950/40 dark:text-amber-400'
                               : 'bg-gray-100 text-gray-600',
                         )}
@@ -536,20 +700,21 @@ export function ShortTermTab() {
                     )}
                   </div>
                 </div>
-                <div className="mt-1.5 text-sm text-gray-700 dark:text-gray-300">{hitLine(c.strategy, c.signalType)}</div>
+                <div className="mt-1.5 text-sm text-gray-700 dark:text-gray-300">{hitLine(c.strategy)}</div>
                 <div className="mt-2 flex flex-wrap gap-1.5">
                   {sig && (
                     <span className="px-1.5 py-0.5 rounded text-xs bg-purple-50 text-purple-600 dark:bg-purple-950/40 dark:text-purple-300">
                       {sig}
                     </span>
                   )}
-                  {chips.map((ch) => (
+                  {chips.map((ch, i) => (
                     <span
-                      key={ch.label}
+                      key={`${ch.label}-${i}`}
+                      title={ch.hint}
                       className={cn(
                         'px-1.5 py-0.5 rounded text-xs',
-                        ch.tone === 'green'
-                          ? 'bg-green-100 text-green-700 dark:bg-green-950/40 dark:text-green-400'
+                        ch.detail
+                          ? 'bg-gray-50 text-gray-400 dark:bg-gray-900 dark:text-gray-500'
                           : ch.tone === 'red'
                             ? 'bg-red-100 text-red-700 dark:bg-red-950/40 dark:text-red-400'
                             : 'bg-gray-100 text-gray-600 dark:bg-gray-800 dark:text-gray-300',
@@ -584,7 +749,7 @@ export function ShortTermTab() {
             <Copy className="w-4 h-4" />
             一键复制本组候选 ({candidates.length})
           </button>
-          <span className="text-xs text-gray-400">复制内容为「名称 代码」，可粘贴到同花顺自选文本识别</span>
+          <span className="text-xs text-gray-400">复制内容为「名称 代码」，可粘贴到自选文本识别</span>
         </div>
       )}
     </div>

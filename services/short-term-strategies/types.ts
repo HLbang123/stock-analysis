@@ -1,10 +1,10 @@
 /**
  * 短线策略 AI 筛选 — 共享类型
- * 三套策略：涨停+三连阴 / 龙首阴 / 双龙战法。
+ * 六套策略：涨停+三连阴 / 龙首阴 / 双龙 / 龙四阴 / 仙人指路 / 封板。
  * 对外文案禁「股」字，统一用「标的/筛选」。
  */
 
-export type ShortTermStrategyId = "limit-up-three-yin" | "dragon-first-yin" | "double-dragon" | "dragon-four-yin" | "xian-ren-zhi-lu";
+export type ShortTermStrategyId = "limit-up-three-yin" | "dragon-first-yin" | "double-dragon" | "dragon-four-yin" | "xian-ren-zhi-lu" | "limit-up-board";
 
 /** T 日尾盘落库快照（唯一阶段） */
 export type ShortTermPhase = "closing";
@@ -21,6 +21,7 @@ export interface ShortBar {
   volume: number;
   preClose?: number | null;
   turnoverRate?: number | null;
+  circMv?: number | null; // 流通市值（万元，tushare 口径）
 }
 
 export interface SeriesInput {
@@ -33,7 +34,7 @@ export interface ShortTermCandidate {
   strategy: ShortTermStrategyId;
   tsCode: string;
   name: string;
-  signalType: string; // firstYinToday / firstYinYesterday / limit_up_three_yin / double_dragon_board / double_dragon_pullback
+  signalType: string; // firstYinToday / firstYinYesterday / limit_up_three_yin / double_dragon_board / dragon_four_yin / xian_ren_zhi_lu / limit_up_board
   matchedDate: string; // YYYY-MM-DD 形态触发日
   priority: ShortTermPriority;
   score: number; // 0-100 强弱分（与 AI 筛选打分对齐），组内排序用
@@ -58,6 +59,8 @@ export interface ShortTermScanResult {
   generatedAt: string; // ISO
   market: MarketContext;
   strategies: Record<ShortTermStrategyId, ShortTermCandidate[]>;
+  /** 数据质量告警（外部源不可用 / 已本地降级 / 标的缺今日行情等）。2026-09-10 起不再静默。 */
+  dataWarnings: string[];
 }
 
 /** 快照落库行（raw SQL 表 short_term_signals） */

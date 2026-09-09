@@ -1,7 +1,12 @@
 import { RealtimeQuote } from '@/types';
 import { decodeGBK, buildQuoteResponse } from '@/lib/api-helpers';
 
-/** 新浪实时行情（成交量单位：股，与腾讯的"手"存在既有差异，保持原行为） */
+/**
+ * 新浪实时行情。**单位归一**：新浪 volume 是「股」、amount 是「元」，
+ * 而腾讯/东财是「手」/「万元」，库内 daily_bars（tushare）也是「手」。
+ * 这里统一换算成 手 / 万元，避免回落新浪时量比类条件差 100 倍
+ * （消费方：短线扫描量比、预警规则均量、分时指标、UI formatVolume、LLM 提示词）。
+ */
 export async function fetchSinaQuote(symbol: string, signal: AbortSignal): Promise<RealtimeQuote | null> {
   try {
     const res = await fetch(`https://hq.sinajs.cn/list=${symbol}`, {
@@ -34,8 +39,8 @@ export async function fetchSinaQuote(symbol: string, signal: AbortSignal): Promi
       open: parseFloat(data[1]),
       high: parseFloat(data[4]),
       low: parseFloat(data[5]),
-      volume: parseInt(data[8]) || 0,
-      amount: parseFloat(data[9]) || 0,
+      volume: Math.round((parseInt(data[8]) || 0) / 100), // 股 → 手
+      amount: (parseFloat(data[9]) || 0) / 10000,         // 元 → 万元
       updateTime,
     });
   } catch {

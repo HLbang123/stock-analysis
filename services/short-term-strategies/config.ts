@@ -24,7 +24,7 @@ export const SHORT_TERM_STRATEGIES: StrategyMeta[] = [
   {
     id: "double-dragon",
     name: "双龙",
-    description: "实体首板突破后连续二板，二板打板或回踩",
+    description: "实体首板突破后连续二板，二板打板",
   },
   {
     id: "dragon-four-yin",
@@ -36,12 +36,30 @@ export const SHORT_TERM_STRATEGIES: StrategyMeta[] = [
     name: "仙人指路",
     description: "试盘长上影后确认日反包，确认日尾盘关注",
   },
+  {
+    id: "limit-up-board",
+    name: "封板",
+    description: "当日封于涨停且换手充分，次日开盘或冲高离场",
+  },
 ];
 
 export const ALL_STRATEGY_IDS: ShortTermStrategyId[] = SHORT_TERM_STRATEGIES.map((s) => s.id);
 
-/** 日线扫描回看窗口（交易日数）：覆盖双龙 60 日突破 + 龙首阴连板 + 量能窗口 */
-export const LOOKBACK_TRADING_DAYS = 120;
+/**
+ * 日线扫描回看窗口（交易日数）。
+ *
+ * 2026-09-10 由 120 收紧到 70：各策略的真实最长历史依赖是
+ *   仙人指路 `gain60`：`detectXianRenAt` 要求 `t0Idx >= 60`（T0 往前 60 根）→ 需 ≥61 根 + T1 本身；
+ *   新增的 `computeMacdQuadAt`：需 35 根（EMA26 稳定）；
+ *   龙四阴：`idx-4-20`（20 日新高）与 `idx-4-10`（10 日均量）→ ~24 根；
+ *   双龙：`breakoutLookback: 60` 已随 2026-08-27 定稿删除，检测中不再使用；
+ *   龙首阴 / 板三阴：< 15 根。
+ * 70 根（含今日实时合成 bar 共 71 根）留 ~9 根余量。
+ *
+ * 实测（预筛池 1139 只，服务器）：120 日=3350ms/13.7万行 → 70 日=1178ms/8.1万行；
+ * 端到端对照 6.3s → 1.6s，且五套策略候选**逐条完全一致**。
+ */
+export const LOOKBACK_TRADING_DAYS = 70;
 
 /** 前置筛选窗口（交易日数）：覆盖各策略最小触发窗口 + 盘中实时 bar 错位缓冲 */
 export const PREFILTER_TRADING_DAYS = 20;

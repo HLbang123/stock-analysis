@@ -208,7 +208,8 @@ async function main() {
               pathStatus: 'ok',
             },
           })
-        )
+        ),
+        { timeout: 30_000 } // Prisma 事务默认 5s，500 条 upsert 负载高时会超（同 backfill-alert-triggers 的历史故障）
       );
     }
     computed += toApply.length;

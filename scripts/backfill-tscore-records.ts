@@ -104,7 +104,8 @@ async function main() {
   for (let i = 0; i < toApply.length; i += 500) {
     const chunk = toApply.slice(i, i + 500);
     await prisma.$transaction(
-      chunk.map((u) => prisma.tScoreRecord.update({ where: { id: u.id }, data: u.data }))
+      chunk.map((u) => prisma.tScoreRecord.update({ where: { id: u.id }, data: u.data })),
+      { timeout: 30_000 } // Prisma 事务默认 5s，500 条 update 负载高时会超
     );
   }
 

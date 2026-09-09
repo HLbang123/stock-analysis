@@ -107,60 +107,19 @@ function doubleDragonBoard(bars: Bar[], idx: number) {
   };
 }
 
-function ma5(bars: Bar[], i: number): number {
-  if (i < 4) return 0;
-  let sum = 0;
-  for (let k = i - 4; k <= i; k++) sum += bars[k].close;
-  return sum / 5;
-}
-
-function doubleDragonPullback(bars: Bar[], idx: number) {
-  if (idx < 1) return null;
-  const b0 = bars[idx - 1], b1 = bars[idx];
-  const prev0 = prevClose(bars, idx - 1);
-  if (!isLimitUp(b0, prev0) || isOneWord(b0, prev0)) return null;
-  const body = ((b0.close - b0.open) / prev0) * 100;
-  if (body < 5) return null;
-  const lookback = Math.max(0, idx - 1 - 60);
-  let maxHigh = 0;
-  for (let i = lookback; i < idx - 1; i++) maxHigh = Math.max(maxHigh, bars[i].high);
-  if (b0.close <= maxHigh) return null;
-  const volWindow = bars.slice(Math.max(0, idx - 1 - 5), idx - 1);
-  const avgVol = volWindow.length ? volWindow.reduce((a, b) => a + b.volume, 0) / volWindow.length : 0;
-  if (avgVol > 0 && b0.volume < avgVol * 1.5) return null;
-  if (!isLimitUp(b1, prevClose(bars, idx))) return null;
-  for (let j = idx + 1; j <= idx + 3 && j < bars.length; j++) {
-    const m5 = ma5(bars, j);
-    if (m5 <= 0) continue;
-    const prev5 = bars.slice(Math.max(0, j - 5), j);
-    const avg5 = prev5.length ? prev5.reduce((a, b) => a + b.volume, 0) / prev5.length : 0;
-    if (bars[j].low <= m5 * 1.02 && (avg5 <= 0 || bars[j].volume < avg5 * 0.8)) {
-      const entry = bars[j].close;
-      const next = bars[j + 1];
-      if (!next) return null;
-      return {
-        date: bars[j].date,
-        entry,
-        retOpen: round(((next.open - entry) / entry) * 100),
-        retHigh: round(((next.high - entry) / entry) * 100),
-      };
-    }
-  }
-  return null;
-}
+// 【2026-09-11 已删除】ma5 + doubleDragonPullback（双龙回踩，十年实测负 alpha，已从策略体系移除）
 
 async function loadBars(marginStart: string, endDate: string): Promise<RawBar[]> {
   const sql = [
     'SELECT b."tsCode", b."tradeDate", b.open, b.high, b.low, b.close,',
     '       b.pre_close AS "preClose", b.vol, b.turnover_rate AS "turnoverRate",',
-    '       b.adj_factor AS "adjFactor", s.name',
+    '       b.adj_factor AS "adjFactor"',
     'FROM daily_bars b',
     'JOIN stocks s ON s.ts_code = b."tsCode"',
     'WHERE b."tradeDate" > $1 AND b."tradeDate" <= $2',
     "  AND s.is_active = true",
     "  AND s.ts_code ~ '^(600|601|603|605|000|001|002|003)'",
     "  AND s.name !~ '(ST|退)'",
-    'ORDER BY b."tsCode", b."tradeDate"',
   ].join('\n');
   return prisma.$queryRawUnsafe<RawBar[]>(sql, marginStart, endDate);
 }
@@ -185,7 +144,6 @@ async function main() {
 
   const syRows: { date: string; retOpen: number; retHigh: number }[] = [];
   const ddBoardRows: { date: string; retOpen: number; retHigh: number }[] = [];
-  const ddPullRows: { date: string; retOpen: number; retHigh: number }[] = [];
   const t0 = Date.now();
 
   for (let start = marginDays; start < datesAsc.length; start += chunkDays) {
@@ -227,11 +185,9 @@ async function main() {
         if (sy) syRows.push(sy);
         const db = doubleDragonBoard(bars, i);
         if (db) ddBoardRows.push(db);
-        const dp = doubleDragonPullback(bars, i);
-        if (dp) ddPullRows.push(dp);
       }
     }
-    console.log('chunk done', fmtDate(exclusiveLower), '->', fmtDate(windowEnd), 'sy', syRows.length, 'ddBoard', ddBoardRows.length, 'ddPull', ddPullRows.length, 'elapsed', Date.now() - t0);
+    console.log('chunk done', fmtDate(exclusiveLower), '->', fmtDate(windowEnd), 'sy', syRows.length, 'ddBoard', ddBoardRows.length, 'elapsed', Date.now() - t0);
   }
 
   const summary = {
@@ -244,11 +200,6 @@ async function main() {
       n: ddBoardRows.length,
       retOpen: stats(ddBoardRows.map((r) => r.retOpen)),
       retHigh: stats(ddBoardRows.map((r) => r.retHigh)),
-    },
-    doubleDragonPullback: {
-      n: ddPullRows.length,
-      retOpen: stats(ddPullRows.map((r) => r.retOpen)),
-      retHigh: stats(ddPullRows.map((r) => r.retHigh)),
     },
   };
   console.log(JSON.stringify(summary, null, 2));

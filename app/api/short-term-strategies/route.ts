@@ -26,6 +26,7 @@ const EMPTY_CANDIDATES = {
   "double-dragon": [],
   "dragon-four-yin": [],
   "xian-ren-zhi-lu": [],
+  "limit-up-board": [],
 };
 
 async function isAdvanced(request: NextRequest): Promise<boolean> {
@@ -90,6 +91,7 @@ export async function POST(request: NextRequest) {
       tradeDate: result.tradeDate,
       generatedAt: result.generatedAt,
       market: result.market,
+      dataWarnings: result.dataWarnings,
       candidates: result.strategies,
     });
   } catch (e: any) {

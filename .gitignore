@@ -55,3 +55,8 @@ next-env.d.ts
 
 # docs/ 本地记忆与项目笔记（个人留存，不入库）
 /docs/
+
+# 一次性/临时脚本（scratch）：不入库，且被 tsconfig 排除出 next build 的类型检查。
+# 缘由：2026-09-10 一次部署因 scripts/ 下的临时脚本依赖未提交代码，
+# 而 next build 会 type-check scripts/**，导致生产构建失败。临时脚本一律放这里。
+/scripts/_scratch/

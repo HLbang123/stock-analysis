@@ -309,7 +309,7 @@ export default function MarketPage() {
           {/* 行业指数涨跌幅排行 */}
           <Card className="p-4">
             <h3 className="font-medium mb-1">行业涨跌幅排行</h3>
-            <p className="text-xs text-gray-500 mb-2">申万一级行业指数（当日涨跌幅）</p>
+            <p className="text-xs text-gray-500 mb-2">行业指数（当日涨跌幅）</p>
             {sectorIndex.length > 0 ? (
               <div className="h-56 overflow-y-auto space-y-0.5">
                 {sectorIndex.slice(0, 25).map((s) => {

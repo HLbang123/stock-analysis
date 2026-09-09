@@ -4,8 +4,9 @@
  *
  * 口径（档2 · 大样本版，2026-09 回测定稿）：
  *   T0 试盘日：长上影（≥实体1.2倍、上影≥1.5%）、实体≤2%、收红0~5%、
- *             量比≥1.2、下影≤1%、振幅≤5%、收盘位≤0.45、60日涨幅≤30%、最低不破昨收。
- *   T1 确认日：现价反包 T0 上影 ≥40%、现价收位≥70%（扫描时点现价视作收盘价）、确认日高开≤1%。
+ *             量比无下限、下影≤1%、振幅≤5%、收盘位≤0.45、60日涨幅≤30%。
+ *   T1 确认日：现价反包 T0 上影 ≥40%、现价收位≥70%（扫描时点现价视作收盘价）、确认日高开≤1%、
+ *             确认日缩量（量比 ≤1.0）。
  *   买点 = T1 确认日收盘（尾盘）；退出口径 = 次日（T2）冲高卖，不格局。
  */
 
@@ -34,8 +35,14 @@ export interface XianRenConfig {
   gain60Max: number;          // 60 日涨幅上限 %
   requireLowAbovePrev: boolean; // 最低价不破昨收
   confPctMin: number;         // 确认日反包上影比例下限
-  confClosePosMin: number;    // 确认日收盘位下限（扫描时点现价视作收盘价计算）
-  confOpenGapMax: number;     // 确认日高开上限 %
+  confClosePosMin: number;    // 确认日收盘位下限（扫描时点现价视作收盘价计算）。
+                              // 2026-09-11 由 0.7 降到 0.5 —— 见 DEFAULT 里的实测依据。
+  confOpenGapMax: number;     // 确认日高开上限 %。2026-09-11 由 1.0 放宽到 5.0（近乎不拦）——
+                              // 该门槛方向是反的，见 DEFAULT 里的实测依据。
+  confVolRatioMax: number;    // 确认日量比参考线（T1 量 / 前5日均量）。2026-09-10 起**不再作硬门槛**，
+                              // 也**不再是打分阈值**：打分层已改用 1.5 / 2.5 两个断点，且方向由
+                              // 「缩量加分」翻转为「放量加分」（见 services/short-term-strategies/score.ts
+                              // 顶部口径切换说明）。此字段现仅作回测脚本的对照基线保留。
 }
 
 export const DEFAULT_XIANREN_CONFIG: XianRenConfig = {
@@ -45,15 +52,30 @@ export const DEFAULT_XIANREN_CONFIG: XianRenConfig = {
   changePctMin: 0,
   changePctMax: 5.0,
   volBaseDays: 5,
-  volRatioMin: 1.2,
+  volRatioMin: 0, // 2026-09 剔924重测：1.2→0.8→0，删除量比门槛后信号+36%、T+1冲高胜率不降
   lowerShadowPctMax: 1.0,
   amplitudePctMax: 5.0,
   closePosMax: 0.45,
   gain60Max: 30.0,
-  requireLowAbovePrev: true,
+  requireLowAbovePrev: false, // 2026-09 剔924重测：该门槛无效，删除后信号量翻倍、胜率微降1pp
   confPctMin: 0.4,
-  confClosePosMin: 0.7,
-  confOpenGapMax: 1.0,
+  // 2026-09-11 由 0.7 降到 0.5：五年剔924 超集实测（放宽两条门槛取 27,476 条，事后按实际值分组）——
+  // 被 0.7 拒掉的 6.41 只/日，各项指标与入选组**持平**：T+1最高均值 2.000 vs 2.022、区间最高 3.697 vs 3.679、
+  // P(区间≥2%) 57.3 vs 57.7，且 5 年逐年 0.3~0.7 与 0.7~0.95 无差（2025 年被拒组反而更好 2.148 vs 1.919）。
+  // 真正有区分度的是 0.95~1.0（T+1最高 5/5 年最优），而**打分表已给该档 +12 分**——门槛与打分重复且无筛选力，
+  // 故降为格式性下限，把"收在当日最高附近"交给打分层排序（与撤缩量门槛同一套处理逻辑）。
+  confClosePosMin: 0.5,
+  // 2026-09-11 由 1.0 放宽到 5.0（近乎不拦）：**该门槛方向是反的**。同批实测中被它拒掉的 1.45 只/日全面更好——
+  // T+1最高均值 2.456 vs 入选 2.022（+21%）、区间最高 4.549 vs 3.679（+24%）、P(区间≥2%) 63.1% vs 57.7%、
+  // T+3收盘 +0.544% vs +0.120%（4.5 倍）、盈亏比 1.42 vs 1.21、新打分均值 58.2 vs 51.7。
+  // 逐年 5/5 一致：高开 >2.5% 组每年最好（3.32~3.99），1.0~2.5 组也 5/5 优于 0~1.0 组。
+  // 端到端：撤掉后候选 16.2→17.6 只/日，而每日 Top1/Top3/Top5 的 T+1冲高均值**全部变好**（2.990→3.136）。
+  // 原意是"别追高"，但实测追高更强，故撤销。
+  confOpenGapMax: 5.0,
+  confVolRatioMax: 1.0, // 参考线（不再作硬门槛、也不再作打分阈值）：2026-09-10 改判——作为硬门槛时
+                        // 胜率 87.6%→89.9% 虽显著，但砍掉 59% 机会、被砍半赔率更大（冲高均值 2.10%
+                        // vs 1.90%）、日总期望持平，故撤门槛。同日晚些时候打分口径从「冲高胜率」切到
+                        // 「冲高幅度」后，该维度方向由缩量翻转为放量（>=2.5 才是最优档）。
 };
 
 export interface XianRenSignal {
@@ -76,12 +98,53 @@ export interface XianRenSignal {
     confDayGain: number | null;  // 确认日涨幅 %
     confClosePos: number | null;
     confOpenGap: number | null;
+    confVolRatio: number | null; // 确认日量比（T1 量 / 前5日均量）
   };
 }
 
 function round(n: number, d = 2): number {
   const p = Math.pow(10, d);
   return Math.round(n * p) / p;
+}
+
+/** MACD 象限：金叉(g)/死叉(d) × DIF 在零轴上(0)/下(1)；'na' = 历史不足 */
+export type MacdQuad = 'g0' | 'd0' | 'g1' | 'd1' | 'na';
+
+function emaSeries(values: number[], period: number): number[] {
+  const out: number[] = [];
+  const k = 2 / (period + 1);
+  let prev = values[0] ?? 0;
+  for (let i = 0; i < values.length; i++) {
+    prev = i === 0 ? values[0] : values[i] * k + prev * (1 - k);
+    out.push(prev);
+  }
+  return out;
+}
+
+/**
+ * 试盘日（T0）的 MACD 象限。
+ *
+ * 2026-09 剔924五年复检（n=7217）：**零轴下方金叉（g1 = DIF<0 且 DIF>DEA）**是唯一
+ * 在控制 gain60 与试盘日涨幅后仍存活的形态外因子——边际 +3.68pp，控制两层后 RE +2.47pp
+ * （全样本 z 3.02）；在 hitCount=0 的 76% 主体里 RE +2.15pp（z 2.50）；五年逐年全为正。
+ * 它抓的是「中期弱 + 短期刚转强」的**拐点**，与 gain60 的「位置低」不是同一信息。
+ * 注意：外部资料常推荐「金叉 + DIF 零轴上方」，而该象限在本样本里是最差的（88.79%）。
+ *
+ * 需要至少 35 根历史（EMA26 稳定 + DEA 9）；不足时返回 'na'。
+ */
+export function computeMacdQuadAt(bars: XianRenBar[], idx: number): { dif: number; dea: number; quad: MacdQuad } {
+  const MIN_BARS = 35;
+  if (idx < MIN_BARS - 1 || idx >= bars.length) return { dif: 0, dea: 0, quad: 'na' };
+  const closes: number[] = [];
+  for (let i = 0; i <= idx; i++) closes.push(bars[i].close);
+  const e12 = emaSeries(closes, 12);
+  const e26 = emaSeries(closes, 26);
+  const dif: number[] = closes.map((_, i) => e12[i] - e26[i]);
+  const dea = emaSeries(dif, 9);
+  const d = dif[idx], e = dea[idx];
+  if (!Number.isFinite(d) || !Number.isFinite(e)) return { dif: 0, dea: 0, quad: 'na' };
+  const quad: MacdQuad = d > e ? (d > 0 ? 'g0' : 'g1') : (d > 0 ? 'd0' : 'd1');
+  return { dif: d, dea: e, quad };
 }
 
 function prevCloseOf(bars: XianRenBar[], i: number): number | null {
@@ -111,7 +174,7 @@ export function detectXianRenAt(
     metrics: {
       t0Date: '', upperShadowPct: null, bodyAbsPct: null, changePct: null,
       volRatio: null, amplitudePct: null, gain60: null,
-      confPct: null, confDayGain: null, confClosePos: null, confOpenGap: null,
+      confPct: null, confDayGain: null, confClosePos: null, confOpenGap: null, confVolRatio: null,
     },
   });
 
@@ -166,9 +229,22 @@ export function detectXianRenAt(
   const confClosePos = t1.high > t1.low ? (t1.close - t1.low) / (t1.high - t1.low) : 0.5;
   const confOpenGap = ((t1.open - t0.close) / t0.close) * 100;
 
+  // 确认日量比：T1 量 / 前5日均量（T0 及往前 4 日）。缩量反包更优（2026-09 五年剔924重测）。
+  let confVolSum = 0, confVolCnt = 0;
+  for (let j = t0Idx - 4; j <= t0Idx; j++) {
+    if (j >= 0) { confVolSum += bars[j].volume; confVolCnt++; }
+  }
+  const confVolRatio = confVolCnt > 0 ? t1.volume / (confVolSum / confVolCnt) : 0;
+
   if (confPct < cfg.confPctMin) fail.push('confirm_not_cover_shadow');
   if (confClosePos < cfg.confClosePosMin) fail.push('confirm_close_too_low');
   if (confOpenGap > cfg.confOpenGapMax) fail.push('confirm_gap_too_high');
+  // 【2026-09-10 已撤硬门槛】原先此处按 cfg.confVolRatioMax 直接判失败（确认日缩量）。
+  // 五年剔924全量对照：该门槛把日均可交易从 15.28 只砍到 6.29 只（-59%），胜率 +3.9pp 虽显著(z=7.66)，
+  // 但被砍掉的一半赔率更大（冲高均值 2.10% vs 1.90%），日总期望持平（0.692 vs 0.680 %/日），
+  // 且会造出"某天一个候选都没有"的体验。现改为由打分层按档给分（见 services/short-term-strategies/score.ts；
+  // 同日打分层口径从「冲高胜率」切到「冲高幅度」后，该维度由"缩量加分"翻转为"放量加分"）。
+  // confVolRatio 仍照常输出到 metrics，供打分/展示使用。
 
   const matched = fail.length === 0;
   return {
@@ -191,6 +267,7 @@ export function detectXianRenAt(
       confDayGain: round(confDayGain),
       confClosePos: round(confClosePos, 2),
       confOpenGap: round(confOpenGap),
+      confVolRatio: round(confVolRatio),
     },
   };
 }
