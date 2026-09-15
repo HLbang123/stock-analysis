@@ -5,10 +5,12 @@ import { useRouter } from 'next/navigation';
 import { useStockStore } from '@/store';
 import { useScannerStore, type Board, type ScanPhase } from '@/store/scanner-store';
 import { useUiStore } from '@/store/ui-store';
+import { getClientTier } from '@/lib/client-auth';
 import { cn } from '@/lib/utils';
 import { Card } from '@/components/ui/card';
 import { PageHeader } from '@/components/ui/page-header';
 import { AiScreenTab } from '@/components/AiScreenTab';
+import { FunnelTab } from '@/components/FunnelTab';
 import { Filter, Loader2, ChevronDown, ChevronUp, Plus, Minus, BarChart3, Search } from 'lucide-react';
 import { toast } from 'sonner';
 
@@ -47,27 +49,44 @@ export default function ScannerPage() {
   const tab = useUiStore(s => s.scannerTab);
   const setTab = useUiStore(s => s.setScannerTab);
 
+  // 🔴 「AI 筛选」里只有**专用功能**（超短线，tier=advanced）。普通口令不该看到这个 tab ——
+  //    2026-09-14 删「论点」子 tab 时曾把专用面板放给所有人（已修）；
+  //    这里再把入口对普通口令隐藏，避免留一个空壳 tab。
+  const [tier, setTier] = useState<'basic' | 'advanced'>('basic');
+  useEffect(() => { setTier(getClientTier()); }, []);
+  const showAi = tier === 'advanced';
+  const effTab = !showAi && tab === 'ai' ? 'funnel' : tab;
+
   return (
     <div>
       <PageHeader title="市场扫描" />
-      {/* 顶部 tab：AI 筛选（每日服务器自动跑）为默认，全市场扫描手动查 */}
+      {/* 顶部 tab：「超短线」为专用口令专属（普通口令隐藏）；「每日推荐」是每日自动跑的主入口 */}
       <div className="flex gap-1 mb-4 p-1 bg-gray-100 dark:bg-gray-800 rounded-lg w-fit">
+        {showAi && (
+          <button
+            onClick={() => setTab('ai')}
+            className={cn('px-4 py-1.5 rounded-md text-sm transition',
+              effTab === 'ai' ? 'bg-white dark:bg-gray-900 shadow-sm font-medium' : 'text-gray-500 hover:text-gray-700')}
+          >
+            超短线
+          </button>
+        )}
         <button
-          onClick={() => setTab('ai')}
+          onClick={() => setTab('funnel')}
           className={cn('px-4 py-1.5 rounded-md text-sm transition',
-            tab === 'ai' ? 'bg-white dark:bg-gray-900 shadow-sm font-medium' : 'text-gray-500 hover:text-gray-700')}
+            effTab === 'funnel' ? 'bg-white dark:bg-gray-900 shadow-sm font-medium' : 'text-gray-500 hover:text-gray-700')}
         >
-          AI 筛选
+          每日推荐
         </button>
         <button
           onClick={() => setTab('manual')}
           className={cn('px-4 py-1.5 rounded-md text-sm transition',
-            tab === 'manual' ? 'bg-white dark:bg-gray-900 shadow-sm font-medium' : 'text-gray-500 hover:text-gray-700')}
+            effTab === 'manual' ? 'bg-white dark:bg-gray-900 shadow-sm font-medium' : 'text-gray-500 hover:text-gray-700')}
         >
           全市场扫描
         </button>
       </div>
-      {tab === 'ai' ? <AiScreenTab /> : <ManualScan />}
+      {effTab === 'ai' ? <AiScreenTab /> : effTab === 'funnel' ? <FunnelTab /> : <ManualScan />}
     </div>
   );
 }

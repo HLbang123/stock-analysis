@@ -13,7 +13,6 @@ import { NextRequest, NextResponse } from 'next/server';
 import { prisma } from '@/lib/db';
 import { STRATEGY_PRESETS, getPreset } from '@/services/ai-screen/strategies';
 import { runScreen, rescueRun, dbPickToAiPick } from '@/services/ai-screen/engine';
-import { getServerScreenCfg } from '@/services/ai-screen/server-cfg';
 import { persistRun, serializeRun, pickToCreate } from '@/services/ai-screen/persist';
 import type { AiPick, AiScreenRun, LlmConfig, StrategyPreset } from '@/services/ai-screen/types';
 
@@ -121,11 +120,14 @@ export async function POST(request: NextRequest) {
       return NextResponse.json({ error: `未知策略：${strategyId}` }, { status: 400 });
     }
 
-    // 服务器 key 优先（每日调度共用）；未配置时回退客户端配置（旧 AI 页路径）
-    const serverCfg = getServerScreenCfg();
-    const cfg: LlmConfig | undefined = serverCfg ?? (baseUrl && model ? { baseUrl, apiKey, model } : undefined);
+    // 🔴 2026-09-15：**本路由不再使用服务器 key**（工具已全面去 LLM 化）。
+    //    此前是 `serverCfg ?? 客户端配置` —— 意味着任何**已登录**用户手动 POST 本路由
+    //    都能用服务器额度跑 LLM 重排（前端已无调用方；tier 门控只是前端的，接口不验 tier）。
+    //    现在只认调用方自带的 key。服务器上仍保留 AI_SCREEN_API_KEY，但这里不再读它。
+    //    ⚠️ services/ai-screen/server-cfg.ts 保留不删（随时可加回）。
+    const cfg: LlmConfig | undefined = baseUrl && model ? { baseUrl, apiKey, model } : undefined;
     if (preset.llmRerank && !cfg) {
-      return NextResponse.json({ error: '该策略启用 LLM 重排，需提供 baseUrl / model（或服务器配置 AI_SCREEN_API_KEY）' }, { status: 400 });
+      return NextResponse.json({ error: '该策略启用 LLM 重排，需提供 baseUrl / model（或模型配置）' }, { status: 400 });
     }
 
     // 取最新数据日（去重 key 的一部分）
@@ -231,7 +233,9 @@ export async function POST(request: NextRequest) {
         // 在途执行失败则落到下方自己跑一遍（重新占位）
       }
     }
-    const task = runFirstRun(preset, cfg, !!serverCfg);
+    // trusted 原为 `!!serverCfg`（用服务器 key 跑出来的结果视为权威、无条件共享落库）。
+    // 已不再使用服务器 key → trusted 恒为 false，落库条件退回 isPreferredModel。
+    const task = runFirstRun(preset, cfg);
     firstRunInflight.set(flightKey, task);
     try {
       return NextResponse.json(await task);

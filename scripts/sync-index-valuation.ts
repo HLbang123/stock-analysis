@@ -72,23 +72,40 @@ async function main() {
     }
     console.log(`[index-val] 完成，共 ${total} 行`);
   } else {
-    // 日常：按最新交易日拉全部指数，过滤 6 大
-    const latest: any[] = await prisma.$queryRawUnsafe(
-      `SELECT DISTINCT trade_date FROM index_valuation ORDER BY trade_date DESC LIMIT 1`
-    );
-    // 用 daily_bars 最新交易日作为目标（index_valuation 可能空）
-    const latestBar = await prisma.dailyBar.findFirst({ orderBy: { tradeDate: "desc" }, select: { tradeDate: true } });
-    const targetDate = latestBar?.tradeDate ?? endDate;
-    // 已有该日数据则跳过
-    if (latest[0]?.trade_date === targetDate) {
-      console.log(`[index-val] ${targetDate} 已存在，跳过`);
-      await prisma.$disconnect();
-      return;
+    // 日常：按**区间**拉最近 30 个自然日（≈20 个交易日），而不是「只拉目标那一天」。
+    //
+    // 🔴 为什么不能只拉当日（2026-09-15 定位）：
+    //    tushare `index_dailybasic` 的**当日**数据在 16:00（run-daily 的时刻）还没发布 ——
+    //    实测当天查询返回 0 行，次日再查同一日期返回 6 行。
+    //    这个脚本以前"能用"，是因为 `sync-daily.ts` 有个时区 bug（`d.toISOString()` 在 UTC+8
+    //    把本地零点减 8 小时 → 推入的是**昨天**），导致 `daily_bars` 永远落后一天，
+    //    于是目标日恰好是**已发布的昨天**。
+    //    2026-07-20 部署（cd50656「Tushare/RPS 数据修复」）修好那个 bug 后，`daily_bars`
+    //    当天就位 → 目标日变成**尚未发布的当天** → 从 2026-07-21 起每天 0 行，index_valuation 断档。
+    //
+    //    改区间拉取后：① 不再依赖发布时刻；② **天然补齐任何历史缺口（自愈）**，
+    //    脚本哪天失败/机器哪天没开，第二天自己补回来。
+    const end = new Date();
+    const start = new Date();
+    start.setDate(start.getDate() - 30);
+    const startDate = fmtDate(start);
+    const endStr2 = fmtDate(end);
+    let total = 0;
+    for (const tsCode of IDX_CODES) {
+      try {
+        const res = await callTushare<IndexValItem>(
+          "index_dailybasic",
+          { ts_code: tsCode, start_date: startDate, end_date: endStr2 },
+          fields
+        );
+        const rows = toRecords<IndexValItem>(res);
+        if (rows.length > 0) { await upsert(rows); total += rows.length; }
+      } catch (e: any) {
+        console.error(`[index-val] ${tsCode} 失败: ${e.message?.slice(0, 100)}`);
+      }
+      await new Promise((r) => setTimeout(r, 300)); // fuyao/tushare 无内置限速，自律
     }
-    const res = await callTushare<IndexValItem>("index_dailybasic", { trade_date: targetDate }, fields);
-    const rows = toRecords<IndexValItem>(res).filter((r) => IDX_CODES.includes(r.ts_code));
-    if (rows.length > 0) await upsert(rows);
-    console.log(`[index-val] ${targetDate} ${rows.length} 行`);
+    console.log(`[index-val] ${startDate}~${endStr2} 共 ${total} 行`);
   }
 
   await prisma.$disconnect();

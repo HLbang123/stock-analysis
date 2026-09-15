@@ -13,11 +13,9 @@ interface UiStoreState {
   /** 自选页分组筛选（'all'=全部） */
   watchlistGroupId: string;
   /** 扫描页顶部 tab */
-  scannerTab: 'ai' | 'manual';
+  scannerTab: 'ai' | 'funnel' | 'manual';
   /** AI 筛选 tab 当前策略 */
   aiScreenStrategy: string;
-  /** AI 筛选主 tab（超短线 / 短线） */
-  aiScreenMainTab: 'ultra-short' | 'short';
   /** 超短线主 tab 内选中的子策略 */
   shortTermStrategy: string;
   /** AI 页主视图切换（分析 / AI 对话，页面级互斥） */
@@ -27,9 +25,8 @@ interface UiStoreState {
 
   setHomeAlertGroupId: (v: string) => void;
   setWatchlistGroupId: (v: string) => void;
-  setScannerTab: (v: 'ai' | 'manual') => void;
+  setScannerTab: (v: 'ai' | 'funnel' | 'manual') => void;
   setAiScreenStrategy: (v: string) => void;
-  setAiScreenMainTab: (v: 'ultra-short' | 'short') => void;
   setShortTermStrategy: (v: string) => void;
   setAiMainTab: (v: 'analysis' | 'chat') => void;
   setMarketIdxCode: (v: string) => void;
@@ -42,7 +39,6 @@ export const useUiStore = create<UiStoreState>()(
       watchlistGroupId: 'all',
       scannerTab: 'ai',
       aiScreenStrategy: 'momentum',
-      aiScreenMainTab: 'ultra-short',
       shortTermStrategy: 'limit-up-three-yin',
       aiMainTab: 'analysis',
       marketIdxCode: '000001.SH',
@@ -51,7 +47,6 @@ export const useUiStore = create<UiStoreState>()(
       setWatchlistGroupId: (watchlistGroupId) => set({ watchlistGroupId }),
       setScannerTab: (scannerTab) => set({ scannerTab }),
       setAiScreenStrategy: (aiScreenStrategy) => set({ aiScreenStrategy }),
-      setAiScreenMainTab: (aiScreenMainTab) => set({ aiScreenMainTab }),
       setShortTermStrategy: (shortTermStrategy) => set({ shortTermStrategy }),
       setAiMainTab: (aiMainTab) => set({ aiMainTab }),
       setMarketIdxCode: (marketIdxCode) => set({ marketIdxCode }),

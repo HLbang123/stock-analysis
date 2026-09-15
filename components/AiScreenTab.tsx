@@ -2,7 +2,6 @@
 
 import { useState, useEffect, Fragment } from 'react';
 import { useRouter } from 'next/navigation';
-import { useUiStore } from '@/store/ui-store';
 import { cn } from '@/lib/utils';
 import { Card } from '@/components/ui/card';
 import { ChevronDown, ChevronUp, Info, Sparkles, AlertTriangle, Loader2 } from 'lucide-react';
@@ -12,7 +11,11 @@ import { getClientTier } from '@/lib/client-auth';
 
 /**
  * AI 筛选 tab — 扫描页内嵌，读 DB 展示每日调度结果（服务器每日自动跑）。
- * 两个主 tab：超短线（涨停+三连阴 / 龙首阴 / 双龙战法）、短线（趋势，复用原趋势猎手逻辑改名）。
+ *
+ * 2026-09-14 改造：主 tab 由「超短线 | 趋势优选」改为「超短线 | 论点」。
+ * 「趋势优选」那条「因子打分 → LLM 重排 → 出名单」的流水线已被**论点卡**取代
+ * （用户定调：市场像水一样流动，不能用固定筛网去兜；要从一条信息出发、由点及面、同时反证）。
+ * 旧实现 ShortLineTab 及其 services/ai-screen/* 暂时保留但不再渲染，待确认后清理。
  */
 
 interface StrategyInfo {
@@ -42,44 +45,33 @@ interface RunWithPicks {
   picks: AiPick[];
 }
 
-const MAIN_TABS = [
-  { value: 'ultra-short', label: '超短线' },
-  { value: 'short', label: '趋势优选' },
-] as const;
-
 export function AiScreenTab() {
-  const mainTab = useUiStore((s) => s.aiScreenMainTab);
-  const setMainTab = useUiStore((s) => s.setAiScreenMainTab);
   const [tier, setTier] = useState<'basic' | 'advanced'>('basic');
 
   useEffect(() => {
     setTier(getClientTier());
   }, []);
 
+  // 「论点」子 tab 于 2026-09-14 下线（改为扫描页零参与的「每日推荐」），
+  // 这里只剩**专用功能**超短线（tier=advanced）。子 tab 条随之取消 —— 只剩一个面板没有切换的意义。
   const ultraShortEnabled = tier === 'advanced';
-  const visibleTabs = ultraShortEnabled ? MAIN_TABS : MAIN_TABS.filter((t) => t.value !== 'ultra-short');
-  const effectiveMainTab = mainTab === 'ultra-short' && !ultraShortEnabled ? 'short' : mainTab;
 
   return (
     <div>
-      {/* 两个主 tab：专用口令显示超短线（三套短线策略）；普通口令只显示短线（趋势） */}
-      <div className="flex gap-1 mb-4 p-1 bg-gray-100 dark:bg-gray-800 rounded-lg w-fit">
-        {visibleTabs.map((t) => (
-          <button
-            key={t.value}
-            onClick={() => setMainTab(t.value)}
-            className={cn(
-              'px-4 py-1.5 rounded-md text-sm transition',
-              effectiveMainTab === t.value
-                ? 'bg-white dark:bg-gray-900 shadow-sm font-medium text-gray-900 dark:text-white'
-                : 'text-gray-500 hover:text-gray-700 dark:hover:text-gray-200',
-            )}
-          >
-            {t.label}
-          </button>
-        ))}
-      </div>
-      {effectiveMainTab === 'ultra-short' ? <ShortTermTab /> : <ShortLineTab />}
+      {/*
+        🔴 超短线是**专用功能**（tier=advanced，专用口令才能看）。
+        2026-09-14 删「论点」子 tab 时，这里曾被改成无条件渲染 <ShortTermTab />，
+        等于把专用功能放给了所有普通口令用户 —— 已修回门控。
+        普通口令现在没有 AI 筛选的公共内容（原「论点」已下线为扫描页的「每日推荐」），
+        故只给一句指引，不渲染任何专用面板。
+      */}
+      {ultraShortEnabled ? <ShortTermTab /> : (
+        <div className="rounded-xl border border-gray-200 dark:border-gray-800 p-6 text-sm text-gray-500 leading-relaxed">
+          这个入口暂时没有面向普通口令的内容。
+          <br />
+          想看待推荐名单，请到扫描页的<strong className="text-gray-700 dark:text-gray-300">「每日推荐」</strong>。
+        </div>
+      )}
     </div>
   );
 }

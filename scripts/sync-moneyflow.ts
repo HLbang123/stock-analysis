@@ -4,8 +4,22 @@
  * moneyflow_ind_ths：同花顺行业资金流（按 trade_date 一次拉全部 ~90 行业）
  * 旧东财 stock_moneyflow 表保留历史不再更新。
  *
- * 运行：npx tsx scripts/sync-moneyflow.ts [--init]
+ * 运行：npx tsx scripts/sync-moneyflow.ts [--init] [--from=YYYYMMDD] [--ind-only]
  *   --init 回补近 30 个交易日
+ *   --from 指定起始日（用于本地研究库首次回补）。不指定时从表内最新一天续拉。
+ *   --ind-only 只刷行业资金流（新增列后补数用，避免重拉 200 万行个股数据）
+ *
+ * ⚠️ THS 口径的数据起点（2026-09-14 实测）：
+ *   moneyflow_ind_ths（行业）  → 2024-10-09 起有数据
+ *   moneyflow_ths（个股）      → 2024-12-19 起有数据
+ *   更早的日期会返回 0 行，回补时务必用 --from 跳过，否则空打上千次调用。
+ *
+ * ⚠️ 口径事实（勿再猜）：
+ *   - moneyflow_ths **没有「超大单」字段**（同花顺只分 大/中/小 三档）。
+ *     表内 buy_elg_amount / buy_elg_amount_rate 是**死列**，恒为 NULL，不要使用。
+ *   - moneyflow_ind_ths 另含 `pct_change_stock`（龙头股当日涨跌幅）与 `close_price`
+ *     （龙头股收盘价），存为 lead_stock_pct / lead_stock_close。
+ *     只拿 lead_stock 名字是不够的——「龙头涨了多少 vs 行业涨了多少」才是信号。
  */
 
 import { callTushare, toRecords } from "../lib/tushare";
@@ -37,6 +51,10 @@ interface IndMfItem {
   close?: number;
   pct_change?: number;
   company_num?: number;
+  /** 龙头股当日涨跌幅（%），存 lead_stock_pct */
+  pct_change_stock?: number;
+  /** 龙头股收盘价，存 lead_stock_close */
+  close_price?: number;
   net_buy_amount?: number;
   net_sell_amount?: number;
   net_amount?: number;
@@ -82,11 +100,26 @@ async function syncStockThs(tradeDate: string): Promise<number> {
   return rows.length;
 }
 
+/**
+ * 行业资金流表结构自举。
+ * 新增列必须在这里 ADD COLUMN IF NOT EXISTS，而不是依赖外部迁移：
+ * 同时更新 INSERT 列清单后，若服务器库还没加列，日任务会直接失败。
+ * 放在 INSERT 之前执行可保证本地/服务器首次运行即自动补齐。
+ */
+async function ensureIndustryColumns(): Promise<void> {
+  await prisma.$executeRawUnsafe(
+    `ALTER TABLE industry_moneyflow_ths ADD COLUMN IF NOT EXISTS lead_stock_pct double precision`
+  );
+  await prisma.$executeRawUnsafe(
+    `ALTER TABLE industry_moneyflow_ths ADD COLUMN IF NOT EXISTS lead_stock_close double precision`
+  );
+}
+
 async function syncIndustryThs(tradeDate: string): Promise<number> {
   const res = await callTushare<IndMfItem>(
     "moneyflow_ind_ths",
     { trade_date: tradeDate },
-    "ts_code,trade_date,industry,lead_stock,close,pct_change,company_num,net_buy_amount,net_sell_amount,net_amount"
+    "ts_code,trade_date,industry,lead_stock,close,pct_change,company_num,pct_change_stock,close_price,net_buy_amount,net_sell_amount,net_amount"
   );
   const rows = toRecords<IndMfItem>(res);
   if (rows.length === 0) return 0;
@@ -94,19 +127,21 @@ async function syncIndustryThs(tradeDate: string): Promise<number> {
   const params: any[] = [];
   for (const r of rows) {
     const idx = params.length;
-    values.push(`($${idx + 1},$${idx + 2},$${idx + 3},$${idx + 4},$${idx + 5},$${idx + 6},$${idx + 7},$${idx + 8},$${idx + 9},$${idx + 10})`);
+    values.push(`($${idx + 1},$${idx + 2},$${idx + 3},$${idx + 4},$${idx + 5},$${idx + 6},$${idx + 7},$${idx + 8},$${idx + 9},$${idx + 10},$${idx + 11},$${idx + 12})`);
     params.push(
       r.ts_code, r.trade_date, r.industry ?? null, r.lead_stock ?? null, r.close ?? null,
       r.pct_change ?? null, r.company_num ?? null,
+      r.pct_change_stock ?? null, r.close_price ?? null,
       r.net_buy_amount ?? null, r.net_sell_amount ?? null, r.net_amount ?? null,
     );
   }
   await prisma.$executeRawUnsafe(
-    `INSERT INTO industry_moneyflow_ths (ts_code, trade_date, industry, lead_stock, close, pct_change, company_num, net_buy_amount, net_sell_amount, net_amount)
+    `INSERT INTO industry_moneyflow_ths (ts_code, trade_date, industry, lead_stock, close, pct_change, company_num, lead_stock_pct, lead_stock_close, net_buy_amount, net_sell_amount, net_amount)
      VALUES ${values.join(", ")}
      ON CONFLICT (ts_code, trade_date) DO UPDATE SET
        industry=EXCLUDED.industry, lead_stock=EXCLUDED.lead_stock, close=EXCLUDED.close,
        pct_change=EXCLUDED.pct_change, company_num=EXCLUDED.company_num,
+       lead_stock_pct=EXCLUDED.lead_stock_pct, lead_stock_close=EXCLUDED.lead_stock_close,
        net_buy_amount=EXCLUDED.net_buy_amount, net_sell_amount=EXCLUDED.net_sell_amount,
        net_amount=EXCLUDED.net_amount`,
     ...params
@@ -116,6 +151,9 @@ async function syncIndustryThs(tradeDate: string): Promise<number> {
 
 async function main() {
   const isInit = process.argv.includes("--init");
+  const indOnly = process.argv.includes("--ind-only");
+  const fromArg = process.argv.find((a) => a.startsWith("--from="));
+  const fromDate = fromArg ? fromArg.slice("--from=".length) : null;
 
   let dates: string[];
   if (isInit) {
@@ -132,7 +170,7 @@ async function main() {
     const latestThs: any[] = await prisma.$queryRawUnsafe(
       `SELECT trade_date FROM stock_moneyflow_ths ORDER BY trade_date DESC LIMIT 1`
     );
-    const startFrom = latestThs[0]?.trade_date || "20200101";
+    const startFrom = fromDate || latestThs[0]?.trade_date || "20200101";
     if (startFrom >= target) { console.log("[moneyflow] 已是最新"); await prisma.$disconnect(); return; }
     const rows: any[] = await prisma.$queryRawUnsafe(
       `SELECT DISTINCT "tradeDate" FROM daily_bars WHERE "tradeDate" > $1 AND "tradeDate" <= $2 ORDER BY "tradeDate"`,
@@ -142,11 +180,12 @@ async function main() {
   }
 
   console.log(`[moneyflow] 同步 ${dates.length} 个交易日（THS 个股 + THS 行业）`);
+  await ensureIndustryColumns();
   let totalStock = 0, totalInd = 0, emptyDays = 0;
   for (let i = 0; i < dates.length; i++) {
     const d = dates[i];
     try {
-      const c = await syncStockThs(d);
+      const c = indOnly ? 0 : await syncStockThs(d);
       let ci = 0;
       try { ci = await syncIndustryThs(d); } catch (e: any) {
         console.error(`[moneyflow] ${d} 行业失败: ${e.message?.slice(0, 80)}`);
